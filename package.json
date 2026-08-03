@@ -6,6 +6,7 @@
   "description": "RescueGPS NavMate — coordinate conversion, GPS tracking, ETA and shared waypoints for search and rescue teams.",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/make-icons.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
