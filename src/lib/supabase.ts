@@ -1,15 +1,15 @@
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL
-const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+// NavMate talks to exactly one Supabase project, and both of these values are
+// publishable — row level security is the boundary, not secrecy. Baking them in
+// means a fresh clone or a fresh Vercel project runs with no configuration at
+// all, and removes the blank-screen failure of a missing env var. Set the env
+// vars to point a build somewhere else (a fork, a staging project).
+const DEFAULT_URL = 'https://puzwcsrtqtbutypzozvu.supabase.co'
+const DEFAULT_KEY = 'sb_publishable_epPlnaBqhZw7GAFxYcCxag_PqOh77-0'
 
-if (!url || !key) {
-  throw new Error(
-    'Missing VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY. ' +
-      'Copy .env.example to .env.local for local development, or set them as ' +
-      'Environment Variables on the Vercel project.',
-  )
-}
+const url = import.meta.env.VITE_SUPABASE_URL || DEFAULT_URL
+const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || DEFAULT_KEY
 
 export const supabase = createClient(url, key, {
   auth: {

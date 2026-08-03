@@ -99,7 +99,7 @@ export function toDDM(dd: number, axis: Axis, minuteDigits = 3): string {
   const hemi = hemisphereFor(dd, axis)
   const factor = 10 ** minuteDigits
 
-  let remaining = Math.round(Math.abs(dd) * 60 * factor) / factor
+  const remaining = Math.round(Math.abs(dd) * 60 * factor) / factor
   const deg = Math.floor(remaining / 60)
   const min = remaining - deg * 60
 
