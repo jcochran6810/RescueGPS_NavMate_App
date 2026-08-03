@@ -49,10 +49,16 @@ A SessionStart hook (`.claude/hooks/session-start.sh`, registered in
      branch has session-in-progress commits ahead, the hook emits a
      **BLOCKER** instead of destroying that work, and the assistant
      must surface the drift to the user.
-   - **Skipped (BLOCKER emitted)** when: on `main` itself, dirty
-     working tree, detached HEAD, `origin/main` does not exist, or
-     `git fetch` fails. In each case the assistant must stop and
-     resolve before any other work.
+   - **Skipped (BLOCKER emitted)** when: on `main` itself, detached
+     HEAD, `origin/main` does not exist, or `git fetch` fails. In each
+     case the assistant must stop and resolve before any other work.
+   - **Dirty working tree**: sync is always skipped (never auto-reset
+     over uncommitted work). It emits a BLOCKER on `source=startup`, or
+     whenever the branch is also behind `origin/main` — both mean the
+     session is not starting from a known state. On
+     `resume`/`compact`/`clear` at `origin/main` HEAD it emits a warning
+     instead, because uncommitted work is the normal mid-session case
+     and stopping there would be noise.
 3. Runs `npm install`, `npm run typecheck`, `npm run lint`, and `npm test`
    so the assistant has a known-good baseline before turn 1.
 4. Extracts the most recent `## Session log` entry from CLAUDE.md so the
@@ -97,7 +103,9 @@ real work:
    git rev-list --count origin/main..HEAD   # commits ahead of main
    git status --porcelain                   # dirty tree?
    ```
-   If behind > 0, ahead > 0, or dirty: stop and surface to the user. Only
+   If behind > 0 or ahead > 0: stop and surface to the user. If the tree
+   is merely dirty at `origin/main` HEAD and this is a resumed session,
+   that's in-progress work — note it and carry on. Otherwise stop. Only
    proceed once the branch is at `origin/main` HEAD (or the user has
    explicitly directed otherwise for this session).
 3. Only after the branch state is confirmed at `origin/main` HEAD may the
@@ -258,8 +266,17 @@ Initial build. Repo was empty at session start.
   `npm run lint` to the baseline (this repo has a working ESLint config),
   and taught the hook to distinguish "origin/main does not exist" from a
   network failure.
+- Fixed an inconsistency carried over from the source repo: a dirty tree
+  printed a `⛔ … STOP` sync message but did not set the `SESSION-START
+  BLOCKER` header that CLAUDE.md's turn-1 rule keys off, so the assistant
+  would have read "stop" and continued anyway. Dirty now blocks on
+  `source=startup` or when also behind main, and warns otherwise.
 - Bootstrapped `main` from this branch — the repo had no `main`, which would
   have made the protocol emit a blocker on every session.
+- Exercised all eight hook paths against a scratch clone: on-main, detached
+  HEAD, missing origin/main, dirty×{startup, resume, behind}, behind
+  (fast-forward), ahead×{resume, startup}. Confirmed resume preserves ahead
+  commits and startup discards them.
 
 **Known gaps**
 - The signed-in flow has never run in a real browser; this sandbox blocks
