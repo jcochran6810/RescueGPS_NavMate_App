@@ -8,6 +8,12 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-08-03 — Decide whether commits need to be GPG/SSH-signed. All
+      commits so far are unsigned and show as Unverified on GitHub (the
+      author email is correct; only the signature is missing). Fixing it
+      needs a signing key in the environment that makes the commits;
+      retrofitting existing commits means rewriting history, so this gets
+      more expensive the longer it waits.
 - [ ] 2026-08-03 — Deploy to Vercel. The MCP deploy returned `403 "You don't
       have permission to create a project."`; the connected token can read
       projects but not create them. Import the repo at https://vercel.com/new
