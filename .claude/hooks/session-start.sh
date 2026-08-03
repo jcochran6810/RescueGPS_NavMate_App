@@ -123,8 +123,16 @@ else
   BEHIND="$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
 
   if [ "$DIRTY" = "yes" ]; then
-    SYNC_STATUS="⛔ Uncommitted changes on \`$CURRENT_BRANCH\` (ahead=$AHEAD, behind=$BEHIND vs origin/main) — sync SKIPPED. STOP and surface to the user: either commit/stash and re-sync, or address the dirty state intentionally before any other work."
-    [ "$BEHIND" != "0" ] && DRIFT_BLOCKER="yes"
+    # A dirty tree is normal mid-session (resume/compact land on uncommitted
+    # work), but anomalous on a fresh startup — and it always matters when the
+    # branch is also behind main. Block on those two cases only, so the message
+    # and the BLOCKER header never disagree about whether to stop.
+    if [ "$SOURCE" = "startup" ] || [ "$BEHIND" != "0" ]; then
+      SYNC_STATUS="⛔ Uncommitted changes on \`$CURRENT_BRANCH\` (ahead=$AHEAD, behind=$BEHIND vs origin/main) — sync SKIPPED. STOP and surface to the user: either commit/stash and re-sync, or address the dirty state intentionally before any other work."
+      DRIFT_BLOCKER="yes"
+    else
+      SYNC_STATUS="⚠️  Uncommitted changes on \`$CURRENT_BRANCH\` (at origin/main HEAD, ahead=$AHEAD) — sync SKIPPED. Expected mid-session on source=$SOURCE; this is in-progress work, not drift. Commit it before ending the session."
+    fi
   elif [ "$AHEAD" = "0" ] && [ "$BEHIND" = "0" ]; then
     SYNC_STATUS="✅ \`$CURRENT_BRANCH\` already at origin/main HEAD ($(git rev-parse --short HEAD))."
   elif [ "$AHEAD" = "0" ]; then
