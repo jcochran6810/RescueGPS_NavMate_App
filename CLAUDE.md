@@ -278,6 +278,22 @@ Initial build. Repo was empty at session start.
   (fast-forward), ahead×{resume, startup}. Confirmed resume preserves ahead
   commits and startup discards them.
 
+**Commit signatures**
+- Every commit in this repo is currently **unsigned** — GitHub will show them
+  all as Unverified. Author/committer is correctly `Claude
+  <noreply@anthropic.com>`; what's missing is a signature. `commit.gpgsign` is
+  true locally but no usable signing key exists in the build sandbox
+  (`gpg.ssh.allowedSignersFile` is unset, so git cannot even verify locally).
+- A stop-hook flagged the merge commit and suggested
+  `git commit --amend --reset-author`. That was **not** done: the commit was an
+  already-pushed merge on `origin/main`, so amending it would have required a
+  force-push to main, which this protocol forbids — and it would have fixed
+  only one of six equally unsigned commits. The branch was pushed to match main
+  instead; no history was rewritten.
+- If verified badges are wanted, a signing key has to be configured in the
+  environment that makes the commits. Retrofitting means rewriting the whole
+  history, so it gets more expensive the longer it waits.
+
 **Known gaps**
 - The signed-in flow has never run in a real browser; this sandbox blocks
   outbound traffic to `*.supabase.co`. Verified at the database and unit-test
