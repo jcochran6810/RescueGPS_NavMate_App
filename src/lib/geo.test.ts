@@ -6,6 +6,8 @@ import {
   formatDistance,
   formatDuration,
   formatSpeed,
+  trailDistanceNM,
+  NM_TO_METERS,
 } from './geo'
 
 describe('haversineNM', () => {
@@ -85,5 +87,52 @@ describe('formatting', () => {
 
   it('rolls long durations into days', () => {
     expect(formatDuration(30)).toBe('1 d 6 h')
+  })
+})
+
+describe('trailDistanceNM', () => {
+  it('is zero for fewer than two points', () => {
+    expect(trailDistanceNM([])).toBe(0)
+    expect(trailDistanceNM([{ lat: 1, lon: 2 }])).toBe(0)
+  })
+
+  it('sums the legs of a track', () => {
+    const a = { lat: 27.9, lon: -82.4 }
+    const b = { lat: 28.0, lon: -82.4 }
+    const c = { lat: 28.1, lon: -82.4 }
+    expect(trailDistanceNM([a, b, c])).toBeCloseTo(
+      haversineNM(a.lat, a.lon, b.lat, b.lon) +
+        haversineNM(b.lat, b.lon, c.lat, c.lon),
+      6,
+    )
+  })
+
+  it('ignores movement smaller than the reported accuracy', () => {
+    // ~11 m apart, both fixes accurate to only 50 m: that is GPS jitter, not
+    // travel, and a stationary phone must not accumulate distance.
+    const jitter = [
+      { lat: 27.9, lon: -82.4, accuracy: 50 },
+      { lat: 27.9001, lon: -82.4, accuracy: 50 },
+      { lat: 27.9, lon: -82.4, accuracy: 50 },
+    ]
+    expect(trailDistanceNM(jitter)).toBe(0)
+  })
+
+  it('counts the same movement when the fixes are precise', () => {
+    const precise = [
+      { lat: 27.9, lon: -82.4, accuracy: 3 },
+      { lat: 27.9001, lon: -82.4, accuracy: 3 },
+    ]
+    expect(trailDistanceNM(precise) * NM_TO_METERS).toBeGreaterThan(10)
+  })
+
+  it('treats a missing accuracy as no tolerance', () => {
+    const legNM = haversineNM(27.9, -82.4, 27.9001, -82.4)
+    expect(
+      trailDistanceNM([
+        { lat: 27.9, lon: -82.4 },
+        { lat: 27.9001, lon: -82.4 },
+      ]),
+    ).toBeCloseTo(legNM, 9)
   })
 })

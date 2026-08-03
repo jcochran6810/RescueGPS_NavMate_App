@@ -19,6 +19,9 @@ interface WaypointState {
   loading: boolean
   syncing: boolean
   lastSyncedAt: string | null
+  /** Account the cache and queue belong to, so another sign-in on the same
+   *  device cannot inherit them. */
+  ownerId: string | null
 
   /** Cache merged with anything still queued — what the UI should render. */
   visible: () => Waypoint[]
@@ -72,11 +75,21 @@ export const useWaypoints = create<WaypointState>()(
       loading: false,
       syncing: false,
       lastSyncedAt: null,
+      ownerId: null,
 
       visible: () => merge(get().cache, get().pending),
       pendingCount: () => get().pending.length,
 
       load: async () => {
+        // getSession reads the locally stored session, so this works with no
+        // signal — which is exactly when a stale cache would otherwise show.
+        const uid =
+          (await supabase.auth.getSession()).data.session?.user?.id ?? null
+        if (uid) {
+          if (get().ownerId && get().ownerId !== uid) get().clearLocal()
+          set({ ownerId: uid })
+        }
+
         if (!online()) return
         set({ loading: true })
         try {
@@ -168,13 +181,25 @@ export const useWaypoints = create<WaypointState>()(
           updated_at: now,
         }
 
-        set({ pending: [...get().pending, { kind: 'create', waypoint }] })
+        set({
+          ownerId: uid,
+          pending: [...get().pending, { kind: 'create', waypoint }],
+        })
         await get().flush()
         return waypoint
       },
 
       update: async (id, patch) => {
-        set({ pending: [...get().pending, { kind: 'update', id, patch }] })
+        set({
+          pending: [
+            ...get().pending,
+            {
+              kind: 'update',
+              id,
+              patch: { ...patch, updated_at: new Date().toISOString() },
+            },
+          ],
+        })
         await get().flush()
       },
 
@@ -192,7 +217,8 @@ export const useWaypoints = create<WaypointState>()(
         return n
       },
 
-      clearLocal: () => set({ cache: [], pending: [], lastSyncedAt: null }),
+      clearLocal: () =>
+        set({ cache: [], pending: [], lastSyncedAt: null, ownerId: null }),
 
       photoUrl: async (path) => {
         const { data, error } = await supabase.storage
@@ -208,6 +234,7 @@ export const useWaypoints = create<WaypointState>()(
         cache: s.cache,
         pending: s.pending,
         lastSyncedAt: s.lastSyncedAt,
+        ownerId: s.ownerId,
       }),
     },
   ),

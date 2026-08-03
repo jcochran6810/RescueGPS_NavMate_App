@@ -11,11 +11,14 @@ import { Button, Card, EmptyState, Input, Label, Spinner } from '@/components/ui
 import type { Waypoint } from '@/lib/types'
 
 export function WaypointsTab() {
-  const { visible, create, remove, update, load, loading } = useWaypoints()
+  const { visible, create, load, loading } = useWaypoints()
   const once = useTracker((s) => s.once)
-  const { activeTeamId, teams, members } = useTeams()
+  const { activeTeamId, teams, members, myRole } = useTeams()
   const userId = useAuth((s) => s.user?.id)
   const online = useOnline()
+
+  const role = myRole(userId)
+  const isAdmin = role === 'owner' || role === 'admin'
 
   const [name, setName] = useState('')
   const [lat, setLat] = useState('')
@@ -236,85 +239,202 @@ export function WaypointsTab() {
         </EmptyState>
       ) : (
         <ul className="space-y-2">
-          {shown.map((w) => {
-            const savedBy = nameFor(w)
-            return (
-              <li key={w.id}>
-                <Card>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate font-semibold text-slate-50">
-                        {w.name}
-                      </div>
-                      <div className="tnum text-sm text-slate-400">
-                        {toDD(w.lat)}, {toDD(w.lon)}
-                      </div>
-                      <div className="tnum text-xs text-slate-500">
-                        {toDMS(w.lat, 'lat')} {toDMS(w.lon, 'lon')}
-                      </div>
-                      {savedBy && (
-                        <div className="mt-1 text-xs text-sky-300/80">
-                          Saved by {savedBy}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 flex-col gap-1.5">
-                      <button
-                        onClick={async () => {
-                          const text = `${w.name}: ${toDD(w.lat)}, ${toDD(w.lon)}`
-                          try {
-                            await navigator.clipboard.writeText(text)
-                            toast('Copied', 'success')
-                          } catch {
-                            toast(text)
-                          }
-                        }}
-                        className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
-                      >
-                        Copy
-                      </button>
-                      {activeTeamId && w.team_id === activeTeamId && w.user_id === userId && (
-                        <button
-                          onClick={() => void update(w.id, { team_id: null })}
-                          className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
-                        >
-                          Unshare
-                        </button>
-                      )}
-                      {!activeTeamId && <ShareButton waypointId={w.id} />}
-                      <button
-                        onClick={() => {
-                          if (!confirm(`Delete “${w.name}”?`)) return
-                          void remove(w.id)
-                          toast('Waypoint deleted')
-                        }}
-                        className="rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/10"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-
-                  {w.note && (
-                    <p className="mt-2 text-sm whitespace-pre-wrap text-slate-300">
-                      {w.note}
-                    </p>
-                  )}
-
-                  {w.photos.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {w.photos.map((p) => (
-                        <WaypointPhoto key={p} path={p} />
-                      ))}
-                    </div>
-                  )}
-                </Card>
-              </li>
-            )
-          })}
+          {shown.map((w) => (
+            <li key={w.id}>
+              <WaypointCard
+                waypoint={w}
+                savedBy={nameFor(w)}
+                // Matches the RLS rule: your own waypoints, or anything in a
+                // team you administer. Offering a control the database would
+                // refuse would leave a failed write stuck at the head of the
+                // offline queue.
+                canEdit={w.user_id === userId || (isAdmin && w.team_id !== null)}
+                activeTeamId={activeTeamId}
+              />
+            </li>
+          ))}
         </ul>
       )}
     </div>
+  )
+}
+
+/** One saved waypoint, with an inline edit form for whoever may change it. */
+function WaypointCard({
+  waypoint: w,
+  savedBy,
+  canEdit,
+  activeTeamId,
+}: {
+  waypoint: Waypoint
+  savedBy: string | null
+  canEdit: boolean
+  activeTeamId: string | null
+}) {
+  const update = useWaypoints((s) => s.update)
+  const remove = useWaypoints((s) => s.remove)
+  const userId = useAuth((s) => s.user?.id)
+
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({
+    name: w.name,
+    lat: toDD(w.lat),
+    lon: toDD(w.lon),
+    note: w.note,
+  })
+
+  function beginEdit() {
+    setDraft({ name: w.name, lat: toDD(w.lat), lon: toDD(w.lon), note: w.note })
+    setEditing(true)
+  }
+
+  async function commit() {
+    const lat = parseCoord(draft.lat, 'lat')
+    const lon = parseCoord(draft.lon, 'lon')
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      toast('Enter a valid latitude and longitude', 'error')
+      return
+    }
+    const name = draft.name.trim() || 'Waypoint'
+    const note = draft.note.trim()
+    setEditing(false)
+
+    // Send only what actually changed, so two people editing different fields
+    // of the same shared waypoint do not overwrite each other.
+    const patch: Partial<Waypoint> = {}
+    if (name !== w.name) patch.name = name
+    if (note !== w.note) patch.note = note
+    if (lat !== w.lat) patch.lat = lat
+    if (lon !== w.lon) patch.lon = lon
+    if (Object.keys(patch).length === 0) return
+
+    await update(w.id, patch)
+    toast('Waypoint updated', 'success')
+  }
+
+  if (editing) {
+    return (
+      <Card>
+        <Label>Edit waypoint</Label>
+        <Input
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          placeholder="Name"
+          maxLength={200}
+          aria-label="Waypoint name"
+        />
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Input
+            value={draft.lat}
+            onChange={(e) => setDraft({ ...draft, lat: e.target.value })}
+            placeholder="Latitude"
+            inputMode="decimal"
+            aria-label="Latitude"
+          />
+          <Input
+            value={draft.lon}
+            onChange={(e) => setDraft({ ...draft, lon: e.target.value })}
+            placeholder="Longitude"
+            inputMode="decimal"
+            aria-label="Longitude"
+          />
+        </div>
+        <textarea
+          value={draft.note}
+          onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+          placeholder="Notes…"
+          rows={2}
+          aria-label="Notes"
+          className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+        />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button variant="ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void commit()}>
+            Save changes
+          </Button>
+        </div>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-semibold text-slate-50">{w.name}</div>
+          <div className="tnum text-sm text-slate-400">
+            {toDD(w.lat)}, {toDD(w.lon)}
+          </div>
+          <div className="tnum text-xs text-slate-500">
+            {toDMS(w.lat, 'lat')} {toDMS(w.lon, 'lon')}
+          </div>
+          {savedBy && (
+            <div className="mt-1 text-xs text-sky-300/80">Saved by {savedBy}</div>
+          )}
+        </div>
+        <div className="flex shrink-0 flex-col gap-1.5">
+          <button
+            onClick={async () => {
+              const text = `${w.name}: ${toDD(w.lat)}, ${toDD(w.lon)}`
+              try {
+                await navigator.clipboard.writeText(text)
+                toast('Copied', 'success')
+              } catch {
+                toast(text)
+              }
+            }}
+            className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+          >
+            Copy
+          </button>
+          {canEdit && (
+            <button
+              onClick={beginEdit}
+              className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+            >
+              Edit
+            </button>
+          )}
+          {activeTeamId && w.team_id === activeTeamId && w.user_id === userId && (
+            <button
+              onClick={() => void update(w.id, { team_id: null })}
+              className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+            >
+              Unshare
+            </button>
+          )}
+          {!activeTeamId && w.user_id === userId && (
+            <ShareButton waypointId={w.id} />
+          )}
+          {canEdit && (
+            <button
+              onClick={() => {
+                if (!confirm(`Delete “${w.name}”?`)) return
+                void remove(w.id)
+                toast('Waypoint deleted')
+              }}
+              className="rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/10"
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      </div>
+
+      {w.note && (
+        <p className="mt-2 text-sm whitespace-pre-wrap text-slate-300">{w.note}</p>
+      )}
+
+      {w.photos.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {w.photos.map((p) => (
+            <WaypointPhoto key={p} path={p} />
+          ))}
+        </div>
+      )}
+    </Card>
   )
 }
 

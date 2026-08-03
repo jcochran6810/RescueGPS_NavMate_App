@@ -11,6 +11,7 @@ interface TrackerState {
 
   start: () => void
   stop: () => void
+  clearTrail: () => void
   once: () => Promise<Fix | null>
 }
 
@@ -80,6 +81,8 @@ export const useTracker = create<TrackerState>((set, get) => ({
     }
     set({ watching: false })
   },
+
+  clearTrail: () => set({ trail: [] }),
 
   once: () =>
     new Promise<Fix | null>((resolve) => {

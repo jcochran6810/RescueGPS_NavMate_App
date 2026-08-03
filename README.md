@@ -14,12 +14,14 @@ nothing else — separate codebase, separate hosting project, separate database.
   accuracy and altitude.
 - **ETA** — distance, bearing and time to a saved waypoint, in NM / mi / km,
   using GPS speed or a manual override.
-- **Waypoints** — name, notes and photos. Private to your account by default,
-  or shared with a team.
+- **Track recording** — every fix taken while tracking is kept as a breadcrumb,
+  with distance travelled and elapsed time, exportable as a GPX track.
+- **Waypoints** — name, coordinates, notes and photos, all editable after the
+  fact. Private to your account by default, or shared with a team.
 - **Teams** — create a team, share the 6-character join code, and everyone on
   it sees the same waypoints. Owner / admin / member roles.
-- **Data** — export JSON, GPX or CSV; import JSON or GPX; email a plain-text
-  list.
+- **Data** — export JSON, GPX or CSV for the current scope or the whole
+  account; import JSON, GPX or CSV; email a plain-text list.
 - **Offline** — installable as a PWA. The app shell and your waypoints are
   cached, and edits made without signal are queued and synced on reconnect.
 
