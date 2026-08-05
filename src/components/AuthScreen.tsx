@@ -54,16 +54,14 @@ export function AuthScreen() {
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
           {/* The full logo, wordmark included — the sign-in screen is the one
-              place with the width to carry it. */}
+              place with the width to carry it. Its navy field is knocked out,
+              so it sits straight on the page background. */}
           <img
             src="/logo.png"
             alt="RescueGPS"
             width={480}
-            height={470}
-            // The artwork carries its own navy field, which is lighter than
-            // the app's. Rounding it makes that read as a deliberate badge
-            // rather than as a rectangle someone forgot to cut out.
-            className="mx-auto w-40 max-w-full rounded-2xl shadow-lg shadow-black/30"
+            height={468}
+            className="mx-auto w-44 max-w-full"
           />
           <h1 className="mt-3 text-xl font-semibold text-slate-50">NavMate</h1>
           <p className="mt-1 text-sm text-slate-400">

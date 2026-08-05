@@ -190,8 +190,8 @@ src/store/        Zustand stores: auth, waypoints (offline queue), teams, tracke
 src/components/   shared UI, header, tab bar, auth screen
 src/tabs/         Convert, Track, Waypoints, Team, Data
 supabase/migrations/  schema, RLS policies, storage rules
-brand/            icon-master.png — the emblem, source of every app icon
-scripts/          make-icons.mjs — regenerates the PWA icons from the master
+brand/            emblem.png / logo.png — the artwork every icon derives from
+scripts/          make-icons.mjs — regenerates the icons from the masters
 ```
 
 ### Things to know before changing code
@@ -210,12 +210,17 @@ scripts/          make-icons.mjs — regenerates the PWA icons from the master
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
-- **Icons are generated from one master.** `brand/icon-master.png` is the
-  RescueGPS emblem, cropped square on the brand navy; `scripts/make-icons.mjs`
-  derives `icon-192`, `icon-512` and `icon-maskable-512` from it on every
-  build. Replace the master to change the artwork — never hand-edit the PNGs
-  under `public/`, they are build output. The master lives outside `public/`
-  on purpose: anything in there is published and precached.
+- **Icons are generated from two masters.** `brand/emblem.png` is the
+  RescueGPS cross, `brand/logo.png` the whole logo with the wordmark. Both have
+  their navy field knocked out to transparency, so the artwork takes the colour
+  of whatever is behind it instead of carrying a rectangle of its own.
+  `scripts/make-icons.mjs` derives everything under `public/` from them on
+  every build: the launcher icons opaque on the app background (`#06131f`, the
+  `body` colour in `src/index.css`), and `emblem-192`/`logo` transparent for
+  in-app use. Replace a master to change the artwork — never hand-edit the PNGs
+  under `public/`, they are build output. The masters live outside `public/` on
+  purpose: anything in there is published and precached. If the app background
+  ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
 

@@ -93,9 +93,10 @@ src/
 supabase/
   migrations/   schema, RLS policies, storage rules
 brand/
-  icon-master.png the RescueGPS emblem, source of every app icon
+  emblem.png      the RescueGPS cross, navy field knocked out
+  logo.png        the whole logo including the wordmark
 scripts/
-  make-icons.mjs  regenerates the PWA icons from brand/icon-master.png
+  make-icons.mjs  regenerates every icon in public/ from the two masters
 ```
 
 ## Data model

@@ -10,18 +10,17 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.png', 'icon-512.png', 'logo.png'],
+      includeAssets: ['icon-192.png', 'icon-512.png', 'emblem-192.png', 'logo.png'],
       manifest: {
         name: 'RescueGPS NavMate',
         short_name: 'NavMate',
         description:
           'Coordinate conversion, live GPS tracking, ETA and shared waypoints for search and rescue teams.',
-        // Two different navies on purpose. theme_color tints the system bars
-        // while the app is running, so it matches the app's own header. The
-        // splash sits behind the icon, so it matches the emblem's field and the
-        // cross appears to float rather than sitting in a visible tile.
-        theme_color: '#0b1f33',
-        background_color: '#000d70',
+        // Both the app's own background. The emblem's field is knocked out and
+        // composited onto this same colour, so the launcher tile, the install
+        // splash, the system bars and the app itself are one continuous shade.
+        theme_color: '#06131f',
+        background_color: '#06131f',
         display: 'standalone',
         orientation: 'portrait',
         start_url: '/',

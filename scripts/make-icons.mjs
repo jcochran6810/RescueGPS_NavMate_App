@@ -1,11 +1,15 @@
 /**
- * Generates the app icons from brand/icon-master.png.
+ * Generates the app icons and the in-app logo from the brand masters.
  *
- * The master is the RescueGPS emblem — the Maltese cross with the boat and the
- * position pin — cropped tight and squared on the brand navy. Every icon the
- * app ships is derived from it here rather than exported by hand, so there is
- * one file to replace when the artwork changes and no chance of the sizes
- * drifting apart.
+ * `brand/emblem.png` is the RescueGPS emblem — the Maltese cross with the boat
+ * and the position pin — cropped tight and squared. `brand/logo.png` is the
+ * whole logo, wordmark included. Both have their navy field knocked out to
+ * transparency, so wherever the logo is drawn it takes the colour of whatever
+ * is behind it instead of carrying a rectangle of its own navy.
+ *
+ * Everything the app ships is derived from those two here rather than exported
+ * by hand, so there is one file to replace when the artwork changes and no
+ * chance of the sizes drifting apart.
  *
  * Written without an image library on purpose: this runs in the Vercel build,
  * and a native dependency there is a whole class of deployment failure for
@@ -19,12 +23,19 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PUBLIC = join(ROOT, 'public')
-// The master lives outside public/ deliberately: it is a build input, and
+// The masters live outside public/ deliberately: they are build inputs, and
 // anything under public/ is published and precached by the service worker.
-const MASTER = join(ROOT, 'brand', 'icon-master.png')
+const BRAND = join(ROOT, 'brand')
 
-/** The navy the logo sits on, sampled from the artwork. */
-const NAVY = [0x00, 0x0d, 0x70]
+/**
+ * The app's own background, from `body` in src/index.css.
+ *
+ * A launcher icon cannot be transparent — it would show whatever the launcher
+ * puts behind it — so the emblem is composited onto a tile of exactly this
+ * colour. That makes the installed icon, the install splash and the app itself
+ * one continuous shade instead of three near-misses.
+ */
+const APP_BG = [0x06, 0x13, 0x1f]
 
 /**
  * What the emblem should span, as a fraction of the tile.
@@ -36,6 +47,12 @@ const NAVY = [0x00, 0x0d, 0x70]
  * lose the tips of its arms.
  */
 const INSET = { any: 0.96, maskable: 0.72 }
+
+/**
+ * Width of the in-app logo. It is displayed about 160 px wide on the sign-in
+ * screen, so this covers a three-times display without shipping more.
+ */
+const LOGO_WIDTH = 480
 
 // --- PNG decoding ---------------------------------------------------------
 
@@ -179,13 +196,13 @@ function resize(src, w, h) {
   return { width: w, height: h, rgba: out }
 }
 
-/** Draw `src` centred on a `size`-square navy tile, scaled to `inset`. */
+/** Draw `src` centred on a `size`-square tile of the app background. */
 function tile(src, size, inset) {
   const out = Buffer.alloc(size * size * 4)
   for (let i = 0; i < size * size; i++) {
-    out[i * 4] = NAVY[0]
-    out[i * 4 + 1] = NAVY[1]
-    out[i * 4 + 2] = NAVY[2]
+    out[i * 4] = APP_BG[0]
+    out[i * 4 + 1] = APP_BG[1]
+    out[i * 4 + 2] = APP_BG[2]
     out[i * 4 + 3] = 0xff
   }
 
@@ -281,19 +298,24 @@ function encodePNG({ width, height, rgba }) {
 
 // --- go ------------------------------------------------------------------
 
-const master = decodePNG(readFileSync(MASTER))
-console.log(`master ${master.width}x${master.height}`)
+const emblem = decodePNG(readFileSync(join(BRAND, 'emblem.png')))
+const logo = decodePNG(readFileSync(join(BRAND, 'logo.png')))
+console.log(`emblem ${emblem.width}x${emblem.height}, logo ${logo.width}x${logo.height}`)
 
-const targets = [
-  { name: 'icon-192.png', size: 192, inset: INSET.any },
-  { name: 'icon-512.png', size: 512, inset: INSET.any },
-  { name: 'icon-maskable-512.png', size: 512, inset: INSET.maskable },
-]
-
-for (const { name, size, inset } of targets) {
-  const png = encodePNG(tile(master, size, inset))
+function write(name, png) {
   writeFileSync(join(PUBLIC, name), png)
-  console.log(
-    `wrote ${name} — ${size}px, emblem at ${Math.round(inset * 100)}%, ${png.length} bytes`,
-  )
+  console.log(`wrote ${name} — ${png.length} bytes`)
 }
+
+// Launcher and splash icons: opaque, on the app's background.
+write('icon-192.png', encodePNG(tile(emblem, 192, INSET.any)))
+write('icon-512.png', encodePNG(tile(emblem, 512, INSET.any)))
+write('icon-maskable-512.png', encodePNG(tile(emblem, 512, INSET.maskable)))
+
+// In-app artwork: transparent, so it sits on the page, on a card or under the
+// header's blur without a field of its own showing.
+write('emblem-192.png', encodePNG(resize(emblem, 192, 192)))
+write(
+  'logo.png',
+  encodePNG(resize(logo, LOGO_WIDTH, Math.round((LOGO_WIDTH * logo.height) / logo.width))),
+)
