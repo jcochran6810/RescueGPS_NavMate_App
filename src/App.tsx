@@ -4,6 +4,9 @@ import { useTeams } from '@/store/useTeams'
 import { useTides } from '@/store/useTides'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useAdmin } from '@/store/useAdmin'
+import { useSupport } from '@/store/useSupport'
+import { installErrorReporting } from '@/lib/errlog'
 import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
@@ -13,6 +16,7 @@ import { Toast } from '@/components/Toast'
 import { Spinner } from '@/components/ui'
 import { HomeTab } from '@/tabs/HomeTab'
 import { DatumTab } from '@/tabs/DatumTab'
+import { AdminTab } from '@/tabs/AdminTab'
 import { ConvertTab } from '@/tabs/ConvertTab'
 import { TrackTab } from '@/tabs/TrackTab'
 import { EtaTab } from '@/tabs/EtaTab'
@@ -27,6 +31,9 @@ export default function App() {
   const [tab, setTab] = useState<TabId>('home')
 
   useEffect(() => init(), [init])
+
+  // Runtime errors feed the admin dashboard's health numbers.
+  useEffect(() => installErrorReporting(), [])
 
   // Retry queued writes — and any photos staged offline — as soon as the
   // network comes back.
@@ -47,11 +54,14 @@ export default function App() {
       // unsynced queue, and its ownerId guard stops another account from
       // inheriting it. The tide station pin carries no such protection.
       useTides.getState().reset()
+      useAdmin.getState().reset()
+      useSupport.getState().reset()
       return
     }
     void useTeams.getState().load()
     void useWaypoints.getState().load()
     void useSarRecords.getState().load()
+    void useAdmin.getState().check()
   }, [session])
 
   if (!ready) {
@@ -96,6 +106,7 @@ export default function App() {
         {tab === 'waypoints' && <WaypointsTab />}
         {tab === 'team' && <TeamTab />}
         {tab === 'data' && <DataTab />}
+        {tab === 'admin' && <AdminTab />}
       </main>
 
       {/* Stamping is the one action that can be urgent, so the button sits on

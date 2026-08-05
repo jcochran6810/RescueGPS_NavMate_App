@@ -233,6 +233,50 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 <!-- newest first; append a new dated entry on every "end session" -->
 
+### 2026-08-06 — claude/rescue-gps-datum-app-074wfq (admin dashboard)
+
+"Create an admin dashboard like MyTradeCrate's, jason.cochran@
+universalhazard.com as platform admin, track metrics, take care of requests,
+make user profile changes." The Pressure-washing repo was read first; its
+pattern — `platform_admins` membership + SECURITY DEFINER `is_platform_admin()`
++ per-table "platform admin read" policies + an `admin_actions` audit row on
+every mutation — ports to this serverless SPA verbatim, minus the Next.js API
+routes: here every mutation is an audited SECURITY DEFINER RPC, because this
+app has no server and never a service-role key.
+
+**Schema** (two migrations, applied live): `platform_admins` (seeded by email
+lookup, not a hardcoded uuid — the admin account already existed),
+`support_requests` (kind/subject/body/status/admin_notes; users insert-only
+and read their own; no user update — a filed request is part of the record),
+`admin_actions` (append-only), `app_errors` (any signed-in client inserts,
+admin reads), admin read policies on profiles/teams/team_members/waypoints/
+sar_records, and RPCs `admin_metrics()`, `admin_list_users()`,
+`admin_update_profile()`, `admin_update_request()` — each check
+is_platform_admin() inside and write their own audit row. EXECUTE revoked
+from public/anon everywhere.
+
+**UI:** a Platform admin section, listed in the menu only for admins (the
+database enforces regardless): metrics grid (users + new/active, teams,
+waypoints + photos, datum records by kind, open requests, app errors 24h/7d,
+photo storage), the request queue (Needs action / Resolved / Dismissed
+filters, note back to the requester, Start/Reopen/Resolve/Dismiss), accounts
+with inline profile edit (name + callsign via the audited RPC), and the
+recent-actions log. Deliberately online-only — a dashboard is a desk tool;
+it keeps the last numbers and says why when a load fails. Users file
+requests from a "Contact the platform admin" card on the Team page and see
+the admin's note come back under their request. MyTradeCrate has no requests
+table at all — this queue is NavMate's own answer to "take care of
+requests". Runtime errors report into `app_errors` via window handlers
+(throttled, deduped, never queued offline, silent on failure).
+
+**Verification:** 193 tests still green; 12-check headless-Chromium drive of
+the production build with a stubbed Supabase: non-admin never sees the menu
+entry and files/sees own requests; admin sees metrics, works the queue with a
+note, edits a profile, and both mutations land in the audit log. One find on
+the way: Playwright route stubs don't intercept service-worker fetches — the
+drive blocks SWs; noted here because the next person to stub the backend in a
+test will hit the same wall.
+
 ### 2026-08-05 — claude/rescue-gps-datum-app-074wfq
 
 "Do a full code based analysis, fix bugs and dead ends, finish the planned

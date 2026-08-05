@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTeams } from '@/store/useTeams'
 import { useAuth } from '@/store/useAuth'
 import { toast } from '@/store/useToast'
+import { SupportRequests } from '@/components/SupportRequests'
 import { Button, Card, EmptyState, Input, Label } from '@/components/ui'
 import type { TeamRole } from '@/lib/types'
 
@@ -303,6 +304,8 @@ export function TeamTab() {
           You are in “Private” scope — new waypoints stay on your account only.
         </p>
       )}
+
+      <SupportRequests />
     </div>
   )
 }

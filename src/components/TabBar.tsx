@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Sheet } from '@/components/Sheet'
+import { useAdmin } from '@/store/useAdmin'
 
 export const TABS = [
   { id: 'home', label: 'Home', hint: 'Position, daylight and nearby waypoints' },
@@ -12,6 +13,9 @@ export const TABS = [
   { id: 'waypoints', label: 'Waypoints', hint: 'Everything saved, with photos' },
   { id: 'team', label: 'Team', hint: 'Members, join codes and roles' },
   { id: 'data', label: 'Data', hint: 'Import, export and email' },
+  // Only rendered for platform admins — and that is cosmetic; the database
+  // enforces it whether or not the entry shows.
+  { id: 'admin', label: 'Platform admin', hint: 'Metrics, requests and accounts', adminOnly: true },
 ] as const
 
 export type TabId = (typeof TABS)[number]['id']
@@ -36,6 +40,8 @@ export function TabBar({
   onChange: (id: TabId) => void
 }) {
   const [open, setOpen] = useState(false)
+  const isAdmin = useAdmin((s) => s.isAdmin)
+  const tabs = TABS.filter((t) => !('adminOnly' in t) || isAdmin === true)
   const current = TABS.find((t) => t.id === active) ?? TABS[0]
 
   return (
@@ -61,7 +67,7 @@ export function TabBar({
             Go to
           </span>
           <ul role="menu" className="space-y-1 pb-1">
-            {TABS.map((t) => (
+            {tabs.map((t) => (
               <li key={t.id} role="none">
                 <button
                   role="menuitem"

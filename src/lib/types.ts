@@ -123,6 +123,75 @@ export type NewSarRecord = Pick<
   'kind' | 'lat' | 'lon' | 'recorded_at' | 'payload' | 'note'
 > & { team_id?: string | null }
 
+/* -------------------------------------------------------------------------
+ * Platform admin
+ * ---------------------------------------------------------------------- */
+
+export type RequestKind = 'help' | 'account' | 'team' | 'data' | 'bug' | 'other'
+export type RequestStatus = 'open' | 'in_progress' | 'resolved' | 'dismissed'
+
+export interface SupportRequest {
+  id: string
+  user_id: string
+  kind: RequestKind
+  subject: string
+  body: string
+  status: RequestStatus
+  admin_notes: string
+  resolved_at: string | null
+  resolved_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** What admin_metrics() returns. */
+export interface AdminMetrics {
+  users_total: number
+  users_new_7d: number
+  users_new_30d: number
+  users_active_7d: number
+  teams_total: number
+  team_members_total: number
+  waypoints_total: number
+  waypoints_7d: number
+  photos_total: number
+  sar_records_total: number
+  sar_records_7d: number
+  sar_by_kind: Record<string, number>
+  requests_open: number
+  requests_in_progress: number
+  requests_total: number
+  errors_24h: number
+  errors_7d: number
+  storage_bytes: number
+  generated_at: string
+}
+
+/** One row of admin_list_users(). */
+export interface AdminUser {
+  user_id: string
+  email: string
+  full_name: string
+  callsign: string
+  created_at: string
+  last_sign_in_at: string | null
+  team_count: number
+  waypoint_count: number
+  sar_record_count: number
+  open_requests: number
+  is_admin: boolean
+}
+
+export interface AdminAction {
+  id: string
+  admin_user_id: string | null
+  action: string
+  target_kind: string | null
+  target_id: string | null
+  payload: Record<string, unknown>
+  created_at: string
+}
+
 export interface Fix {
   lat: number
   lon: number

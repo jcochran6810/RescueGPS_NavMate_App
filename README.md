@@ -65,6 +65,15 @@ nothing else — separate codebase, separate hosting project, separate database.
   account; import JSON, GPX or CSV; email a plain-text list.
 - **Offline** — installable as a PWA. The app shell and your waypoints are
   cached, and edits made without signal are queued and synced on reconnect.
+- **Platform admin** — a dashboard (visible only to the platform admin)
+  tracking users, activity, teams, waypoints, datum records, photo storage
+  and app errors; a support-request queue users file into from the Team page
+  (help, account changes, team problems, bugs) with admin notes back; and
+  user profile management. Every admin change is written to an append-only
+  audit log. Ported from the MyTradeCrate admin-dashboard pattern to a
+  serverless SPA: admin reads are RLS-granted to the admin's own JWT, and
+  every mutation is an audited SECURITY DEFINER RPC — no service-role key
+  exists anywhere in this app.
 
 ## Stack
 
@@ -124,6 +133,10 @@ scripts/
 | `team_members` | roster with `owner` / `admin` / `member` roles |
 | `waypoints` | `team_id` null means private; otherwise visible to that team |
 | `sar_records` | LKP, clues, drift markers and conditions — the datum data. Carries `client_id` (RescueGPS's offline-sync idempotency contract) and `recorded_at` separate from `created_at`, so each kind projects onto the matching RescueGPS table (`lkp_history`, `field_events`, `field_drift_data`, `weather_snapshots`) when the databases merge |
+| `platform_admins` | who may use the admin dashboard; seeded by email |
+| `support_requests` | user → platform-admin requests, with status and admin notes |
+| `admin_actions` | append-only audit of every admin mutation |
+| `app_errors` | runtime errors reported by clients, counted in admin metrics |
 
 Photos are stored in the private `waypoint-photos` bucket under
 `{user_id}/{waypoint_id}/{file}` and served through short-lived signed URLs.
