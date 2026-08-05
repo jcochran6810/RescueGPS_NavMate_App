@@ -216,6 +216,106 @@ scripts/          make-icons.mjs — regenerates PWA icons from public/icon.svg
 
 <!-- newest first; append a new dated entry on every "end session" -->
 
+### 2026-08-05 — claude/daylight-tides-home-page-jlrznj
+
+Opened with a screenshot of another app's GPS page and "add the daylight
+tracker function and the tides near me function to the home page". There was no
+home page — the app opened on Convert — so one was built, and the session then
+grew by request into compass, waypoints, ETA, navigation and three bugs.
+
+**New pages.** The app opens on **Home** (position in DDM/DMS/DD, daylight
+countdown, nearest waypoints). **Tides**, **Compass** and **ETA to waypoint**
+each became their own section on request, and each takes its own position fix
+because any of them can be reached from the menu without passing through Home.
+
+**Daylight tracker** (`src/lib/sun.ts`) — countdown to the next dawn, sunrise,
+sunset or dusk, plus all four times and the length of the day. Computed on the
+device on purpose: a crew out of coverage is exactly the crew that needs to
+know how much light is left. Dawn and dusk are civil twilight, which is what
+bounds a daylight search. Polar day and night return null rather than
+inventing a time. Checked against published times for Houston on 2026-08-06 —
+06:17 / 06:43 / 20:12 / 20:38 — which is what the app renders, matching the
+screenshot the session opened with.
+
+**Tides near me** (`src/lib/tides.ts`, `src/store/useTides.ts`) — high and low
+water from the nearest NOAA CO-OPS station, with the distance and bearing to
+that station shown rather than hidden, so a gauge 200 NM away is visibly not
+"the tide here". Requested in GMT and converted for display; asking for
+station-local time would be hours wrong whenever the phone is in a different
+zone. Station list cached 30 days so nearest-station lookups survive losing
+signal. **Never exercised live** — the sandbox proxy 403s
+`api.tidesandcurrents.noaa.gov`. On the fix list.
+
+**Compass** (`src/store/useHeading.ts`) — rose turning under a fixed lubber
+line, magnetometer first with GPS course as fallback, naming which it is using
+because one works standing still and the other does not. Headings smoothed as
+a unit vector so the needle does not swing to south crossing north.
+
+**ETA and 60 D Street** (`src/lib/sixtydst.ts`) — `60 × D = S × T`, NM, knots,
+minutes. Fill any two, get the third, with the sum printed rather than only
+the answer. Zero is treated as missing, not as a value: a speed of zero never
+arrives. No unit argument anywhere — knots are NM per hour, so a statute mile
+in D is a wrong answer that looks right.
+
+**Stamping and photos.** "Stamp my position" is fixed in the footer on every
+screen and opens a sheet for name, notes and a photograph. The fix is written
+before anything is typed, so walking away mid-sentence costs a caption, not a
+location. Photos can now be attached to a waypoint that already exists, from
+the sheet or from Edit.
+
+**Navigation.** Eight sections would not fit a phone as a tab row, so it became
+one control naming the current section that opens a list of all of them. The
+sheet behind it and the stamp form are one component
+(`src/components/Sheet.tsx`) owning the portal, Escape and scroll lock. Both
+are portalled because the footer's backdrop blur becomes the containing block
+for anything fixed inside it.
+
+**Three bugs, all found by driving the built app in a browser rather than by
+reading it**
+- **Track tab painted nothing.** `useWaypoints.visible()` built a new array on
+  every call and was read as a Zustand selector, so React saw the store change
+  on every render and looped forever. The merge is memoised on its inputs, with
+  a regression test.
+- **Waypoints could not be created offline.** `create()` identified the user
+  with `supabase.auth.getUser()`, which asks the server; with no signal it
+  returned nothing and gave up *before* reaching the offline queue that exists
+  for exactly that case. Now reads the stored session, as `load()` already did.
+  Caught because the stamp button silently did nothing in a sandbox with no
+  network.
+- **Creating a team died on a self-healing error.** PostgREST's `PGRST002`
+  ("Could not query the database for the schema cache. Retrying.") was shown
+  verbatim and treated as final. The database was checked first rather than
+  guessed at: `create_team` ran correctly as the signed-in user inside a
+  transaction that rolled back clean, so nothing was wrong with the schema.
+  `src/lib/retry.ts` now retries the transient classes — PGRST000/001/002 and
+  502/503/504 — four times over about seven seconds, and deliberately does not
+  retry an RLS refusal (a decision), a statement timeout (already too slow) or
+  a lost connection (the queue handles that, and seven seconds of retrying only
+  delays the truth). The Team page also stopped asserting "You are not on a
+  team yet" when the load had failed — it could not tell that apart from an
+  empty list and stated the more alarming of the two as fact.
+
+**Track recording** gained a user-set interval (10/15/20/30 s) and the path is
+drawn north-up, scaled to fit, waypoints marked, with a scale bar. It is a
+plot, not a map — tiles need a connection at the moment you may not have one.
+
+Tests 174, up from 65. Typecheck, lint and build clean throughout.
+
+**Verification note.** Everything above was exercised in headless Chromium
+against the production build with a seeded session: all sections paint, the
+stamp button holds position through a scroll on every one of them, the menu
+closes on Escape and on a backdrop tap, the tracker recorded real breadcrumbs
+from simulated movement, and the retry was driven with a stubbed API returning
+the real PGRST002 body. Supabase and NOAA remain blocked from this sandbox, so
+signed-in sync and live tide data are still unverified end to end.
+
+**Supabase.** Project `puzwcsrtqtbutypzozvu` is now named `RescueGPS NavMate`
+(that fix-list item is done). It pauses when idle, which is what produced the
+PGRST002 — worth a plan that stays warm before anyone relies on this
+operationally. A second project named `rescuegps-production`
+(`ekhvfypxuxskjglwwoqh`) exists in the org and is *not* the one the app uses;
+the name will mislead someone later.
+
 ### 2026-08-05 — claude/html-refactor-features-c0oebh
 
 Session opened with "the HTML files don't need to stay HTML — make everything
