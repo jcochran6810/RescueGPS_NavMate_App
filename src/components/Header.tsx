@@ -24,13 +24,26 @@ export function Header() {
           alt=""
           width={192}
           height={192}
-          className="size-6 shrink-0"
+          // Hidden on the narrowest screens. With both status badges showing
+          // there is not room for the mark and the full name at 320 px, and the
+          // name is what identifies the app — this image is decorative, which
+          // is why it has no alt text.
+          className="size-6 shrink-0 max-[359px]:hidden"
         />
-        <span className="font-semibold tracking-tight text-slate-50">
-          RescueGPS
+        {/* NavMate is the field app; RescueGPS is the system it reports into.
+            Naming both, with the product name secondary, says which is which
+            without spending the width of a second line on it. `min-w-0` lets
+            this give way to the status badges rather than pushing them off the
+            edge of a narrow phone. */}
+        {/* Steps down rather than truncating: with both status badges showing,
+            "RescueGPS NavMate" does not fit a 320 px screen at 14 px, and
+            losing the product name to an ellipsis defeats the point of it. */}
+        <span className="min-w-0 truncate text-xs tracking-tight min-[360px]:text-sm sm:text-base">
+          <span className="font-semibold text-slate-50">RescueGPS</span>{' '}
+          <span className="font-medium text-sky-300">NavMate</span>
         </span>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {!online && (
             <span className="rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-300">
               Offline

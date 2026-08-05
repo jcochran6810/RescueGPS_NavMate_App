@@ -3,6 +3,12 @@
 Coordinate conversion, live GPS tracking, ETA and shared waypoints for search
 and rescue teams. Runs at **https://rescuegps.stationinsight.com**.
 
+**NavMate is the field app.** It is what a crew carries: it collects position,
+waypoints, notes and photographs where the work happens, holds them when there
+is no signal, and sends them on to **RescueGPS**, the system that does the
+heavier work with them. Everything here is built around that job — capture
+first, sync second, and never lose a fix waiting for a network.
+
 This is a standalone app. It shares a subdomain with stationinsight.com and
 nothing else — separate codebase, separate hosting project, separate database.
 

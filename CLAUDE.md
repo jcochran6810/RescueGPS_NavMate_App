@@ -7,6 +7,13 @@ backed by Supabase, served at `rescuegps.stationinsight.com`. It shares a
 parent domain with Station Insight and nothing else — separate repo, separate
 hosting project, separate database.
 
+**NavMate is the field app, RescueGPS is the system it reports into.** NavMate's
+job is collecting data where the work happens — position, waypoints, notes,
+photographs — holding it when there is no signal, and sending it on. That is why
+capture is always allowed to succeed offline and sync is always the thing that
+waits, not the other way round. Keep that ordering when adding anything that
+writes.
+
 ## Branch model
 
 - `main` is the **release branch**. Once the Vercel project is connected to
