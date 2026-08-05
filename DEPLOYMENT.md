@@ -4,8 +4,10 @@ Target: **https://rescuegps.stationinsight.com**
 
 ## What is already done
 
-- Code is on GitHub: `jcochran6810/RescueGPS_NavMate_App`, branch
-  `claude/rescuegps-subdomain-setup-gchtnn`.
+- Code is on GitHub: `jcochran6810/RescueGPS_NavMate_App`, release branch
+  `main`.
+- The Vercel project **exists**: `rescuegps-navmate`, imported from the repo,
+  production branch set to `main`. Pushes to `main` deploy automatically.
 - Supabase project `puzwcsrtqtbutypzozvu` has the full schema, RLS policies and
   the `waypoint-photos` storage bucket applied. The database is empty and ready.
 - `vercel.json` pins the framework, build command, output directory, SPA
@@ -18,7 +20,13 @@ Target: **https://rescuegps.stationinsight.com**
 These four steps need a logged-in Vercel/Supabase session, so they can't be
 automated from here.
 
-### 1. Create the Vercel project
+### 1. Create the Vercel project — DONE
+
+Kept for reference, and because the repo's GitHub **default branch** is still
+`claude/rescuegps-subdomain-setup-gchtnn`. A fresh import would inherit that as
+the production branch again, which is exactly what happened the first time.
+Point the default branch at `main` (GitHub → Settings → Branches) to stop that
+recurring.
 
 1. <https://vercel.com/new> → **Import Git Repository**
 2. Pick `jcochran6810/RescueGPS_NavMate_App`
@@ -26,12 +34,20 @@ automated from here.
 4. Leave every build setting alone — `vercel.json` supplies them
 5. **Deploy**
 
-Importing from Git (rather than uploading files) means every push to the branch
-redeploys automatically.
+Importing from Git (rather than uploading files) means every push to the
+production branch redeploys automatically.
 
-> Merge `claude/rescuegps-subdomain-setup-gchtnn` into `main` first if you want
-> production deploys to track `main`. Otherwise set the Production Branch to
-> `claude/rescuegps-subdomain-setup-gchtnn` under **Settings → Git**.
+> **Production branch lives under Settings → Environments → Production**, not
+> Settings → Git. Vercel moved it. The Git page now only holds the repo
+> connection, commit comments, LFS and deploy hooks.
+>
+> The project's `…-git-<branch>-…` alias domain belongs to the *deployment* it
+> was created for, not to the branch setting, so it is not a way to check which
+> branch production tracks. Read the Environments page instead.
+
+Project creation cannot be automated from a Claude Code session: the connected
+Vercel token can read projects but not create them (`403 "You don't have
+permission to create a project."`).
 
 ### 2. Attach the subdomain
 
@@ -65,9 +81,21 @@ configured here, so this must be set or those links will land on the wrong host.
 | Setting | Value |
 |---|---|
 | Site URL | `https://rescuegps.stationinsight.com` |
-| Redirect URLs | `https://rescuegps.stationinsight.com/**` |
+| Redirect URLs | `https://rescuegps.stationinsight.com`, `https://rescuegps.stationinsight.com/**`, `https://rescuegps-navmate.vercel.app/**` |
 
-Add your Vercel preview URL to Redirect URLs too if you want to test there.
+List the **bare origin as well as** the `/**` glob. The app passes
+`window.location.origin` as its redirect (`src/store/useAuth.ts`), which has no
+trailing slash, so a `/**` pattern alone may not match it. Supabase implicitly
+allows the Site URL, so it would probably work anyway — but the failure mode is
+horrible to diagnose, because the email sends fine and only the click is
+rejected.
+
+The `vercel.app` entry lets you test signup before DNS is attached; remove it
+once the subdomain is live if you would rather not leave that host working.
+
+There is no MCP tool for any of this — it is the dashboard, or
+`PATCH /v1/projects/{ref}/config/auth` on the Management API with a personal
+access token.
 
 Also decide, under **Authentication → Sign In / Providers → Email**, whether
 **Confirm email** stays on:
