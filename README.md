@@ -92,8 +92,10 @@ src/
                 Data
 supabase/
   migrations/   schema, RLS policies, storage rules
+brand/
+  icon-master.png the RescueGPS emblem, source of every app icon
 scripts/
-  make-icons.mjs  regenerates the PWA icons from public/icon.svg
+  make-icons.mjs  regenerates the PWA icons from brand/icon-master.png
 ```
 
 ## Data model

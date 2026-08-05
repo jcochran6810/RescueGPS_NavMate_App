@@ -190,7 +190,8 @@ src/store/        Zustand stores: auth, waypoints (offline queue), teams, tracke
 src/components/   shared UI, header, tab bar, auth screen
 src/tabs/         Convert, Track, Waypoints, Team, Data
 supabase/migrations/  schema, RLS policies, storage rules
-scripts/          make-icons.mjs — regenerates PWA icons from public/icon.svg
+brand/            icon-master.png — the emblem, source of every app icon
+scripts/          make-icons.mjs — regenerates the PWA icons from the master
 ```
 
 ### Things to know before changing code
@@ -209,8 +210,12 @@ scripts/          make-icons.mjs — regenerates PWA icons from public/icon.svg
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
-- **Icons are generated, not hand-drawn.** Edit `public/icon.svg`; the PNGs
-  are rebuilt deterministically by `scripts/make-icons.mjs` on every build.
+- **Icons are generated from one master.** `brand/icon-master.png` is the
+  RescueGPS emblem, cropped square on the brand navy; `scripts/make-icons.mjs`
+  derives `icon-192`, `icon-512` and `icon-maskable-512` from it on every
+  build. Replace the master to change the artwork — never hand-edit the PNGs
+  under `public/`, they are build output. The master lives outside `public/`
+  on purpose: anything in there is published and precached.
 
 ## Session log
 

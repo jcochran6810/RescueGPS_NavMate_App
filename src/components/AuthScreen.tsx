@@ -53,12 +53,19 @@ export function AuthScreen() {
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
-          <div className="text-3xl" aria-hidden="true">
-            ◈
-          </div>
-          <h1 className="mt-2 text-xl font-semibold text-slate-50">
-            RescueGPS NavMate
-          </h1>
+          {/* The full logo, wordmark included — the sign-in screen is the one
+              place with the width to carry it. */}
+          <img
+            src="/logo.png"
+            alt="RescueGPS"
+            width={480}
+            height={470}
+            // The artwork carries its own navy field, which is lighter than
+            // the app's. Rounding it makes that read as a deliberate badge
+            // rather than as a rectangle someone forgot to cut out.
+            className="mx-auto w-40 max-w-full rounded-2xl shadow-lg shadow-black/30"
+          />
+          <h1 className="mt-3 text-xl font-semibold text-slate-50">NavMate</h1>
           <p className="mt-1 text-sm text-slate-400">
             Coordinates, tracking and shared waypoints for SAR teams.
           </p>
