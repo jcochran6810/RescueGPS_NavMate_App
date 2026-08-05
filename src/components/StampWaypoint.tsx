@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useWaypoints } from '@/store/useWaypoints'
@@ -7,6 +6,7 @@ import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
 import { toDD } from '@/lib/coords'
 import { WaypointPhoto } from '@/components/WaypointPhoto'
+import { Sheet } from '@/components/Sheet'
 import { Button, Input, Label, Spinner } from '@/components/ui'
 import type { Waypoint } from '@/lib/types'
 
@@ -138,7 +138,12 @@ export function StampWaypoint() {
       </div>
 
       {stamped && (
-        <StampSheet onDismiss={() => void done()}>
+        <Sheet
+          label="Add detail to the stamped waypoint"
+          // Dismissing commits rather than discards, so a tap outside the sheet
+          // cannot quietly throw away a note someone has just typed.
+          onDismiss={() => void done()}
+        >
           <Label>Stamped — add detail</Label>
           <p className="tnum mb-2 text-sm text-slate-400">
             {toDD(stamped.lat)}, {toDD(stamped.lon)}
@@ -240,63 +245,9 @@ export function StampWaypoint() {
               Done
             </Button>
           </div>
-        </StampSheet>
+        </Sheet>
       )}
     </>
-  )
-}
-
-/**
- * The detail form, as a sheet over the whole app.
- *
- * It is portalled to the body rather than rendered in place: the footer it is
- * launched from carries a backdrop blur, and a blurred ancestor becomes the
- * containing block for anything fixed inside it, which would trap the sheet in
- * a forty-pixel strip at the bottom of the screen.
- */
-function StampSheet({
-  children,
-  onDismiss,
-}: {
-  children: React.ReactNode
-  onDismiss: () => void
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDismiss()
-    }
-    window.addEventListener('keydown', onKey)
-    // Stop the page behind from scrolling under the sheet.
-    const previous = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      document.body.style.overflow = previous
-    }
-  }, [onDismiss])
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-40 flex items-end bg-black/60"
-      // Dismissing commits rather than discards, so a tap outside the sheet
-      // cannot quietly throw away a note someone has just typed.
-      onClick={onDismiss}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add detail to the stamped waypoint"
-        onClick={(e) => e.stopPropagation()}
-        className="safe-bottom max-h-[85vh] w-full overflow-y-auto rounded-t-2xl border-t border-white/10 bg-navy-900 px-4 pt-4 shadow-2xl shadow-black/50"
-      >
-        <div className="mx-auto max-w-3xl">
-          <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-white/15" />
-          {children}
-        </div>
-      </div>
-    </div>,
-    document.body,
   )
 }
 

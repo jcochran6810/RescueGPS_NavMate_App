@@ -81,8 +81,8 @@ src/
                 import/export, Supabase client
   store/        Zustand stores: auth, waypoints (with offline queue), teams,
                 tracker, tides, heading
-  components/   shared UI, header, tab bar, auth screen, daylight, tides,
-                compass, track plot, stamp
+  components/   shared UI, header, section menu, bottom sheet, auth screen,
+                daylight, tides, compass, track plot, stamp
   tabs/         Home, Track, Tides, Compass, Convert, Waypoints, Team, Data
 supabase/
   migrations/   schema, RLS policies, storage rules

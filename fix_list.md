@@ -8,11 +8,6 @@ Add new items at the top. Use the format:
 
 ## Open
 
-- [ ] 2026-08-05 — Eight sections no longer fit a narrow phone, so the tab row
-      scrolls horizontally below about 390 px. It works and the browser keeps
-      the active tab in view, but sections can sit off-screen. If it grows
-      again, the row needs rethinking — a "more" overflow, or grouping Convert
-      and Data under one heading (src/components/TabBar.tsx).
 
 - [ ] 2026-08-05 — Exercise the **NOAA tide calls in a real browser**. The build
       sandbox's proxy returns 403 for `api.tidesandcurrents.noaa.gov`, so the
