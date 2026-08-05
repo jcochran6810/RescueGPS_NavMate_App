@@ -8,7 +8,19 @@ Add new items at the top. Use the format:
 
 ## Open
 
-
+- [ ] 2026-08-05 — The Supabase project is on a plan that **pauses when idle**,
+      and the first request after a wake gets PostgREST's `PGRST002`
+      ("Could not query the database for the schema cache. Retrying.") for
+      anywhere up to a minute. The app now retries transient errors rather
+      than surfacing that (`src/lib/retry.ts`), which covers the common case,
+      but a crew opening the app cold at an incident should not be waiting on
+      a cold start at all. Decide whether this project needs a plan that stays
+      warm before anyone relies on it operationally.
+- [ ] 2026-08-05 — There is a second Supabase project in the org named
+      `rescuegps-production` (`ekhvfypxuxskjglwwoqh`, created 2025-12-28). The
+      app points at `puzwcsrtqtbutypzozvu` ("RescueGPS NavMate"), which is the
+      one carrying the schema and the live account. Confirm the other one is
+      not wanted and delete it, or the name will mislead someone later.
 - [ ] 2026-08-05 — Exercise the **NOAA tide calls in a real browser**. The build
       sandbox's proxy returns 403 for `api.tidesandcurrents.noaa.gov`, so the
       two live endpoints have never run: the station list and the hi/lo
@@ -52,8 +64,6 @@ Add new items at the top. Use the format:
 - [ ] 2026-08-03 — Decide whether "Confirm email" stays on in Supabase Auth,
       and set up custom SMTP if it does (the built-in sender is rate-limited
       and not for production).
-- [ ] 2026-08-03 — Rename the Supabase project from `plan-review-repeat` to
-      `RescueGPS NavMate` (dashboard only; the management API cannot do it).
 - [ ] 2026-08-03 — Exercise the signed-in flow in a real browser: signup, team
       create/join, waypoint sync, photo upload. Never run end-to-end — the
       build sandbox blocks outbound traffic to `*.supabase.co`.
@@ -69,6 +79,10 @@ Add new items at the top. Use the format:
       story is the hard part and is why it wasn't rushed into the first pass.
 
 ## Done
+
+- [x] 2026-08-05 — Rename the Supabase project from `plan-review-repeat` to
+      `RescueGPS NavMate`. Confirmed done — the management API reports the
+      project name as `RescueGPS NavMate`.
 
 - [x] 2026-08-03 — Deploy to Vercel. Project `rescuegps-navmate`
       (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`) was created by the user from the

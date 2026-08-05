@@ -17,6 +17,7 @@ export function TeamTab() {
     members,
     activeTeamId,
     activeTeam,
+    error,
     load,
     createTeam,
     joinTeam,
@@ -53,6 +54,18 @@ export function TeamTab() {
           Share waypoints with the people working the same incident.
         </p>
       </div>
+
+      {error && (
+        <div className="rounded-xl bg-amber-500/10 px-3 py-2.5 text-sm text-amber-300">
+          <p>{error}</p>
+          <button
+            onClick={() => void load()}
+            className="mt-1.5 rounded-lg border border-amber-400/30 px-2.5 py-1 text-xs hover:bg-amber-500/10"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       <Card>
         <Label>Your profile</Label>
@@ -228,9 +241,11 @@ export function TeamTab() {
         </Card>
       ) : (
         <EmptyState>
-          {teams.length === 0
-            ? 'You are not on a team yet. Create one or join with a code.'
-            : 'Pick a team in the bar above to manage it.'}
+          {error
+            ? 'Could not load your teams, so this list may be incomplete.'
+            : teams.length === 0
+              ? 'You are not on a team yet. Create one or join with a code.'
+              : 'Pick a team in the bar above to manage it.'}
         </EmptyState>
       )}
 
