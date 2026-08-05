@@ -3,6 +3,7 @@ import { Sheet } from '@/components/Sheet'
 
 export const TABS = [
   { id: 'home', label: 'Home', hint: 'Position, daylight and nearby waypoints' },
+  { id: 'datum', label: 'Search datum', hint: 'LKP, drift, clues and where to search' },
   { id: 'track', label: 'Live tracking', hint: 'Live position and your path' },
   { id: 'eta', label: 'ETA to waypoint', hint: 'Distance, bearing, time and 60 D = S × T' },
   { id: 'tides', label: 'Tides', hint: 'High and low water near you' },

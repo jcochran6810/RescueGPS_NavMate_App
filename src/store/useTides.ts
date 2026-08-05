@@ -47,6 +47,9 @@ interface TideState {
   reset: () => void
 }
 
+/** The refresh that arrived while another was in flight, if any. */
+let queued: { lat: number; lon: number; force: boolean } | null = null
+
 function message(err: unknown): string {
   if (err instanceof Error) {
     // fetch rejects with a bare TypeError when the network is unreachable,
@@ -80,7 +83,13 @@ export const useTides = create<TideState>()(
       },
 
       refresh: async (lat, lon, force = false) => {
-        if (get().loading) return
+        if (get().loading) {
+          // Remember the newest request instead of dropping it — a position
+          // that crossed a station boundary while a fetch was in flight used
+          // to be lost until the next coincidental coordinate change.
+          queued = { lat, lon, force }
+          return
+        }
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
           set({ error: 'Need a position before tides can be looked up' })
           return
@@ -126,6 +135,10 @@ export const useTides = create<TideState>()(
         } catch (err) {
           // The cached table stays put — stale tides beat no tides.
           set({ loading: false, error: message(err) })
+        } finally {
+          const next = queued
+          queued = null
+          if (next) void get().refresh(next.lat, next.lon, next.force)
         }
       },
 

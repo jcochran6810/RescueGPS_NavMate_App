@@ -8,6 +8,27 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-08-05 — SAR record photos. `sar_records` (clues especially) has no
+      photo path yet; the clue card tells the crew to stamp a waypoint for
+      photographs. Wiring clues to the photo bucket needs a storage-policy
+      change (the team-read policy joins `waypoints`, not `sar_records`).
+- [ ] 2026-08-05 — Photos staged offline live in memory only (upload
+      automatically on reconnect while the app stays open, and the UI says
+      so). Surviving an app reload needs the IndexedDB item below.
+- [ ] 2026-08-05 — An op the server refuses is now set aside after 3 attempts
+      (visible, with Retry/Discard in the Data tab) instead of wedging the
+      queue. A network-level 403 from a proxy/captive portal classifies as
+      "refused" too — recoverable via Retry, but if it shows up in the field
+      the classification in `src/lib/retry.ts` may need a PostgREST-code
+      check.
+- [ ] 2026-08-05 — When the RescueGPS and NavMate databases merge:
+      `sar_records.team_id` maps to incident participation, `lon` to `lng`,
+      and each `kind`'s payload projects onto `lkp_history` /
+      `field_events` / `field_drift_data` / `weather_snapshots`. The
+      migration comment in
+      `supabase/migrations/20260805210000_navmate_sar_records.sql` documents
+      the mapping.
+
 - [ ] 2026-08-05 — The Supabase project is on a plan that **pauses when idle**,
       and the first request after a wake gets PostgREST's `PGRST002`
       ("Could not query the database for the schema cache. Retrying.") for
@@ -32,11 +53,13 @@ Add new items at the top. Use the format:
       first use. It is cached for 30 days and makes nearest-station lookups
       work offline afterwards, but it is a poor first experience on a weak
       cellular link. A pre-slimmed list shipped in the bundle would fix it.
-- [ ] 2026-08-05 — Compass headings from Android's
-      `deviceorientationabsolute` are **magnetic, not true**, and the app says
-      so rather than correcting them — declination needs the WMM model, which
-      is too large to justify so far. iOS reports true north. Decide whether
-      the difference matters enough to carry the model.
+- [ ] 2026-08-05 — Compass headings are **magnetic, not true**, on both
+      platforms, and the app says so rather than correcting them —
+      declination needs the WMM model, which is too large to justify so far.
+      (An earlier note here claimed iOS reports true north; Apple documents
+      `webkitCompassHeading` as relative to magnetic north, and the label
+      was corrected on 2026-08-05.) Decide whether the difference matters
+      enough to carry the model.
 - [ ] 2026-08-05 — Point the **GitHub default branch** at `main`. It is still
       `claude/rescuegps-subdomain-setup-gchtnn`, which is why the Vercel
       import picked that branch for production. Vercel is fixed; GitHub is

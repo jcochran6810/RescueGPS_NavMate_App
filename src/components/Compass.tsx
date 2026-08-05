@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useHeading } from '@/store/useHeading'
 import { useTracker } from '@/store/useTracker'
+import { useTeams } from '@/store/useTeams'
 import { useWaypoints } from '@/store/useWaypoints'
 import {
   bearingDeg,
@@ -41,8 +42,19 @@ export function Compass({
 }) {
   const { heading, permission, listening, magnetic, enable, disable } = useHeading()
   const fix = useTracker((s) => s.fix)
-  const waypoints = useWaypoints((s) => s.visible())
+  const all = useWaypoints((s) => s.visible())
+  const activeTeamId = useTeams((s) => s.activeTeamId)
   const [targetId, setTargetId] = useState('')
+
+  // Same scope as the bearings table below and the rest of the app — the
+  // picker offering a waypoint the table has filtered out reads as a bug.
+  const waypoints = useMemo(
+    () =>
+      all.filter((w) =>
+        activeTeamId ? w.team_id === activeTeamId : w.team_id === null,
+      ),
+    [all, activeTeamId],
+  )
 
   // Stop the sensor when the card goes away — a magnetometer left running is a
   // meaningful drain on a shift-long battery.

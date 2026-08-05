@@ -233,6 +233,81 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 <!-- newest first; append a new dated entry on every "end session" -->
 
+### 2026-08-05 — claude/rescue-gps-datum-app-074wfq
+
+"Do a full code based analysis, fix bugs and dead ends, finish the planned
+features, consult the other RescueGPS repo" — NavMate's job restated as a
+**standalone datum-collecting app for a single unit searching for a victim**,
+reporting into RescueGPS later with shared tables.
+
+**The RescueGPS repos were read first** (`rescuegps-navigator-pro`,
+`rescuegps-backend`). What that established: RescueGPS models a datum as
+LKP + (current × time) + (leeway × time); its drift engine's `simulateDrift`
+takes `lat/lng`, wind FROM in degrees, current TOWARD in degrees, knots, and a
+`leeway_type` key; its field tables (`asset_tracks`, `field_events`) sync
+offline via a UNIQUE `client_id` upsert; and **no table anywhere stores what a
+field unit observes for the drift engine** — the biggest gap in the ecosystem,
+and the thing this session built.
+
+**New: the Search datum section** (`src/tabs/DatumTab.tsx`, `src/lib/sar.ts`,
+`src/store/useSarRecords.ts`, `sar_records` table — migration applied to the
+live project):
+- LKP with the fields the drift engine actually needs and never had a home:
+  position, **time last seen**, source (GPS/witness/estimated), position
+  error, search-object type from the USCG/IAMSAR leeway table (keys match
+  RescueGPS `leeway_type`).
+- On-scene conditions in the engine's conventions — wind FROM, current
+  TOWARD, both labelled, because a swapped convention is a datum on the wrong
+  side of the LKP.
+- Drift markers: deploy at position, retrieve at position, measured set and
+  drift computed and offered back as the current. A real observation beats
+  any forecast.
+- Clue log with position and time.
+- A live worksheet: datum = LKP carried by current + leeway for the time
+  adrift, left/right divergence positions, search radius = 1.1 × RSS(LKP
+  error, nav error, 0.3 × drift). Verified against hand-computed values in
+  headless Chromium.
+- Ties: datum saves as a waypoint (ETA/Compass/Track steer to it); report
+  exports as JSON in RescueGPS field names (`lng`, `simulate_drift_params`)
+  ready for the engine; everything rides an offline queue with the same
+  guarantees as waypoints.
+
+**Bugs fixed (two independent audits, one by an agent reading every file):**
+- `flush()` replaced the queue wholesale from a snapshot — any op queued
+  while a flush was in flight was destroyed. Stamp twice quickly on a slow
+  link and the second waypoint vanished. Now reconciles appended ops.
+- A permanently refused op (RLS, bad row) blocked the queue forever with no
+  UI. Now set aside after 3 attempts, still **visible in the lists** (a
+  refused LKP disappearing reads as data loss — found by driving the build,
+  where the sandbox proxy 403s Supabase), with Retry/Discard in Data.
+- A queue could be replayed under a different account's session. Now guarded.
+- Convert tab: editing one coordinate wiped the other (shared `source`/`raw`
+  state re-parsed both axes from stale text). Per-axis now.
+- "Stamp another" discarded the name/note just typed — commits first now.
+- Offline photos: the toast promised an upload that never happened. Staged
+  photos now upload automatically on reconnect (memory-only; honest copy).
+- Password reset was a dead end — `PASSWORD_RECOVERY` unhandled, no
+  `updateUser(password)` anywhere. New RecoverPassword screen.
+- iOS `webkitCompassHeading` is **magnetic** (Apple docs), was labelled true;
+  the declination warning now shows on the platform that needed it.
+- Tides/Compass stranded on "take a fix" with no error shown and no retry;
+  `addPhotos` concurrent-write erased teammates' photos; waypoint edits
+  re-rounded coordinates on every save; ETA/Compass pickers ignored team
+  scope; import dropped DMS rows silently (now parsed, skipped counted);
+  deleted waypoints leaked their photos in Storage; tide refresh dropped
+  position changes mid-request; daylight countdown blanked after events;
+  sign-out with a queued backlog warns; `icon-512` was precached despite the
+  ignore; `registerSW.js` now no-cache in vercel.json.
+
+Tests 193 (up from 174), plus a 22-check headless-Chromium drive of the
+datum flow against the production build. Typecheck, lint, build clean.
+
+**Supabase:** `sar_records` created on `puzwcsrtqtbutypzozvu` with
+waypoints-style RLS (no anon policy); advisors show nothing new. The
+migration comment documents the column mapping for the eventual merge with
+RescueGPS's database (`ekhvfypxuxskjglwwoqh` carries none of these tables
+yet — its backend has no database at all).
+
 ### 2026-08-05 — claude/daylight-tides-home-page-jlrznj (naming)
 
 Short session. "Add NavMate after the RescueGPS", with the product context that

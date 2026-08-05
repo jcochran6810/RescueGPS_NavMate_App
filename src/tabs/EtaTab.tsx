@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTracker } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useTeams } from '@/store/useTeams'
 import { SixtyDstSolver } from '@/components/SixtyDstSolver'
 import {
   haversineNM,
@@ -32,7 +33,18 @@ const UNITS: { id: DistanceUnit; label: string }[] = [
  */
 export function EtaTab() {
   const { fix, watching, error, once } = useTracker()
-  const waypoints = useWaypoints((s) => s.visible())
+  const all = useWaypoints((s) => s.visible())
+  const activeTeamId = useTeams((s) => s.activeTeamId)
+
+  // Scoped like every other list in the app, so the header's team switcher
+  // means the same thing here as on the Waypoints tab.
+  const waypoints = useMemo(
+    () =>
+      all.filter((w) =>
+        activeTeamId ? w.team_id === activeTeamId : w.team_id === null,
+      ),
+    [all, activeTeamId],
+  )
 
   const [targetId, setTargetId] = useState('')
   const [speedOverride, setSpeedOverride] = useState('')

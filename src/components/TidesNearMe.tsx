@@ -60,9 +60,15 @@ export function TidesNearMe({
   const current = useMemo(() => tideNow(now, extremes), [now, extremes])
   const active = station()
 
+  // Keyed on the coarse position for the same reason as the effect above:
+  // sorting ~3,000 stations on every GPS fix while tracking is live is real
+  // work, and the answer does not change because the boat drifted ten metres.
   const alternatives = useMemo(
-    () => (hasFix ? nearestStations(lat, lon, stations, 5) : []),
-    [hasFix, lat, lon, stations],
+    () =>
+      coarseLat !== null && coarseLon !== null
+        ? nearestStations(coarseLat, coarseLon, stations, 5)
+        : [],
+    [coarseLat, coarseLon, stations],
   )
 
   const activeDistance = alternatives.find((s) => s.id === active?.id)

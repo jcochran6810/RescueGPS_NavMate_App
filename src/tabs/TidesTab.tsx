@@ -14,7 +14,7 @@ import { Card, EmptyState, Label } from '@/components/ui'
  * next two days rather than the next two events.
  */
 export function TidesTab() {
-  const { fix, watching, once } = useTracker()
+  const { fix, watching, error, once } = useTracker()
   const extremes = useTides((s) => s.extremes)
   const now = useNow(30_000)
 
@@ -52,6 +52,20 @@ export function TidesTab() {
           High and low water from the nearest NOAA station.
         </p>
       </div>
+
+      {/* A failed fix used to strand this page on "take a position fix" with
+          no error shown and nothing to press. */}
+      {error && !fix && (
+        <div className="rounded-xl bg-red-500/10 px-3 py-2.5 text-sm text-red-300">
+          <p>{error}</p>
+          <button
+            onClick={() => void once()}
+            className="mt-1.5 rounded-lg border border-red-400/30 px-2.5 py-1 text-xs hover:bg-red-500/10"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       <TidesNearMe lat={lat} lon={lon} />
 

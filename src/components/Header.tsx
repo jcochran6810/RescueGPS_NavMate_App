@@ -92,7 +92,21 @@ export function Header() {
           {who}
         </span>
         <button
-          onClick={() => void signOut()}
+          onClick={() => {
+            // Signing out does not destroy the queue (it stays on the device,
+            // guarded by ownerId), but nothing will sync until this account
+            // signs back in — worth a warning while changes are waiting.
+            if (
+              pending > 0 &&
+              !confirm(
+                `${pending} change${pending === 1 ? '' : 's'} have not synced yet. ` +
+                  'They stay saved on this device and sync next time you sign ' +
+                  'in here. Sign out anyway?',
+              )
+            )
+              return
+            void signOut()
+          }}
           className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-slate-300 hover:bg-white/5"
         >
           Sign out

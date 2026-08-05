@@ -10,6 +10,13 @@ interface AuthState {
   /** False until the initial session lookup has settled. */
   ready: boolean
   busy: boolean
+  /**
+   * True after arriving through a password-reset email link. The session is
+   * live, but the user still cannot sign in anywhere else — the whole point
+   * of the link was to set a new password, so the app must actually offer
+   * that step or the reset flow is a dead end.
+   */
+  recovering: boolean
 
   init: () => () => void
   signUp: (
@@ -21,6 +28,10 @@ interface AuthState {
   signIn: (email: string, password: string) => Promise<{ error?: string }>
   signOut: () => Promise<void>
   sendReset: (email: string) => Promise<{ error?: string }>
+  /** Set a new password for the signed-in (or recovering) user. */
+  updatePassword: (password: string) => Promise<{ error?: string }>
+  /** Leave recovery mode without changing the password. */
+  dismissRecovery: () => void
   loadProfile: () => Promise<void>
   updateProfile: (patch: Partial<Pick<Profile, 'full_name' | 'callsign'>>) =>
     Promise<{ error?: string }>
@@ -32,6 +43,7 @@ export const useAuth = create<AuthState>((set, get) => ({
   profile: null,
   ready: false,
   busy: false,
+  recovering: false,
 
   init: () => {
     supabase.auth
@@ -46,10 +58,11 @@ export const useAuth = create<AuthState>((set, get) => ({
       })
       .catch(() => set({ ready: true }))
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       set({ session, user: session?.user ?? null, ready: true })
+      if (event === 'PASSWORD_RECOVERY') set({ recovering: true })
       if (session) void get().loadProfile()
-      else set({ profile: null })
+      else set({ profile: null, recovering: false })
     })
 
     return () => sub.subscription.unsubscribe()
@@ -93,11 +106,30 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 
   sendReset: async (email) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: window.location.origin,
-    })
-    return error ? { error: errorMessage(error) } : {}
+    set({ busy: true })
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin,
+      })
+      return error ? { error: errorMessage(error) } : {}
+    } finally {
+      set({ busy: false })
+    }
   },
+
+  updatePassword: async (password) => {
+    set({ busy: true })
+    try {
+      const { error } = await supabase.auth.updateUser({ password })
+      if (error) return { error: errorMessage(error) }
+      set({ recovering: false })
+      return {}
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  dismissRecovery: () => set({ recovering: false }),
 
   loadProfile: async () => {
     const uid = get().user?.id ?? get().session?.user.id
