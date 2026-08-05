@@ -1,22 +1,19 @@
 import { useMemo, useState } from 'react'
-import { useTracker } from '@/store/useTracker'
+import { useTracker, INTERVAL_CHOICES } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
+import { TrackPath } from '@/components/TrackPath'
 import {
-  haversineNM,
-  bearingDeg,
   compassPoint,
   formatDistance,
   formatDuration,
-  formatEtaClock,
   formatSpeed,
   trailDistanceNM,
-  MPS_TO_KNOTS,
   type DistanceUnit,
 } from '@/lib/geo'
 import { toDD, toDMS } from '@/lib/coords'
 import { download, trackToGPX } from '@/lib/transfer'
 import { toast } from '@/store/useToast'
-import { Button, Card, Input, Label, Stat } from '@/components/ui'
+import { Button, Card, Label, Stat } from '@/components/ui'
 
 const UNITS: { id: DistanceUnit; label: string }[] = [
   { id: 'nm', label: 'NM' },
@@ -25,14 +22,20 @@ const UNITS: { id: DistanceUnit; label: string }[] = [
 ]
 
 export function TrackTab() {
-  const { fix, watching, error, trail, start, stop, clearTrail } = useTracker()
+  const {
+    fix,
+    watching,
+    error,
+    trail,
+    intervalS,
+    start,
+    stop,
+    clearTrail,
+    setIntervalS,
+  } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
 
-  const [targetId, setTargetId] = useState('')
-  const [speedOverride, setSpeedOverride] = useState('')
   const [unit, setUnit] = useState<DistanceUnit>('nm')
-
-  const target = waypoints.find((w) => w.id === targetId) ?? null
 
   const travelled = useMemo(() => trailDistanceNM(trail), [trail])
   const elapsedH =
@@ -40,29 +43,12 @@ export function TrackTab() {
       ? (trail[trail.length - 1].timestamp - trail[0].timestamp) / 3600_000
       : 0
 
-  const eta = useMemo(() => {
-    if (!fix || !target) return null
-    const distNM = haversineNM(fix.lat, fix.lon, target.lat, target.lon)
-    const brg = bearingDeg(fix.lat, fix.lon, target.lat, target.lon)
-
-    const manual = parseFloat(speedOverride)
-    const speedKn =
-      Number.isFinite(manual) && manual > 0
-        ? manual
-        : fix.speed != null && fix.speed > 0
-          ? fix.speed * MPS_TO_KNOTS
-          : Number.NaN
-
-    const hours = Number.isFinite(speedKn) && speedKn > 0 ? distNM / speedKn : Number.NaN
-    return { distNM, brg, speedKn, hours }
-  }, [fix, target, speedOverride])
-
   return (
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Live tracker</h2>
         <p className="text-sm text-slate-400">
-          Position, speed and time to a saved waypoint.
+          Live position, and the path you have covered.
         </p>
       </div>
 
@@ -118,21 +104,49 @@ export function TrackTab() {
       )}
 
       <Card>
-        <Label>ETA to waypoint</Label>
-        <select
-          value={targetId}
-          onChange={(e) => setTargetId(e.target.value)}
-          className="min-h-11 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 focus:border-sky-400/60 focus:outline-none"
-        >
-          <option value="">— choose a saved waypoint —</option>
-          {waypoints.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </select>
+        <Label>Your path</Label>
+        <TrackPath
+          trail={trail}
+          markers={waypoints.map((w) => ({
+            id: w.id,
+            name: w.name,
+            lat: w.lat,
+            lon: w.lon,
+          }))}
+        />
+        <p className="mt-1.5 text-xs text-slate-500">
+          North up, drawn to fit, with saved waypoints marked. This is a plot of
+          the track itself — there is no basemap under it, because chart tiles
+          need a connection at exactly the moment you may not have one.
+        </p>
+      </Card>
 
-        <div className="mt-3 flex gap-1">
+      <Card>
+        <Label>Track recording</Label>
+
+        <div className="mb-3">
+          <span className="mb-1.5 block text-xs text-slate-400">
+            Record a point every
+          </span>
+          <div className="flex gap-1">
+            {INTERVAL_CHOICES.map((s) => (
+              <button
+                key={s}
+                onClick={() => setIntervalS(s)}
+                className={
+                  'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
+                  (intervalS === s
+                    ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                    : 'border-white/10 text-slate-400 hover:bg-white/5')
+                }
+              >
+                {s}s
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-3 flex gap-1">
           {UNITS.map((u) => (
             <button
               key={u.id}
@@ -149,57 +163,6 @@ export function TrackTab() {
           ))}
         </div>
 
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          <Stat
-            label="Distance"
-            value={eta ? formatDistance(eta.distNM, unit) : '—'}
-          />
-          <Stat
-            label="Bearing"
-            value={
-              eta ? `${Math.round(eta.brg)}° ${compassPoint(eta.brg)}` : '—'
-            }
-          />
-          <Stat
-            label="ETA"
-            value={
-              !eta
-                ? '—'
-                : Number.isFinite(eta.hours)
-                  ? formatDuration(eta.hours)
-                  : 'need speed'
-            }
-            hint={
-              eta && Number.isFinite(eta.hours)
-                ? formatEtaClock(eta.hours) || undefined
-                : undefined
-            }
-          />
-        </div>
-
-        <div className="mt-3">
-          <Label>Manual speed override (knots)</Label>
-          <Input
-            value={speedOverride}
-            onChange={(e) => setSpeedOverride(e.target.value)}
-            placeholder="Blank uses GPS speed"
-            inputMode="decimal"
-          />
-          {!fix && (
-            <p className="mt-1.5 text-xs text-slate-500">
-              Start tracking to get a position fix.
-            </p>
-          )}
-          {fix && !target && (
-            <p className="mt-1.5 text-xs text-slate-500">
-              Choose a waypoint to see distance and ETA.
-            </p>
-          )}
-        </div>
-      </Card>
-
-      <Card>
-        <Label>Track recording</Label>
         <div className="grid grid-cols-3 gap-2">
           <Stat label="Points" value={String(trail.length)} />
           <Stat
@@ -240,9 +203,10 @@ export function TrackTab() {
           </Button>
         </div>
         <p className="mt-1.5 text-xs text-slate-500">
-          Fixes are recorded while tracking is on, up to 2000 points, and kept
-          until you clear them or reload the app. Movement smaller than the GPS
-          accuracy is ignored so a stationary phone does not accumulate
+          While tracking is on a breadcrumb is dropped every {intervalS} seconds,
+          up to 2000 of them, and kept until you clear them or reload the app.
+          The live readout above still follows every fix. Movement smaller than
+          the GPS accuracy is ignored so a stationary phone does not accumulate
           distance.
         </p>
       </Card>

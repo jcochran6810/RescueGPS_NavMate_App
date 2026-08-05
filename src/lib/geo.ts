@@ -48,6 +48,25 @@ export function compassPoint(deg: number): string {
   return COMPASS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16]
 }
 
+/**
+ * Where a bearing sits relative to the way you are facing, -180 to 180.
+ *
+ * Positive is to starboard, negative to port. This is what turns a compass
+ * bearing into an arrow on the screen that means "that way" rather than one
+ * the crew has to do arithmetic on.
+ */
+export function relativeBearing(bearing: number, heading: number): number {
+  if (!Number.isFinite(bearing) || !Number.isFinite(heading)) return Number.NaN
+  return ((((bearing - heading) % 360) + 540) % 360) - 180
+}
+
+/** A bearing as `137° SE`, or an em dash when it is unknown. */
+export function formatBearing(deg: number): string {
+  if (!Number.isFinite(deg)) return '—'
+  const norm = ((deg % 360) + 360) % 360
+  return `${Math.round(norm)}° ${compassPoint(norm)}`
+}
+
 export type DistanceUnit = 'nm' | 'mi' | 'km'
 
 export function formatDistance(nm: number, unit: DistanceUnit): string {

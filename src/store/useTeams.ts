@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { supabase, errorMessage } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { retrying, describeError } from '@/lib/retry'
 import type { Team, TeamMember, TeamRole } from '@/lib/types'
 
 const ACTIVE_TEAM_KEY = 'navmate.activeTeamId'
@@ -10,6 +11,12 @@ interface TeamState {
   /** null = "Private", i.e. waypoints visible only to this account. */
   activeTeamId: string | null
   loading: boolean
+  /**
+   * Why the last load failed, or null. Without this the page cannot tell
+   * "you are on no teams" apart from "we could not find out", and it was
+   * confidently saying the first when the second was true.
+   */
+  error: string | null
 
   activeTeam: () => Team | null
   myRole: (userId: string | undefined) => TeamRole | null
@@ -32,6 +39,7 @@ export const useTeams = create<TeamState>((set, get) => ({
   members: [],
   activeTeamId: localStorage.getItem(ACTIVE_TEAM_KEY) || null,
   loading: false,
+  error: null,
 
   activeTeam: () => get().teams.find((t) => t.id === get().activeTeamId) ?? null,
 
@@ -46,10 +54,12 @@ export const useTeams = create<TeamState>((set, get) => ({
   load: async () => {
     set({ loading: true })
     try {
-      const { data, error } = await supabase
-        .from('teams')
-        .select('*')
-        .order('created_at', { ascending: true })
+      const { data, error } = await retrying(() =>
+        supabase
+          .from('teams')
+          .select('*')
+          .order('created_at', { ascending: true }),
+      )
       if (error) throw error
 
       const teams = (data ?? []) as Team[]
@@ -57,22 +67,26 @@ export const useTeams = create<TeamState>((set, get) => ({
       const active = teams.some((t) => t.id === get().activeTeamId)
         ? get().activeTeamId
         : null
-      set({ teams, activeTeamId: active })
+      set({ teams, activeTeamId: active, error: null })
       if (!active) localStorage.removeItem(ACTIVE_TEAM_KEY)
       if (active) await get().loadMembers(active)
     } catch (e) {
-      console.warn('team load failed', errorMessage(e))
+      // Keep whatever was already loaded and say why it may be out of date,
+      // rather than silently presenting an empty list as the truth.
+      set({ error: describeError(e) })
     } finally {
       set({ loading: false })
     }
   },
 
   loadMembers: async (teamId) => {
-    const { data, error } = await supabase
-      .from('team_members')
-      .select('*, profile:profiles!team_members_user_id_profiles_fkey(*)')
-      .eq('team_id', teamId)
-      .order('joined_at', { ascending: true })
+    const { data, error } = await retrying(() =>
+      supabase
+        .from('team_members')
+        .select('*, profile:profiles!team_members_user_id_profiles_fkey(*)')
+        .eq('team_id', teamId)
+        .order('joined_at', { ascending: true }),
+    )
     if (!error) set({ members: (data ?? []) as TeamMember[] })
   },
 
@@ -87,8 +101,13 @@ export const useTeams = create<TeamState>((set, get) => ({
   },
 
   createTeam: async (name) => {
-    const { data, error } = await supabase.rpc('create_team', { p_name: name })
-    if (error) return { error: errorMessage(error) }
+    // A project that has been idle answers the first request with PGRST002
+    // while its database wakes. Creating a team is often the very first write
+    // an account ever makes, so it is the single most likely place to meet it.
+    const { data, error } = await retrying(() =>
+      supabase.rpc('create_team', { p_name: name }),
+    )
+    if (error) return { error: describeError(error) }
     const team = data as Team
     await get().load()
     get().setActiveTeam(team.id)
@@ -96,8 +115,10 @@ export const useTeams = create<TeamState>((set, get) => ({
   },
 
   joinTeam: async (code) => {
-    const { data, error } = await supabase.rpc('join_team', { p_code: code })
-    if (error) return { error: errorMessage(error) }
+    const { data, error } = await retrying(() =>
+      supabase.rpc('join_team', { p_code: code }),
+    )
+    if (error) return { error: describeError(error) }
     const team = data as Team
     await get().load()
     get().setActiveTeam(team.id)
@@ -112,7 +133,7 @@ export const useTeams = create<TeamState>((set, get) => ({
       .delete()
       .eq('team_id', teamId)
       .eq('user_id', uid)
-    if (error) return { error: errorMessage(error) }
+    if (error) return { error: describeError(error) }
     get().setActiveTeam(null)
     await get().load()
     return {}
@@ -122,7 +143,7 @@ export const useTeams = create<TeamState>((set, get) => ({
     const { data, error } = await supabase.rpc('rotate_join_code', {
       p_team_id: teamId,
     })
-    if (error) return { error: errorMessage(error) }
+    if (error) return { error: describeError(error) }
     await get().load()
     return { code: data as string }
   },
@@ -133,7 +154,7 @@ export const useTeams = create<TeamState>((set, get) => ({
       .update({ role })
       .eq('team_id', teamId)
       .eq('user_id', userId)
-    if (error) return { error: errorMessage(error) }
+    if (error) return { error: describeError(error) }
     await get().loadMembers(teamId)
     return {}
   },
@@ -144,10 +165,10 @@ export const useTeams = create<TeamState>((set, get) => ({
       .delete()
       .eq('team_id', teamId)
       .eq('user_id', userId)
-    if (error) return { error: errorMessage(error) }
+    if (error) return { error: describeError(error) }
     await get().loadMembers(teamId)
     return {}
   },
 
-  reset: () => set({ teams: [], members: [], activeTeamId: null }),
+  reset: () => set({ teams: [], members: [], activeTeamId: null, error: null }),
 }))

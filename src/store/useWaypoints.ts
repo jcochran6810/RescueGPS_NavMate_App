@@ -33,6 +33,8 @@ interface WaypointState {
   update: (id: string, patch: Partial<Waypoint>) => Promise<void>
   remove: (id: string) => Promise<void>
   importMany: (inputs: NewWaypoint[], teamId: string | null) => Promise<number>
+  /** Attach photos to a waypoint that already exists. Needs a connection. */
+  addPhotos: (id: string, files: File[]) => Promise<number>
   clearLocal: () => void
   photoUrl: (path: string) => Promise<string | null>
 }
@@ -51,8 +53,28 @@ function newId(): string {
   })
 }
 
+/**
+ * Last result of `merge`, keyed on the exact inputs that produced it.
+ *
+ * `visible()` is read as a Zustand selector, and React compares the value it
+ * returns with Object.is between renders to detect a changed store. A fresh
+ * array every call reads as "changed" forever: React re-renders, the selector
+ * builds another new array, and the screen never paints. Returning the same
+ * array until the cache or the queue actually changes is what makes the
+ * derived list safe to select.
+ */
+let memo: { cache: Waypoint[]; pending: PendingOp[]; result: Waypoint[] } | null =
+  null
+
 /** Apply the queued ops on top of the cached server state. */
 function merge(cache: Waypoint[], pending: PendingOp[]): Waypoint[] {
+  if (memo && memo.cache === cache && memo.pending === pending) return memo.result
+  const result = mergeUncached(cache, pending)
+  memo = { cache, pending, result }
+  return result
+}
+
+function mergeUncached(cache: Waypoint[], pending: PendingOp[]): Waypoint[] {
   const byId = new Map(cache.map((w) => [w.id, w]))
   for (const op of pending) {
     if (op.kind === 'create') byId.set(op.waypoint.id, op.waypoint)
@@ -157,7 +179,12 @@ export const useWaypoints = create<WaypointState>()(
       },
 
       create: async (input, photos = []) => {
-        const uid = (await supabase.auth.getUser()).data.user?.id
+        // getSession reads the stored session; getUser asks the server. This
+        // used to ask the server, which meant creating a waypoint failed
+        // outright with no signal — the one situation the offline queue below
+        // exists for. Nothing was queued, because the function returned before
+        // it got that far.
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return null
 
         const id = newId()
@@ -215,6 +242,36 @@ export const useWaypoints = create<WaypointState>()(
           if (created) n += 1
         }
         return n
+      },
+
+      /**
+       * Photos are uploaded to Storage before the row is patched, so a failed
+       * upload leaves the waypoint exactly as it was rather than pointing at
+       * an object that is not there.
+       *
+       * The upload goes under the *uploader's* folder even on a teammate's
+       * waypoint — that is what the storage policy allows — and the read
+       * policy still lets the rest of the team see it, because it matches on
+       * the waypoint id in the second path segment.
+       */
+      addPhotos: async (id, files) => {
+        if (files.length === 0) return 0
+        if (!online()) throw new Error('Photos need a connection to upload')
+
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id
+        if (!uid) throw new Error('Sign in again to add photos')
+
+        const waypoint = get().visible().find((w) => w.id === id)
+        if (!waypoint) throw new Error('That waypoint is no longer there')
+
+        const room = Math.max(0, 8 - waypoint.photos.length)
+        if (room === 0) throw new Error('That waypoint already has 8 photos')
+
+        const uploaded = await uploadPhotos(uid, id, files.slice(0, room))
+        if (uploaded.length === 0) throw new Error('Photo upload failed')
+
+        await get().update(id, { photos: [...waypoint.photos, ...uploaded] })
+        return uploaded.length
       },
 
       clearLocal: () =>

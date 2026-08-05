@@ -273,9 +273,14 @@ function WaypointCard({
 }) {
   const update = useWaypoints((s) => s.update)
   const remove = useWaypoints((s) => s.remove)
+  const addPhotos = useWaypoints((s) => s.addPhotos)
   const userId = useAuth((s) => s.user?.id)
+  const online = useOnline()
 
   const [editing, setEditing] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const photoRef = useRef<HTMLInputElement>(null)
+  const cameraRef = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState({
     name: w.name,
     lat: toDD(w.lat),
@@ -310,6 +315,20 @@ function WaypointCard({
 
     await update(w.id, patch)
     toast('Waypoint updated', 'success')
+  }
+
+  /** Attach photographs to a waypoint that is already saved. */
+  async function attach(files: File[]) {
+    if (files.length === 0) return
+    setUploading(true)
+    try {
+      const n = await addPhotos(w.id, files)
+      toast(`${n} photo${n === 1 ? '' : 's'} added`, 'success')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Photo upload failed', 'error')
+    } finally {
+      setUploading(false)
+    }
   }
 
   if (editing) {
@@ -347,6 +366,53 @@ function WaypointCard({
           aria-label="Notes"
           className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
         />
+
+        <input
+          ref={photoRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={(e) => {
+            void attach(Array.from(e.target.files ?? []))
+            e.target.value = ''
+          }}
+        />
+        <input
+          ref={cameraRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          hidden
+          onChange={(e) => {
+            void attach(Array.from(e.target.files ?? []))
+            e.target.value = ''
+          }}
+        />
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Button
+            variant="ghost"
+            onClick={() => cameraRef.current?.click()}
+            disabled={uploading || !online}
+          >
+            {uploading && <Spinner />}
+            Take photo
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => photoRef.current?.click()}
+            disabled={uploading || !online}
+          >
+            Choose photos
+          </Button>
+        </div>
+        {!online && (
+          <p className="mt-1.5 text-xs text-amber-300">
+            Photos upload straight to storage, so they need a connection. The
+            rest of this form works offline.
+          </p>
+        )}
+
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button variant="ghost" onClick={() => setEditing(false)}>
             Cancel
