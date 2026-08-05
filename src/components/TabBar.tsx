@@ -1,4 +1,5 @@
 export const TABS = [
+  { id: 'home', label: 'Home' },
   { id: 'convert', label: 'Convert' },
   { id: 'track', label: 'Track' },
   { id: 'waypoints', label: 'Waypoints' },

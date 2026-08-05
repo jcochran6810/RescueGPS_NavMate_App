@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { useTracker } from '@/store/useTracker'
+import { useTracker, INTERVAL_CHOICES } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
+import { TrackPath } from '@/components/TrackPath'
 import {
   haversineNM,
   bearingDeg,
@@ -25,7 +26,17 @@ const UNITS: { id: DistanceUnit; label: string }[] = [
 ]
 
 export function TrackTab() {
-  const { fix, watching, error, trail, start, stop, clearTrail } = useTracker()
+  const {
+    fix,
+    watching,
+    error,
+    trail,
+    intervalS,
+    start,
+    stop,
+    clearTrail,
+    setIntervalS,
+  } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
 
   const [targetId, setTargetId] = useState('')
@@ -199,7 +210,48 @@ export function TrackTab() {
       </Card>
 
       <Card>
+        <Label>Your path</Label>
+        <TrackPath
+          trail={trail}
+          markers={waypoints.map((w) => ({
+            id: w.id,
+            name: w.name,
+            lat: w.lat,
+            lon: w.lon,
+          }))}
+        />
+        <p className="mt-1.5 text-xs text-slate-500">
+          North up, drawn to fit, with saved waypoints marked. This is a plot of
+          the track itself — there is no basemap under it, because chart tiles
+          need a connection at exactly the moment you may not have one.
+        </p>
+      </Card>
+
+      <Card>
         <Label>Track recording</Label>
+
+        <div className="mb-3">
+          <span className="mb-1.5 block text-xs text-slate-400">
+            Record a point every
+          </span>
+          <div className="flex gap-1">
+            {INTERVAL_CHOICES.map((s) => (
+              <button
+                key={s}
+                onClick={() => setIntervalS(s)}
+                className={
+                  'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
+                  (intervalS === s
+                    ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                    : 'border-white/10 text-slate-400 hover:bg-white/5')
+                }
+              >
+                {s}s
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="grid grid-cols-3 gap-2">
           <Stat label="Points" value={String(trail.length)} />
           <Stat
@@ -240,9 +292,10 @@ export function TrackTab() {
           </Button>
         </div>
         <p className="mt-1.5 text-xs text-slate-500">
-          Fixes are recorded while tracking is on, up to 2000 points, and kept
-          until you clear them or reload the app. Movement smaller than the GPS
-          accuracy is ignored so a stationary phone does not accumulate
+          While tracking is on a breadcrumb is dropped every {intervalS} seconds,
+          up to 2000 of them, and kept until you clear them or reload the app.
+          The live readout above still follows every fix. Movement smaller than
+          the GPS accuracy is ignored so a stationary phone does not accumulate
           distance.
         </p>
       </Card>

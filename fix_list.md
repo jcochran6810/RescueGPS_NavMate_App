@@ -8,6 +8,22 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-08-05 — Exercise the **NOAA tide calls in a real browser**. The build
+      sandbox's proxy returns 403 for `api.tidesandcurrents.noaa.gov`, so the
+      two live endpoints have never run: the station list and the hi/lo
+      predictions. The parsers are unit-tested against the documented payload
+      shapes and tolerate `lat`/`lng`/`lon` naming, but the field names in the
+      real station feed are unconfirmed (`src/lib/tides.ts`). If the card says
+      "Unexpected station list from NOAA", that is the thing to check first.
+- [ ] 2026-08-05 — The tide station list is a **one-off ~1.5 MB download** on
+      first use. It is cached for 30 days and makes nearest-station lookups
+      work offline afterwards, but it is a poor first experience on a weak
+      cellular link. A pre-slimmed list shipped in the bundle would fix it.
+- [ ] 2026-08-05 — Compass headings from Android's
+      `deviceorientationabsolute` are **magnetic, not true**, and the app says
+      so rather than correcting them — declination needs the WMM model, which
+      is too large to justify so far. iOS reports true north. Decide whether
+      the difference matters enough to carry the model.
 - [ ] 2026-08-05 — Point the **GitHub default branch** at `main`. It is still
       `claude/rescuegps-subdomain-setup-gchtnn`, which is why the Vercel
       import picked that branch for production. Vercel is fixed; GitHub is
@@ -40,11 +56,16 @@ Add new items at the top. Use the format:
 - [ ] 2026-08-03 — Exercise the signed-in flow in a real browser: signup, team
       create/join, waypoint sync, photo upload. Never run end-to-end — the
       build sandbox blocks outbound traffic to `*.supabase.co`.
-- [ ] 2026-08-03 — Photos require a connection at save time. Waypoints saved
-      offline sync later but drop their photos; the UI says so, but queuing the
-      upload would be better (src/store/useWaypoints.ts).
-- [ ] 2026-08-03 — No map view. The offline tile story is the hard part and is
-      why it wasn't rushed into the first pass.
+- [ ] 2026-08-03 — Photos still require a connection at save time. A waypoint
+      can now have photos attached after the fact — from the stamp panel or
+      from Edit on any waypoint — so nothing is lost by stamping offline and
+      coming back. But the bytes themselves are never queued, because
+      localStorage is not sized for photographs; the UI says so plainly.
+      Queuing them properly needs IndexedDB (src/store/useWaypoints.ts).
+- [ ] 2026-08-03 — No map view. The Track tab now plots the recorded path
+      north-up to scale with waypoints marked, which covers "show me where I
+      have been", but there is still no basemap under it. The offline tile
+      story is the hard part and is why it wasn't rushed into the first pass.
 
 ## Done
 

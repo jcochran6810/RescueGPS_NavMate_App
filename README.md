@@ -8,16 +8,31 @@ nothing else — separate codebase, separate hosting project, separate database.
 
 ## Features
 
+- **Home** — the screen the app opens on: current position in DDM, DMS and DD,
+  a one-press waypoint stamp, and the daylight, tide, compass and nearby-waypoint
+  panels below.
+- **Daylight tracker** — a running countdown to the next dawn, sunrise, sunset
+  or dusk, with all four times and the length of the day. Computed on the
+  device, so it works with no signal; dawn and dusk are civil twilight.
+- **Tides near me** — high and low water from the nearest NOAA CO-OPS station,
+  with the distance and bearing to that station, whether the tide is making or
+  ebbing, and a picker for the next four stations along. US waters only.
+- **Compass** — a rose that turns under a fixed lubber line, from the device
+  magnetometer, falling back to GPS course when you are moving. Points to any
+  saved waypoint and says which way to turn.
 - **Convert** — type coordinates as decimal degrees, DMS or degrees-decimal-minutes
   and the other formats follow. UTM (WGS-84) is derived alongside.
 - **Track** — live position, speed in knots, heading with compass point,
-  accuracy and altitude.
+  accuracy and altitude, with the recorded path drawn north-up to fit and
+  saved waypoints marked.
 - **ETA** — distance, bearing and time to a saved waypoint, in NM / mi / km,
   using GPS speed or a manual override.
-- **Track recording** — every fix taken while tracking is kept as a breadcrumb,
-  with distance travelled and elapsed time, exportable as a GPX track.
+- **Track recording** — a breadcrumb every 10, 15, 20 or 30 seconds, your
+  choice, with distance travelled and elapsed time, exportable as a GPX track.
+  The live readout still follows every fix.
 - **Waypoints** — name, coordinates, notes and photos, all editable after the
-  fact. Private to your account by default, or shared with a team.
+  fact, including attaching photographs to a waypoint stamped earlier. Private
+  to your account by default, or shared with a team.
 - **Teams** — create a team, share the 6-character join code, and everyone on
   it sees the same waypoints. Owner / admin / member roles.
 - **Data** — export JSON, GPX or CSV for the current scope or the whole
@@ -57,10 +72,13 @@ npm run lint
 
 ```
 src/
-  lib/          coordinate math, distance/bearing, import/export, Supabase client
-  store/        Zustand stores: auth, waypoints (with offline queue), teams, tracker
-  components/   shared UI, header, tab bar, auth screen
-  tabs/         Convert, Track, Waypoints, Team, Data
+  lib/          coordinate math, distance/bearing, sun events, NOAA tides,
+                import/export, Supabase client
+  store/        Zustand stores: auth, waypoints (with offline queue), teams,
+                tracker, tides, heading
+  components/   shared UI, header, tab bar, auth screen, daylight, tides,
+                compass, track plot, stamp
+  tabs/         Home, Convert, Track, Waypoints, Team, Data
 supabase/
   migrations/   schema, RLS policies, storage rules
 scripts/
@@ -78,6 +96,19 @@ scripts/
 
 Photos are stored in the private `waypoint-photos` bucket under
 `{user_id}/{waypoint_id}/{file}` and served through short-lived signed URLs.
+The first path segment is always the *uploader*, which is what the storage
+policy allows; a photo added to a teammate's shared waypoint is still readable
+by the team because the read policy matches on the waypoint id in the second
+segment.
+
+### External data
+
+Tide predictions come from NOAA CO-OPS and need no key. The station list
+(`mdapi/prod/webapi/stations.json?type=tidepredictions`) is downloaded once,
+slimmed and cached in `localStorage`, so nearest-station lookups keep working
+offline; high/low predictions are requested per station in GMT and converted
+for display. Coverage is US waters only. Everything else in the app —
+including sunrise, sunset and twilight — is computed on the device.
 
 ### Security
 

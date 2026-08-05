@@ -3,6 +3,8 @@ import {
   haversineNM,
   bearingDeg,
   compassPoint,
+  relativeBearing,
+  formatBearing,
   formatDistance,
   formatDuration,
   formatSpeed,
@@ -134,5 +136,57 @@ describe('trailDistanceNM', () => {
         { lat: 27.9001, lon: -82.4 },
       ]),
     ).toBeCloseTo(legNM, 9)
+  })
+})
+
+describe('relativeBearing', () => {
+  it('is zero when the target is dead ahead', () => {
+    expect(relativeBearing(90, 90)).toBe(0)
+  })
+
+  it('is positive to starboard and negative to port', () => {
+    expect(relativeBearing(100, 90)).toBe(10)
+    expect(relativeBearing(80, 90)).toBe(-10)
+  })
+
+  it('takes the short way round north', () => {
+    // Heading 350, target 010: a 20 degree turn to starboard, not 340 to port.
+    expect(relativeBearing(10, 350)).toBe(20)
+    expect(relativeBearing(350, 10)).toBe(-20)
+  })
+
+  it('reports dead astern as one side or the other, never both', () => {
+    expect(Math.abs(relativeBearing(180, 0))).toBe(180)
+  })
+
+  it('stays within plus or minus 180 for any input', () => {
+    for (let b = 0; b < 360; b += 17) {
+      for (let h = 0; h < 360; h += 23) {
+        const rel = relativeBearing(b, h)
+        expect(rel).toBeGreaterThan(-181)
+        expect(rel).toBeLessThanOrEqual(180)
+      }
+    }
+  })
+
+  it('is not a number when either bearing is unknown', () => {
+    expect(relativeBearing(Number.NaN, 90)).toBeNaN()
+    expect(relativeBearing(90, Number.NaN)).toBeNaN()
+  })
+})
+
+describe('formatBearing', () => {
+  it('gives degrees and a compass point', () => {
+    expect(formatBearing(137)).toBe('137° SE')
+    expect(formatBearing(0)).toBe('0° N')
+  })
+
+  it('normalises past a full circle', () => {
+    expect(formatBearing(370)).toBe('10° N')
+    expect(formatBearing(-90)).toBe('270° W')
+  })
+
+  it('renders an unknown bearing as an em dash', () => {
+    expect(formatBearing(Number.NaN)).toBe('—')
   })
 })

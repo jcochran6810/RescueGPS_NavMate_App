@@ -7,6 +7,7 @@ import { Header } from '@/components/Header'
 import { TabBar, type TabId } from '@/components/TabBar'
 import { Toast } from '@/components/Toast'
 import { Spinner } from '@/components/ui'
+import { HomeTab } from '@/tabs/HomeTab'
 import { ConvertTab } from '@/tabs/ConvertTab'
 import { TrackTab } from '@/tabs/TrackTab'
 import { WaypointsTab } from '@/tabs/WaypointsTab'
@@ -15,7 +16,7 @@ import { DataTab } from '@/tabs/DataTab'
 
 export default function App() {
   const { session, ready, init } = useAuth()
-  const [tab, setTab] = useState<TabId>('convert')
+  const [tab, setTab] = useState<TabId>('home')
 
   useEffect(() => init(), [init])
 
@@ -56,6 +57,7 @@ export default function App() {
     <div className="min-h-full">
       <Header />
       <main className="mx-auto max-w-3xl px-3 pt-3 pb-24">
+        {tab === 'home' && <HomeTab onNavigate={setTab} />}
         {tab === 'convert' && <ConvertTab />}
         {tab === 'track' && <TrackTab />}
         {tab === 'waypoints' && <WaypointsTab />}
