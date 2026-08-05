@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RescueGPS NavMate">
-  <rect width="512" height="512" rx="112" fill="#0b1f33"/>
-  <circle cx="256" cy="256" r="150" fill="none" stroke="#1b3a56" stroke-width="16"/>
-  <circle cx="256" cy="256" r="96" fill="none" stroke="#1b3a56" stroke-width="10"/>
-  <path d="M256 92v40M256 380v40M92 256h40M380 256h40" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
-  <path d="M256 138 322 322 256 286 190 322Z" fill="#38bdf8"/>
-  <circle cx="256" cy="256" r="14" fill="#0b1f33"/>
-</svg>

@@ -190,7 +190,8 @@ src/store/        Zustand stores: auth, waypoints (offline queue), teams, tracke
 src/components/   shared UI, header, tab bar, auth screen
 src/tabs/         Convert, Track, Waypoints, Team, Data
 supabase/migrations/  schema, RLS policies, storage rules
-scripts/          make-icons.mjs — regenerates PWA icons from public/icon.svg
+brand/            emblem.png / logo.png — the artwork every icon derives from
+scripts/          make-icons.mjs — regenerates the icons from the masters
 ```
 
 ### Things to know before changing code
@@ -209,12 +210,84 @@ scripts/          make-icons.mjs — regenerates PWA icons from public/icon.svg
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
-- **Icons are generated, not hand-drawn.** Edit `public/icon.svg`; the PNGs
-  are rebuilt deterministically by `scripts/make-icons.mjs` on every build.
+- **Icons are generated from two masters.** `brand/emblem.png` is the
+  RescueGPS cross, `brand/logo.png` the whole logo with the wordmark. Both have
+  their navy field knocked out to transparency, so the artwork takes the colour
+  of whatever is behind it instead of carrying a rectangle of its own.
+  `scripts/make-icons.mjs` derives everything under `public/` from them on
+  every build: the launcher icons opaque on the app background (`#06131f`, the
+  `body` colour in `src/index.css`), and `emblem-192`/`logo` transparent for
+  in-app use. Replace a master to change the artwork — never hand-edit the PNGs
+  under `public/`, they are build output. The masters live outside `public/` on
+  purpose: anything in there is published and precached. If the app background
+  ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
 
 <!-- newest first; append a new dated entry on every "end session" -->
+
+### 2026-08-05 — claude/daylight-tides-home-page-jlrznj (branding)
+
+Same branch, later session. "Use this for the icon and for the pwa download",
+with the RescueGPS artwork attached — the Maltese cross carrying a boat and a
+position pin, over a `RESCUE GPS` wordmark.
+
+**The artwork is now the app's identity** — favicon, Apple touch icon, PWA
+install tiles, the sign-in screen (full logo, wordmark included) and the header
+(emblem alone at 24 px, where the wordmark would be unreadable). The
+placeholder compass mark and `public/icon.svg` are gone.
+
+**Two masters, everything derived** (`brand/emblem.png`, `brand/logo.png`).
+`scripts/make-icons.mjs` generates every file under `public/` from them on each
+build, so there is one place to replace artwork and no way for the sizes to
+drift. The masters sit outside `public/` deliberately — anything in there is
+published and precached, and these are build inputs.
+
+**The generator had to grow.** It used to walk a few circles and a triangle
+with signed-distance tests, which is what the old mark was; a cross with waves
+and a wordmark is not. It now decodes a PNG, box-filters it to size and
+composites it onto a tile — a decoder, a resampler and Paeth filtering on the
+way out, still with no image library, because this runs in the Vercel build and
+a native dependency there is a whole class of deployment failure for what
+amounts to a decode and an average. The box filter is not incidental: the
+silver outline on the cross is about one pixel wide at 192, and point-sampling
+drops stretches of it.
+
+**Sizing is honest about the source.** The emblem is 474 px in the original, so
+the master is 512 rather than an upscale to 1024 that would add bytes and no
+detail.
+
+**Maskable is its own file**, not the 512 listed twice as it had been. Android
+crops maskable icons to whatever shape the launcher likes, so the emblem is
+drawn at 72 % there against 96 % for the plain tile — at 96 % a circular crop
+takes the tips off the arms.
+
+**The navy field is knocked out.** The artwork's own navy (`#000d70`) is
+lighter than the app's (`#06131f`), so at first the logo read as a rectangle
+pasted onto the page. Both masters now have that field flood-filled to
+transparency from the border inward — not a global colour replace, so it stops
+where the artwork starts — with alpha ramping across the boundary, because the
+source is a JPEG and a hard threshold leaves a dark fringe tracing every
+outline. With no field of its own the logo takes the colour behind it, which is
+what makes it work on both the flat page and the header's blur. The flood does
+reach the emblem's interior navy — ring, boat, waves connect to the outside
+through the gaps between the arms — which reads correctly on this app's dark
+background but means the assets assume a dark surface.
+
+**Launcher tiles stay opaque** on `#06131f`, since a launcher shows its own
+wallpaper through transparency, and `theme_color` and `background_color` are
+that same value. Installed icon, install splash, system bars and app are one
+continuous shade rather than three near-misses of navy. `APP_BG` in the script
+has to move if the app background ever does.
+
+**Precache kept lean.** The 512 icons are excluded — the operating system
+fetches those at install time, not the page, so caching them only added 300 KB
+to what a crew downloads over cellular. 749 KiB rather than 1.1 MB.
+
+Verified in a browser at 390 px: logo and emblem both decode and render with no
+visible field on either surface, launcher tiles are opaque on the app
+background, and every asset plus the manifest serves 200. Tests unchanged at
+174; typecheck, lint and build clean.
 
 ### 2026-08-05 — claude/daylight-tides-home-page-jlrznj
 

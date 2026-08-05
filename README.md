@@ -92,8 +92,11 @@ src/
                 Data
 supabase/
   migrations/   schema, RLS policies, storage rules
+brand/
+  emblem.png      the RescueGPS cross, navy field knocked out
+  logo.png        the whole logo including the wordmark
 scripts/
-  make-icons.mjs  regenerates the PWA icons from public/icon.svg
+  make-icons.mjs  regenerates every icon in public/ from the two masters
 ```
 
 ## Data model

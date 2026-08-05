@@ -16,11 +16,18 @@ export function Header() {
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-white/10 bg-navy-950/85 backdrop-blur">
       <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pb-2">
-        <span className="text-lg text-sky-400" aria-hidden="true">
-          ◈
-        </span>
+        {/* Emblem only up here — the wordmark would be unreadable at this
+            size, and the row already competes with the team switcher. The
+            artwork has no field of its own, so it sits on the header's blur. */}
+        <img
+          src="/emblem-192.png"
+          alt=""
+          width={192}
+          height={192}
+          className="size-6 shrink-0"
+        />
         <span className="font-semibold tracking-tight text-slate-50">
-          NavMate
+          RescueGPS
         </span>
 
         <div className="ml-auto flex items-center gap-2">
