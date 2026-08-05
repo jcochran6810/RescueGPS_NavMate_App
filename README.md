@@ -30,8 +30,13 @@ nothing else — separate codebase, separate hosting project, separate database.
 - **Track** — live position, speed in knots, heading with compass point,
   accuracy and altitude, with the recorded path drawn north-up to fit and
   saved waypoints marked.
-- **ETA** — distance, bearing and time to a saved waypoint, in NM / mi / km,
-  using GPS speed or a manual override.
+- **ETA to waypoint** — distance, bearing and time to a saved waypoint, in
+  NM / mi / km, using GPS speed or a manual override. Underneath it, the
+  **60 D Street** working — `60 × D = S × T`, distance in nautical miles,
+  speed in knots, time in minutes. Fill in any two and the third is worked
+  out, with the arithmetic printed so it can be checked against a card. That
+  covers the two questions an ETA alone cannot answer: how far can we get in
+  the time we have left, and how fast do we need to go to be there.
 - **Track recording** — a breadcrumb every 10, 15, 20 or 30 seconds, your
   choice, with distance travelled and elapsed time, exportable as a GPX track.
   The live readout still follows every fix.
@@ -77,13 +82,14 @@ npm run lint
 
 ```
 src/
-  lib/          coordinate math, distance/bearing, sun events, NOAA tides,
-                import/export, Supabase client
+  lib/          coordinate math, distance/bearing, 60 D = S × T, sun events,
+                NOAA tides, import/export, Supabase client
   store/        Zustand stores: auth, waypoints (with offline queue), teams,
                 tracker, tides, heading
   components/   shared UI, header, section menu, bottom sheet, auth screen,
                 daylight, tides, compass, track plot, stamp
-  tabs/         Home, Track, Tides, Compass, Convert, Waypoints, Team, Data
+  tabs/         Home, Track, ETA, Tides, Compass, Convert, Waypoints, Team,
+                Data
 supabase/
   migrations/   schema, RLS policies, storage rules
 scripts/

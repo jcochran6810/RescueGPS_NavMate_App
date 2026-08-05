@@ -11,6 +11,7 @@ import { Spinner } from '@/components/ui'
 import { HomeTab } from '@/tabs/HomeTab'
 import { ConvertTab } from '@/tabs/ConvertTab'
 import { TrackTab } from '@/tabs/TrackTab'
+import { EtaTab } from '@/tabs/EtaTab'
 import { TidesTab } from '@/tabs/TidesTab'
 import { CompassTab } from '@/tabs/CompassTab'
 import { WaypointsTab } from '@/tabs/WaypointsTab'
@@ -64,6 +65,7 @@ export default function App() {
       <main className="mx-auto max-w-3xl px-3 pt-3 pb-40">
         {tab === 'home' && <HomeTab onNavigate={setTab} />}
         {tab === 'track' && <TrackTab />}
+        {tab === 'eta' && <EtaTab />}
         {tab === 'tides' && <TidesTab />}
         {tab === 'compass' && <CompassTab />}
         {tab === 'convert' && <ConvertTab />}
