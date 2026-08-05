@@ -9,17 +9,22 @@ nothing else — separate codebase, separate hosting project, separate database.
 ## Features
 
 - **Home** — the screen the app opens on: current position in DDM, DMS and DD,
-  a one-press waypoint stamp, and the daylight, tide, compass and nearby-waypoint
-  panels below.
+  the daylight countdown and the waypoints nearest you.
+- **Stamp my position** — fixed to the bottom of every screen, so it is under
+  the thumb however far the page has scrolled. One press writes the fix, then a
+  sheet opens for a name, notes and a photograph from the camera or the
+  library.
 - **Daylight tracker** — a running countdown to the next dawn, sunrise, sunset
   or dusk, with all four times and the length of the day. Computed on the
   device, so it works with no signal; dawn and dusk are civil twilight.
-- **Tides near me** — high and low water from the nearest NOAA CO-OPS station,
-  with the distance and bearing to that station, whether the tide is making or
-  ebbing, and a picker for the next four stations along. US waters only.
+- **Tides** — high and low water from the nearest NOAA CO-OPS station, with the
+  distance and bearing to that station, whether the tide is making or ebbing, a
+  picker for the next four stations along, and the full table for the next two
+  days. US waters only.
 - **Compass** — a rose that turns under a fixed lubber line, from the device
   magnetometer, falling back to GPS course when you are moving. Points to any
-  saved waypoint and says which way to turn.
+  saved waypoint and says which way to turn, with the true bearing and distance
+  to everything saved listed underneath.
 - **Convert** — type coordinates as decimal degrees, DMS or degrees-decimal-minutes
   and the other formats follow. UTM (WGS-84) is derived alongside.
 - **Track** — live position, speed in knots, heading with compass point,
@@ -78,7 +83,7 @@ src/
                 tracker, tides, heading
   components/   shared UI, header, tab bar, auth screen, daylight, tides,
                 compass, track plot, stamp
-  tabs/         Home, Convert, Track, Waypoints, Team, Data
+  tabs/         Home, Track, Tides, Compass, Convert, Waypoints, Team, Data
 supabase/
   migrations/   schema, RLS policies, storage rules
 scripts/

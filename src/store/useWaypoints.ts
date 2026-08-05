@@ -179,7 +179,12 @@ export const useWaypoints = create<WaypointState>()(
       },
 
       create: async (input, photos = []) => {
-        const uid = (await supabase.auth.getUser()).data.user?.id
+        // getSession reads the stored session; getUser asks the server. This
+        // used to ask the server, which meant creating a waypoint failed
+        // outright with no signal — the one situation the offline queue below
+        // exists for. Nothing was queued, because the function returned before
+        // it got that far.
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return null
 
         const id = newId()

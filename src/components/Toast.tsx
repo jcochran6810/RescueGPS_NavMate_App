@@ -22,7 +22,9 @@ export function Toast() {
     <div
       role="status"
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 bottom-24 z-50 flex justify-center px-4"
+      // Clears the footer, which is now the stamp button and the section row
+      // stacked, not the section row alone.
+      className="pointer-events-none fixed inset-x-0 bottom-32 z-50 flex justify-center px-4"
     >
       <div
         className={

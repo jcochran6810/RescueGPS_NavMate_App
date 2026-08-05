@@ -3,11 +3,8 @@ import { useTracker } from '@/store/useTracker'
 import { toDD, toDDM, toDMS } from '@/lib/coords'
 import { formatSpeed } from '@/lib/geo'
 import { DaylightTracker } from '@/components/DaylightTracker'
-import { TidesNearMe } from '@/components/TidesNearMe'
-import { Compass } from '@/components/Compass'
 import { NearbyWaypoints } from '@/components/NearbyWaypoints'
-import { StampWaypoint } from '@/components/StampWaypoint'
-import { Button, Card, Label } from '@/components/ui'
+import { Card, Label } from '@/components/ui'
 import type { TabId } from '@/components/TabBar'
 
 /**
@@ -75,23 +72,13 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
         )}
       </Card>
 
-      <StampWaypoint />
-
       <DaylightTracker lat={lat} lon={lon} />
-
-      <TidesNearMe lat={lat} lon={lon} />
-
-      <Compass lat={lat} lon={lon} />
 
       <NearbyWaypoints
         lat={lat}
         lon={lon}
         onSeeAll={() => onNavigate('waypoints')}
       />
-
-      <Button variant="ghost" className="w-full" onClick={() => onNavigate('track')}>
-        Open live tracking
-      </Button>
     </div>
   )
 }

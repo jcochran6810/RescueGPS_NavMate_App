@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useWaypoints } from '@/store/useWaypoints'
@@ -6,14 +7,19 @@ import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
 import { toDD } from '@/lib/coords'
 import { WaypointPhoto } from '@/components/WaypointPhoto'
-import { Button, Card, Input, Label, Spinner } from '@/components/ui'
+import { Button, Input, Label, Spinner } from '@/components/ui'
 import type { Waypoint } from '@/lib/types'
 
 /**
  * Drop a waypoint at the current position in one press, then describe it.
  *
- * The position is written the instant the button is released — before the crew
- * has typed anything — because the thing that must not be lost is the fix. The
+ * The button lives in the fixed footer and stays under the thumb however far
+ * the screen has been scrolled — stamping a position is the one thing on this
+ * app that is sometimes done in a hurry, and hunting for the control is not
+ * something anyone should have to do while a boat is moving.
+ *
+ * The position is written the instant the button is released, before the crew
+ * has typed anything, because the thing that must not be lost is the fix. The
  * name, the note and the photographs are all edits to a waypoint that already
  * exists, so walking away mid-sentence costs a caption, not a location.
  */
@@ -103,131 +109,194 @@ export function StampWaypoint() {
     }
   }
 
+  /** Commit whatever has been typed and close. Every exit route runs this. */
   async function done() {
     if (!stamped) return
     const patch: Partial<Waypoint> = {}
     const trimmed = name.trim() || stamped.name
     if (trimmed !== stamped.name) patch.name = trimmed
     if (note.trim() !== stamped.note) patch.note = note.trim()
-    if (Object.keys(patch).length > 0) await update(stamped.id, patch)
     setStamped(null)
     setPending([])
-    toast('Waypoint saved', 'success')
-  }
-
-  if (!stamped) {
-    return (
-      <Button
-        variant="primary"
-        className="w-full py-4 text-base"
-        onClick={() => void stamp()}
-        disabled={stamping}
-      >
-        {stamping ? <Spinner /> : '◎'} Stamp my position
-      </Button>
-    )
+    if (Object.keys(patch).length > 0) {
+      await update(stamped.id, patch)
+      toast('Waypoint saved', 'success')
+    }
   }
 
   return (
-    <Card>
-      <Label>Stamped — add detail</Label>
-      <p className="tnum mb-2 text-sm text-slate-400">
-        {toDD(stamped.lat)}, {toDD(stamped.lon)}
-      </p>
-
-      <Input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Name"
-        maxLength={200}
-        aria-label="Waypoint name"
-      />
-      <textarea
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Notes — what is here, what you found, who was told…"
-        rows={3}
-        aria-label="Notes"
-        className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
-      />
-
-      <input
-        ref={cameraRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        hidden
-        onChange={(e) => {
-          void attach(Array.from(e.target.files ?? []))
-          e.target.value = ''
-        }}
-      />
-      <input
-        ref={libraryRef}
-        type="file"
-        accept="image/*"
-        multiple
-        hidden
-        onChange={(e) => {
-          void attach(Array.from(e.target.files ?? []))
-          e.target.value = ''
-        }}
-      />
-
-      <div className="mt-2 grid grid-cols-2 gap-2">
+    <>
+      <div className="px-3 pt-2">
         <Button
-          variant="ghost"
-          onClick={() => cameraRef.current?.click()}
-          disabled={uploading}
+          variant="primary"
+          className="w-full py-3.5 text-base"
+          onClick={() => void stamp()}
+          disabled={stamping}
         >
-          {uploading ? <Spinner /> : null} Take photo
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => libraryRef.current?.click()}
-          disabled={uploading}
-        >
-          Choose photo
+          {stamping ? <Spinner /> : '◎'} Stamp my position
         </Button>
       </div>
 
-      {photoPaths.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {photoPaths.map((p) => (
-            <WaypointPhoto key={p} path={p} />
-          ))}
-        </div>
-      )}
-
-      {previews.length > 0 && (
-        <>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {previews.map((p) => (
-              <img
-                key={p.url}
-                src={p.url}
-                alt=""
-                className="size-16 rounded-lg border border-amber-400/40 object-cover opacity-70"
-              />
-            ))}
-          </div>
-          <p className="mt-1.5 text-xs text-amber-300">
-            {previews.length} photo{previews.length === 1 ? '' : 's'} waiting for
-            a connection. They are not saved yet — come back to this waypoint
-            once you have signal.
+      {stamped && (
+        <StampSheet onDismiss={() => void done()}>
+          <Label>Stamped — add detail</Label>
+          <p className="tnum mb-2 text-sm text-slate-400">
+            {toDD(stamped.lat)}, {toDD(stamped.lon)}
           </p>
-        </>
-      )}
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <Button variant="ghost" onClick={() => void stamp()} disabled={stamping}>
-          Stamp another
-        </Button>
-        <Button variant="primary" onClick={() => void done()}>
-          Done
-        </Button>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Name"
+            maxLength={200}
+            aria-label="Waypoint name"
+          />
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Notes — what is here, what you found, who was told…"
+            rows={3}
+            aria-label="Notes"
+            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+          />
+
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            hidden
+            onChange={(e) => {
+              void attach(Array.from(e.target.files ?? []))
+              e.target.value = ''
+            }}
+          />
+          <input
+            ref={libraryRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              void attach(Array.from(e.target.files ?? []))
+              e.target.value = ''
+            }}
+          />
+
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => cameraRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? <Spinner /> : null} Take photo
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => libraryRef.current?.click()}
+              disabled={uploading}
+            >
+              Choose photo
+            </Button>
+          </div>
+
+          {photoPaths.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {photoPaths.map((p) => (
+                <WaypointPhoto key={p} path={p} />
+              ))}
+            </div>
+          )}
+
+          {previews.length > 0 && (
+            <>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {previews.map((p) => (
+                  <img
+                    key={p.url}
+                    src={p.url}
+                    alt=""
+                    className="size-16 rounded-lg border border-amber-400/40 object-cover opacity-70"
+                  />
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs text-amber-300">
+                {previews.length} photo{previews.length === 1 ? '' : 's'} waiting
+                for a connection. They are not saved yet — come back to this
+                waypoint once you have signal.
+              </p>
+            </>
+          )}
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => void stamp()}
+              disabled={stamping}
+            >
+              Stamp another
+            </Button>
+            <Button variant="primary" onClick={() => void done()}>
+              Done
+            </Button>
+          </div>
+        </StampSheet>
+      )}
+    </>
+  )
+}
+
+/**
+ * The detail form, as a sheet over the whole app.
+ *
+ * It is portalled to the body rather than rendered in place: the footer it is
+ * launched from carries a backdrop blur, and a blurred ancestor becomes the
+ * containing block for anything fixed inside it, which would trap the sheet in
+ * a forty-pixel strip at the bottom of the screen.
+ */
+function StampSheet({
+  children,
+  onDismiss,
+}: {
+  children: React.ReactNode
+  onDismiss: () => void
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onDismiss()
+    }
+    window.addEventListener('keydown', onKey)
+    // Stop the page behind from scrolling under the sheet.
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previous
+    }
+  }, [onDismiss])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-40 flex items-end bg-black/60"
+      // Dismissing commits rather than discards, so a tap outside the sheet
+      // cannot quietly throw away a note someone has just typed.
+      onClick={onDismiss}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add detail to the stamped waypoint"
+        onClick={(e) => e.stopPropagation()}
+        className="safe-bottom max-h-[85vh] w-full overflow-y-auto rounded-t-2xl border-t border-white/10 bg-navy-900 px-4 pt-4 shadow-2xl shadow-black/50"
+      >
+        <div className="mx-auto max-w-3xl">
+          <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-white/15" />
+          {children}
+        </div>
       </div>
-    </Card>
+    </div>,
+    document.body,
   )
 }
 

@@ -46,6 +46,16 @@ body {
   padding-top: max(0.5rem, env(safe-area-inset-top));
 }
 
+/* The section row scrolls when it has to; a visible scrollbar across the
+   bottom of a phone reads as breakage rather than as an affordance. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 input,
 textarea,
 select {
