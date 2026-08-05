@@ -7,6 +7,13 @@ backed by Supabase, served at `rescuegps.stationinsight.com`. It shares a
 parent domain with Station Insight and nothing else — separate repo, separate
 hosting project, separate database.
 
+**NavMate is the field app, RescueGPS is the system it reports into.** NavMate's
+job is collecting data where the work happens — position, waypoints, notes,
+photographs — holding it when there is no signal, and sending it on. That is why
+capture is always allowed to succeed offline and sync is always the thing that
+waits, not the other way round. Keep that ordering when adding anything that
+writes.
+
 ## Branch model
 
 - `main` is the **release branch**. Once the Vercel project is connected to
@@ -225,6 +232,35 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 ## Session log
 
 <!-- newest first; append a new dated entry on every "end session" -->
+
+### 2026-08-05 — claude/daylight-tides-home-page-jlrznj (naming)
+
+Short session. "Add NavMate after the RescueGPS", with the product context that
+**NavMate is the field app that collects and sends data to RescueGPS, the main
+software.**
+
+**The header names both** — `RescueGPS` in white semibold, `NavMate` in the
+brand blue at a lighter weight, so the pair reads as system and app rather than
+as one long string.
+
+**Fitting it needed measuring, not guessing.** That row also carries the
+queued-writes and GPS badges, which take 143 px of a 320 px screen. The name
+steps down 16 → 14 → 12 px as the screen narrows rather than truncating, and
+below 360 px the emblem gives way instead of the name: at 320 px the name needed
+128 px and had 113, and the 32 px the mark was holding closes it exactly. The
+emblem is decorative there — no alt text — so a screen reader loses nothing.
+Verified at 320, 360, 390 and 430 px with both badges forced on: full name at
+every width, no truncation, no sideways scroll.
+
+**The relationship is now recorded** at the top of this file and of README.md,
+because it explains the app's shape: capture must succeed offline and sync is
+the thing that waits, never the other way round. Worth stating for whoever adds
+the next feature that writes.
+
+Left alone deliberately: the sign-in screen shows the full logo, whose wordmark
+already reads `RESCUE GPS`, with `NavMate` as the heading beneath it. Those
+already read as "RescueGPS NavMate" together; spelling it out would repeat the
+wordmark.
 
 ### 2026-08-05 — claude/daylight-tides-home-page-jlrznj (branding)
 
