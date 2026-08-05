@@ -10,7 +10,9 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.png', 'icon-512.png', 'emblem-192.png', 'logo.png'],
+      // No icon-512 here: includeAssets adds to the precache manifest, which
+      // silently re-added the file the globIgnores below exists to keep out.
+      includeAssets: ['icon-192.png', 'emblem-192.png', 'logo.png'],
       manifest: {
         name: 'RescueGPS NavMate',
         short_name: 'NavMate',

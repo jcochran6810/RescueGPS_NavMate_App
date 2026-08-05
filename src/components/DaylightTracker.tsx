@@ -72,7 +72,13 @@ export function DaylightTracker({
             </span>
             <span className="tnum text-2xl font-semibold text-amber-300">
               {view.next
-                ? formatCountdown(view.next.at.getTime() - now.getTime())
+                ? // Events are recomputed on the minute but this renders every
+                  // second, so just after an event passes the difference goes
+                  // briefly negative — clamp to zero rather than blanking the
+                  // countdown at exactly the moment it matters.
+                  formatCountdown(
+                    Math.max(0, view.next.at.getTime() - now.getTime()),
+                  )
                 : '—'}
             </span>
           </div>

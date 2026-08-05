@@ -13,7 +13,14 @@ type Source = 'dd' | 'dms' | 'ddm' | null
 export function ConvertTab() {
   const [lat, setLat] = useState(Number.NaN)
   const [lon, setLon] = useState(Number.NaN)
-  const [source, setSource] = useState<Source>(null)
+  // Tracked per axis. One shared source meant editing the latitude re-parsed
+  // the longitude from raw text that might belong to a different group — or,
+  // after "Use my location", from an empty string, which silently destroyed
+  // the other coordinate.
+  const [source, setSource] = useState<{ lat: Source; lon: Source }>({
+    lat: null,
+    lon: null,
+  })
   const [raw, setRaw] = useState({ lat: '', lon: '' })
 
   const once = useTracker((s) => s.once)
@@ -23,18 +30,17 @@ export function ConvertTab() {
   const valid = Number.isFinite(lat) && Number.isFinite(lon)
 
   function edit(group: Exclude<Source, null>, which: 'lat' | 'lon', value: string) {
-    const next = { ...raw, [which]: value }
-    setRaw(next)
-    setSource(group)
-    const nLat = parseCoord(next.lat, 'lat')
-    const nLon = parseCoord(next.lon, 'lon')
-    setLat(nLat)
-    setLon(nLon)
+    setRaw((r) => ({ ...r, [which]: value }))
+    setSource((s) => ({ ...s, [which]: group }))
+    // Only the axis being typed in is re-parsed; the other keeps its value.
+    const parsed = parseCoord(value, which)
+    if (which === 'lat') setLat(parsed)
+    else setLon(parsed)
   }
 
   /** Value for a group: echo the user's own text in the group being edited. */
   function show(group: Exclude<Source, null>, which: 'lat' | 'lon'): string {
-    if (source === group) return raw[which]
+    if (source[which] === group) return raw[which]
     const v = which === 'lat' ? lat : lon
     const axis = which === 'lat' ? 'lat' : 'lon'
     if (!Number.isFinite(v)) return ''
@@ -46,7 +52,7 @@ export function ConvertTab() {
   function setFrom(nLat: number, nLon: number) {
     setLat(nLat)
     setLon(nLon)
-    setSource(null)
+    setSource({ lat: null, lon: null })
     setRaw({ lat: '', lon: '' })
   }
 
@@ -54,8 +60,10 @@ export function ConvertTab() {
     setFrom(Number.NaN, Number.NaN)
   }
 
-  const invalidLat = raw.lat.trim() !== '' && !Number.isFinite(lat)
-  const invalidLon = raw.lon.trim() !== '' && !Number.isFinite(lon)
+  const invalidLat =
+    source.lat !== null && raw.lat.trim() !== '' && !Number.isFinite(lat)
+  const invalidLon =
+    source.lon !== null && raw.lon.trim() !== '' && !Number.isFinite(lon)
 
   return (
     <div className="space-y-3">
@@ -77,8 +85,8 @@ export function ConvertTab() {
             placeholder="27.98785"
             inputMode="decimal"
             aria-label="Latitude, decimal degrees"
-            aria-invalid={source === 'dd' && invalidLat}
-            className={source === 'dd' && invalidLat ? 'border-red-400/60' : ''}
+            aria-invalid={source.lat === 'dd' && invalidLat}
+            className={source.lat === 'dd' && invalidLat ? 'border-red-400/60' : ''}
           />
           <Input
             value={show('dd', 'lon')}
@@ -86,8 +94,8 @@ export function ConvertTab() {
             placeholder="-82.44712"
             inputMode="decimal"
             aria-label="Longitude, decimal degrees"
-            aria-invalid={source === 'dd' && invalidLon}
-            className={source === 'dd' && invalidLon ? 'border-red-400/60' : ''}
+            aria-invalid={source.lon === 'dd' && invalidLon}
+            className={source.lon === 'dd' && invalidLon ? 'border-red-400/60' : ''}
           />
         </div>
       </Card>

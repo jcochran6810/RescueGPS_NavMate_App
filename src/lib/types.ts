@@ -43,7 +43,6 @@ export interface Waypoint {
 /** Fields the client supplies when creating a waypoint. */
 export type NewWaypoint = Pick<Waypoint, 'name' | 'lat' | 'lon' | 'note'> & {
   team_id?: string | null
-  photos?: string[]
 }
 
 export interface Fix {

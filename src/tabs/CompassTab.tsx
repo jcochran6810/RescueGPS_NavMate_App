@@ -18,7 +18,7 @@ import { Card, EmptyState, Label } from '@/components/ui'
  * it", which is the question that actually gets asked over a radio.
  */
 export function CompassTab() {
-  const { fix, watching, once } = useTracker()
+  const { fix, watching, error, once } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
 
@@ -49,6 +49,20 @@ export function CompassTab() {
           Heading, and the bearing to everything you have saved.
         </p>
       </div>
+
+      {/* Same stranding fix as the Tides tab: show why there is no fix, and
+          offer the retry the empty state below tells the user to perform. */}
+      {error && !fix && (
+        <div className="rounded-xl bg-red-500/10 px-3 py-2.5 text-sm text-red-300">
+          <p>{error}</p>
+          <button
+            onClick={() => void once()}
+            className="mt-1.5 rounded-lg border border-red-400/30 px-2.5 py-1 text-xs hover:bg-red-500/10"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       <Compass lat={lat} lon={lon} />
 

@@ -23,6 +23,9 @@ export function DataTab() {
     lastSyncedAt,
     syncing,
     flush,
+    failed,
+    retryFailed,
+    discardFailed,
   } = useWaypoints()
   const { activeTeamId, activeTeam } = useTeams()
   const online = useOnline()
@@ -89,6 +92,37 @@ export function DataTab() {
             Sync now
           </Button>
         </div>
+
+        {failed.length > 0 && (
+          <div className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2.5 text-sm text-amber-300">
+            <p>
+              {failed.length} change{failed.length === 1 ? '' : 's'} the server
+              refused — {failed[0].reason}
+            </p>
+            <p className="mt-1 text-xs text-amber-300/70">
+              These no longer block syncing. Retry if the cause is fixed (e.g.
+              you rejoined the team), or discard them.
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={() => void retryFailed()}
+                className="rounded-lg border border-amber-400/30 px-2.5 py-1 text-xs hover:bg-amber-500/10"
+              >
+                Retry
+              </button>
+              <button
+                onClick={() => {
+                  if (!confirm('Discard the refused changes for good?')) return
+                  discardFailed()
+                  toast('Refused changes discarded')
+                }}
+                className="rounded-lg border border-red-400/30 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card>
@@ -186,13 +220,22 @@ export function DataTab() {
             setImporting(true)
             try {
               const text = await file.text()
-              const parsed = parseImport(text, file.name)
+              const { waypoints: parsed, skipped } = parseImport(text, file.name)
               if (parsed.length === 0) {
-                toast('No usable waypoints in that file', 'error')
+                toast(
+                  skipped > 0
+                    ? `No usable waypoints — all ${skipped} rows lacked a readable coordinate`
+                    : 'No usable waypoints in that file',
+                  'error',
+                )
                 return
               }
               const n = await importMany(parsed, activeTeamId)
-              toast(`Imported ${n} waypoint${n === 1 ? '' : 's'}`, 'success')
+              toast(
+                `Imported ${n} waypoint${n === 1 ? '' : 's'}` +
+                  (skipped > 0 ? ` — ${skipped} row${skipped === 1 ? '' : 's'} skipped` : ''),
+                skipped > 0 ? 'info' : 'success',
+              )
             } catch (err) {
               toast(
                 `Import failed: ${err instanceof Error ? err.message : 'bad file'}`,

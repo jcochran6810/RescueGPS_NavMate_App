@@ -12,8 +12,6 @@ import { create } from 'zustand'
  * it.
  */
 
-export type HeadingSource = 'compass' | null
-
 export type HeadingPermission =
   | 'unknown'
   | 'granted'
@@ -23,7 +21,6 @@ export type HeadingPermission =
 interface HeadingState {
   /** Degrees clockwise from north, 0–360, or null with no compass reading. */
   heading: number | null
-  source: HeadingSource
   permission: HeadingPermission
   /**
    * True when the reading is referenced to magnetic north rather than true
@@ -79,7 +76,10 @@ interface CompassEvent extends DeviceOrientationEvent {
 /** A north-referenced heading from an orientation event, or null. */
 function headingFrom(e: CompassEvent): { deg: number; magnetic: boolean } | null {
   if (typeof e.webkitCompassHeading === 'number' && Number.isFinite(e.webkitCompassHeading)) {
-    return { deg: e.webkitCompassHeading, magnetic: false }
+    // Apple documents webkitCompassHeading as degrees relative to MAGNETIC
+    // north. It was marked true here, which suppressed the declination
+    // warning on exactly the platform that needed it.
+    return { deg: e.webkitCompassHeading, magnetic: true }
   }
   // alpha runs anticlockwise from the reference direction, so it is subtracted
   // rather than used as-is.
@@ -91,7 +91,6 @@ function headingFrom(e: CompassEvent): { deg: number; magnetic: boolean } | null
 
 export const useHeading = create<HeadingState>((set, get) => ({
   heading: null,
-  source: null,
   permission: 'unknown',
   magnetic: false,
   listening: false,
@@ -130,7 +129,7 @@ export const useHeading = create<HeadingState>((set, get) => ({
       if (now - lastEmit < MIN_INTERVAL_MS) return
       lastEmit = now
 
-      set({ heading: deg, source: 'compass', magnetic: reading.magnetic })
+      set({ heading: deg, magnetic: reading.magnetic })
     }
 
     // Chrome exposes the Earth-referenced reading under its own event name and
@@ -156,6 +155,6 @@ export const useHeading = create<HeadingState>((set, get) => ({
     }
     smoothX = null
     smoothY = null
-    set({ listening: false, heading: null, source: null })
+    set({ listening: false, heading: null })
   },
 }))

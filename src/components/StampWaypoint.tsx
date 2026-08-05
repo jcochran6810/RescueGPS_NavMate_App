@@ -10,6 +10,8 @@ import { Sheet } from '@/components/Sheet'
 import { Button, Input, Label, Spinner } from '@/components/ui'
 import type { Waypoint } from '@/lib/types'
 
+const NO_PHOTOS: string[] = []
+
 /**
  * Drop a waypoint at the current position in one press, then describe it.
  *
@@ -25,7 +27,7 @@ import type { Waypoint } from '@/lib/types'
  */
 export function StampWaypoint() {
   const once = useTracker((s) => s.once)
-  const { create, update, addPhotos } = useWaypoints()
+  const { create, update, addPhotos, stagePhotos, stagedFor } = useWaypoints()
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const online = useOnline()
 
@@ -33,15 +35,30 @@ export function StampWaypoint() {
   const [stamped, setStamped] = useState<Waypoint | null>(null)
   const [name, setName] = useState('')
   const [note, setNote] = useState('')
-  const [pending, setPending] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
-  const [photoPaths, setPhotoPaths] = useState<string[]>([])
   const cameraRef = useRef<HTMLInputElement>(null)
   const libraryRef = useRef<HTMLInputElement>(null)
 
+  // Photos already attached — read from the store, so an upload that lands
+  // while the sheet is open (including a staged batch draining on reconnect)
+  // shows up without any bookkeeping here.
+  const photoPaths = useWaypoints((s) => {
+    if (!stamped) return NO_PHOTOS
+    return s.visible().find((w) => w.id === stamped.id)?.photos ?? NO_PHOTOS
+  })
+  const stagedCount = useWaypoints((s) =>
+    stamped ? (s.stagedPhotoCount[stamped.id] ?? 0) : 0,
+  )
+
   const previews = useMemo(
-    () => pending.map((f) => ({ file: f, url: URL.createObjectURL(f) })),
-    [pending],
+    () =>
+      stamped
+        ? stagedFor(stamped.id).map((f) => ({
+            file: f,
+            url: URL.createObjectURL(f),
+          }))
+        : [],
+    [stamped, stagedCount, stagedFor],
   )
   useEffect(
     () => () => previews.forEach((p) => URL.revokeObjectURL(p.url)),
@@ -56,16 +73,13 @@ export function StampWaypoint() {
         toast(useTracker.getState().error ?? 'No GPS fix', 'error')
         return
       }
-      const created = await create(
-        {
-          name: defaultName(),
-          lat: fix.lat,
-          lon: fix.lon,
-          note: '',
-          team_id: activeTeamId,
-        },
-        [],
-      )
+      const created = await create({
+        name: defaultName(),
+        lat: fix.lat,
+        lon: fix.lon,
+        note: '',
+        team_id: activeTeamId,
+      })
       if (!created) {
         toast('Could not save waypoint', 'error')
         return
@@ -73,8 +87,6 @@ export function StampWaypoint() {
       setStamped(created)
       setName(created.name)
       setNote('')
-      setPending([])
-      setPhotoPaths([])
       toast(
         online ? 'Position stamped' : 'Stamped offline — will sync later',
         'success',
@@ -87,20 +99,19 @@ export function StampWaypoint() {
   async function attach(files: File[]) {
     if (!stamped || files.length === 0) return
     if (!online) {
-      // Queuing the bytes would mean holding photographs in localStorage,
-      // which it is not sized for. Better to say so than to lose them quietly.
-      setPending((p) => [...p, ...files].slice(0, 8))
-      toast('Saved for now — photos upload when you are back online', 'info')
+      // The bytes stay in memory (localStorage is not sized for photographs)
+      // and upload automatically the moment the connection returns — as long
+      // as the app stays open. The message says exactly that.
+      stagePhotos(stamped.id, files)
+      toast(
+        'No signal — photos upload automatically when it returns. Keep the app open.',
+        'info',
+      )
       return
     }
     setUploading(true)
     try {
       const n = await addPhotos(stamped.id, files)
-      const saved = useWaypoints
-        .getState()
-        .visible()
-        .find((w) => w.id === stamped.id)
-      setPhotoPaths(saved?.photos ?? [])
       toast(`${n} photo${n === 1 ? '' : 's'} added`, 'success')
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Photo upload failed', 'error')
@@ -109,7 +120,8 @@ export function StampWaypoint() {
     }
   }
 
-  /** Commit whatever has been typed and close. Every exit route runs this. */
+  /** Commit whatever has been typed and close. Every exit route runs this —
+   *  including "Stamp another", which used to throw the typing away. */
   async function done() {
     if (!stamped) return
     const patch: Partial<Waypoint> = {}
@@ -117,7 +129,6 @@ export function StampWaypoint() {
     if (trimmed !== stamped.name) patch.name = trimmed
     if (note.trim() !== stamped.note) patch.note = note.trim()
     setStamped(null)
-    setPending([])
     if (Object.keys(patch).length > 0) {
       await update(stamped.id, patch)
       toast('Waypoint saved', 'success')
@@ -227,8 +238,8 @@ export function StampWaypoint() {
               </div>
               <p className="mt-1.5 text-xs text-amber-300">
                 {previews.length} photo{previews.length === 1 ? '' : 's'} waiting
-                for a connection. They are not saved yet — come back to this
-                waypoint once you have signal.
+                for a connection. They upload automatically when signal comes
+                back — keep the app open, they are not saved anywhere yet.
               </p>
             </>
           )}
@@ -236,7 +247,12 @@ export function StampWaypoint() {
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button
               variant="ghost"
-              onClick={() => void stamp()}
+              onClick={() =>
+                void (async () => {
+                  await done()
+                  await stamp()
+                })()
+              }
               disabled={stamping}
             >
               Stamp another

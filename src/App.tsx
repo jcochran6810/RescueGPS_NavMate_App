@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
+import { useTides } from '@/store/useTides'
 import { useWaypoints } from '@/store/useWaypoints'
 import { AuthScreen } from '@/components/AuthScreen'
+import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
 import { TabBar, type TabId } from '@/components/TabBar'
 import { StampWaypoint } from '@/components/StampWaypoint'
@@ -19,14 +21,18 @@ import { TeamTab } from '@/tabs/TeamTab'
 import { DataTab } from '@/tabs/DataTab'
 
 export default function App() {
-  const { session, ready, init } = useAuth()
+  const { session, ready, recovering, init } = useAuth()
   const [tab, setTab] = useState<TabId>('home')
 
   useEffect(() => init(), [init])
 
-  // Retry queued writes as soon as the network comes back.
+  // Retry queued writes — and any photos staged offline — as soon as the
+  // network comes back.
   useEffect(() => {
-    const onOnline = () => void useWaypoints.getState().flush()
+    const onOnline = () => {
+      const wp = useWaypoints.getState()
+      void wp.flush().then(() => wp.drainStagedPhotos())
+    }
     window.addEventListener('online', onOnline)
     return () => window.removeEventListener('online', onOnline)
   }, [])
@@ -34,6 +40,10 @@ export default function App() {
   useEffect(() => {
     if (!session) {
       useTeams.getState().reset()
+      // The waypoint cache is deliberately NOT cleared here — it may hold an
+      // unsynced queue, and its ownerId guard stops another account from
+      // inheriting it. The tide station pin carries no such protection.
+      useTides.getState().reset()
       return
     }
     void useTeams.getState().load()
@@ -52,6 +62,15 @@ export default function App() {
     return (
       <>
         <AuthScreen />
+        <Toast />
+      </>
+    )
+  }
+
+  if (recovering) {
+    return (
+      <>
+        <RecoverPassword />
         <Toast />
       </>
     )

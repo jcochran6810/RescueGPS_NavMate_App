@@ -1,6 +1,15 @@
 /** Export and import of waypoint sets: JSON, GPX and CSV. */
 
+import { parseCoord, type Axis } from './coords'
 import type { NewWaypoint, Waypoint } from './types'
+
+/** What an import produced — including how many rows were left behind, so
+ *  "Imported 40" is never silently said about a 100-row file. */
+export interface ImportResult {
+  waypoints: NewWaypoint[]
+  /** Rows that carried no usable coordinate. */
+  skipped: number
+}
 
 export type ExportFormat = 'json' | 'gpx' | 'csv'
 
@@ -152,6 +161,17 @@ function toNumber(v: unknown): number {
   return s === '' ? Number.NaN : Number(s)
 }
 
+/**
+ * A coordinate cell from an import: a plain number, or any text the strict
+ * coordinate parser accepts — so a file carrying `27° 59' 16.3" N` imports
+ * instead of being dropped row by row.
+ */
+function toCoord(v: unknown, axis: Axis): number {
+  const n = toNumber(v)
+  if (Number.isFinite(n)) return n
+  return typeof v === 'string' ? parseCoord(v, axis) : Number.NaN
+}
+
 function isValidLatLon(lat: number, lon: number): boolean {
   return (
     Number.isFinite(lat) &&
@@ -215,9 +235,9 @@ const HEADER_ALIASES: Record<'name' | 'lat' | 'lon' | 'note', string[]> = {
  * Read a CSV export back in. The header row names the columns, so a file from
  * another tool works as long as it labels its latitude and longitude.
  */
-export function parseCSV(text: string): NewWaypoint[] {
+export function parseCSV(text: string): ImportResult {
   const rows = parseCsvRows(text)
-  if (rows.length < 2) return []
+  if (rows.length < 2) return { waypoints: [], skipped: 0 }
 
   const header = rows[0].map((h) => h.trim().toLowerCase())
   const indexOf = (key: keyof typeof HEADER_ALIASES) =>
@@ -231,15 +251,14 @@ export function parseCSV(text: string): NewWaypoint[] {
   const iName = indexOf('name')
   const iNote = indexOf('note')
 
-  return rows
-    .slice(1)
-    .map((r) => ({
-      name: (iName === -1 ? '' : (r[iName] ?? '')).trim().slice(0, 200) || 'Imported',
-      lat: toNumber(r[iLat]),
-      lon: toNumber(r[iLon]),
-      note: (iNote === -1 ? '' : (r[iNote] ?? '')).trim(),
-    }))
-    .filter((w) => isValidLatLon(w.lat, w.lon))
+  const parsed = rows.slice(1).map((r) => ({
+    name: (iName === -1 ? '' : (r[iName] ?? '')).trim().slice(0, 200) || 'Imported',
+    lat: toCoord(r[iLat], 'lat'),
+    lon: toCoord(r[iLon], 'lon'),
+    note: (iNote === -1 ? '' : (r[iNote] ?? '')).trim(),
+  }))
+  const waypoints = parsed.filter((w) => isValidLatLon(w.lat, w.lon))
+  return { waypoints, skipped: parsed.length - waypoints.length }
 }
 
 function hasCsvHeader(text: string): boolean {
@@ -257,7 +276,7 @@ function hasCsvHeader(text: string): boolean {
  * Photos are not carried across — they live in Storage, and a file from
  * another account could not be read anyway.
  */
-export function parseImport(text: string, filename = ''): NewWaypoint[] {
+export function parseImport(text: string, filename = ''): ImportResult {
   const lower = filename.toLowerCase()
   const looksXml = lower.endsWith('.gpx') || text.trim().startsWith('<')
 
@@ -266,14 +285,14 @@ export function parseImport(text: string, filename = ''): NewWaypoint[] {
     if (doc.getElementsByTagName('parsererror').length > 0) {
       throw new Error('That file is not valid GPX')
     }
-    return Array.from(doc.getElementsByTagName('wpt'))
-      .map((n) => ({
-        name: n.getElementsByTagName('name')[0]?.textContent?.trim() || 'Imported',
-        lat: toNumber(n.getAttribute('lat')),
-        lon: toNumber(n.getAttribute('lon')),
-        note: n.getElementsByTagName('desc')[0]?.textContent?.trim() || '',
-      }))
-      .filter((w) => isValidLatLon(w.lat, w.lon))
+    const parsed = Array.from(doc.getElementsByTagName('wpt')).map((n) => ({
+      name: n.getElementsByTagName('name')[0]?.textContent?.trim() || 'Imported',
+      lat: toCoord(n.getAttribute('lat'), 'lat'),
+      lon: toCoord(n.getAttribute('lon'), 'lon'),
+      note: n.getElementsByTagName('desc')[0]?.textContent?.trim() || '',
+    }))
+    const waypoints = parsed.filter((w) => isValidLatLon(w.lat, w.lon))
+    return { waypoints, skipped: parsed.length - waypoints.length }
   }
 
   // A .csv name is taken at its word; otherwise the first line has to look like
@@ -292,15 +311,15 @@ export function parseImport(text: string, filename = ''): NewWaypoint[] {
 
   if (!Array.isArray(list)) throw new Error('No waypoints found in that file')
 
-  return list
-    .map((raw) => {
-      const w = raw as Record<string, unknown>
-      return {
-        name: String(w.name ?? 'Imported').slice(0, 200),
-        lat: toNumber(w.lat),
-        lon: toNumber(w.lon),
-        note: String(w.note ?? ''),
-      }
-    })
-    .filter((w) => isValidLatLon(w.lat, w.lon))
+  const parsed = list.map((raw) => {
+    const w = raw as Record<string, unknown>
+    return {
+      name: String(w.name ?? 'Imported').slice(0, 200),
+      lat: toCoord(w.lat, 'lat'),
+      lon: toCoord(w.lon, 'lon'),
+      note: String(w.note ?? ''),
+    }
+  })
+  const waypoints = parsed.filter((w) => isValidLatLon(w.lat, w.lon))
+  return { waypoints, skipped: parsed.length - waypoints.length }
 }

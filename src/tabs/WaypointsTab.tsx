@@ -305,12 +305,16 @@ function WaypointCard({
     setEditing(false)
 
     // Send only what actually changed, so two people editing different fields
-    // of the same shared waypoint do not overwrite each other.
+    // of the same shared waypoint do not overwrite each other. Coordinates are
+    // compared through the same 6-decimal rendering the form showed — the
+    // draft was seeded from toDD(), so comparing against the full-precision
+    // stored value flagged every edit as a coordinate change and silently
+    // re-rounded the position each time.
     const patch: Partial<Waypoint> = {}
     if (name !== w.name) patch.name = name
     if (note !== w.note) patch.note = note
-    if (lat !== w.lat) patch.lat = lat
-    if (lon !== w.lon) patch.lon = lon
+    if (toDD(lat) !== toDD(w.lat)) patch.lat = lat
+    if (toDD(lon) !== toDD(w.lon)) patch.lon = lon
     if (Object.keys(patch).length === 0) return
 
     await update(w.id, patch)

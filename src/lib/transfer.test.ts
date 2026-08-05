@@ -62,21 +62,22 @@ describe('toCSV', () => {
 describe('parseImport', () => {
   it('reads a v2 JSON export', () => {
     const body = serialize([wp()], 'json').body
-    const parsed = parseImport(body, 'x.json')
-    expect(parsed).toHaveLength(1)
-    expect(parsed[0].name).toBe('Marker 12')
-    expect(parsed[0].lat).toBeCloseTo(27.98785, 5)
+    const { waypoints, skipped } = parseImport(body, 'x.json')
+    expect(waypoints).toHaveLength(1)
+    expect(skipped).toBe(0)
+    expect(waypoints[0].name).toBe('Marker 12')
+    expect(waypoints[0].lat).toBeCloseTo(27.98785, 5)
   })
 
   it('reads a bare JSON array (the v1 export shape)', () => {
-    const parsed = parseImport(
+    const { waypoints } = parseImport(
       JSON.stringify([{ name: 'Old', lat: 10, lon: 20, note: 'n' }]),
     )
-    expect(parsed).toEqual([{ name: 'Old', lat: 10, lon: 20, note: 'n' }])
+    expect(waypoints).toEqual([{ name: 'Old', lat: 10, lon: 20, note: 'n' }])
   })
 
-  it('drops rows with out-of-range or missing coordinates', () => {
-    const parsed = parseImport(
+  it('drops rows with out-of-range or missing coordinates, and counts them', () => {
+    const { waypoints, skipped } = parseImport(
       JSON.stringify([
         { name: 'ok', lat: 10, lon: 20 },
         { name: 'bad lat', lat: 91, lon: 20 },
@@ -85,7 +86,21 @@ describe('parseImport', () => {
         { name: 'text', lat: 'north', lon: 20 },
       ]),
     )
-    expect(parsed.map((p) => p.name)).toEqual(['ok'])
+    expect(waypoints.map((p) => p.name)).toEqual(['ok'])
+    expect(skipped).toBe(4)
+  })
+
+  it('accepts DMS and DDM coordinate strings in JSON', () => {
+    const { waypoints, skipped } = parseImport(
+      JSON.stringify([
+        { name: 'dms', lat: `27° 59' 16.3" N`, lon: `82° 26' 49.6" W` },
+        { name: 'ddm', lat: `27° 59.272' N`, lon: `82° 26.827' W` },
+      ]),
+    )
+    expect(skipped).toBe(0)
+    expect(waypoints[0].lat).toBeCloseTo(27.98786, 4)
+    expect(waypoints[0].lon).toBeCloseTo(-82.44711, 4)
+    expect(waypoints[1].lat).toBeCloseTo(27.98787, 4)
   })
 
   it('throws on input that is not JSON at all', () => {
@@ -93,7 +108,10 @@ describe('parseImport', () => {
   })
 
   it('reports no waypoints when the JSON has none', () => {
-    expect(parseImport(JSON.stringify({ waypoints: [] }))).toEqual([])
+    expect(parseImport(JSON.stringify({ waypoints: [] }))).toEqual({
+      waypoints: [],
+      skipped: 0,
+    })
   })
 })
 
@@ -107,7 +125,7 @@ describe('parseCsvRows', () => {
   })
 
   it('accepts CRLF and a leading BOM', () => {
-    expect(parseCsvRows('\uFEFFa,b\r\nc,d\r\n')).toEqual([
+    expect(parseCsvRows('﻿a,b\r\nc,d\r\n')).toEqual([
       ['a', 'b'],
       ['c', 'd'],
     ])
@@ -116,45 +134,57 @@ describe('parseCsvRows', () => {
 
 describe('parseCSV', () => {
   it('round-trips a NavMate CSV export', () => {
-    const parsed = parseCSV(toCSV([wp(), wp({ id: 'w2', name: 'Marker 13' })]))
-    expect(parsed.map((p) => p.name)).toEqual(['Marker 12', 'Marker 13'])
-    expect(parsed[0].lat).toBeCloseTo(27.98785, 5)
-    expect(parsed[0].lon).toBeCloseTo(-82.44712, 5)
-    expect(parsed[0].note).toBe('By the channel')
+    const { waypoints } = parseCSV(
+      toCSV([wp(), wp({ id: 'w2', name: 'Marker 13' })]),
+    )
+    expect(waypoints.map((p) => p.name)).toEqual(['Marker 12', 'Marker 13'])
+    expect(waypoints[0].lat).toBeCloseTo(27.98785, 5)
+    expect(waypoints[0].lon).toBeCloseTo(-82.44712, 5)
+    expect(waypoints[0].note).toBe('By the channel')
   })
 
   it('accepts foreign column names and ignores extra columns', () => {
-    const parsed = parseCSV('Title,Y,X,Elevation\nRidge,45.5,-110.25,2400\n')
-    expect(parsed).toEqual([
+    const { waypoints } = parseCSV('Title,Y,X,Elevation\nRidge,45.5,-110.25,2400\n')
+    expect(waypoints).toEqual([
       { name: 'Ridge', lat: 45.5, lon: -110.25, note: '' },
     ])
+  })
+
+  it('accepts DMS coordinates in CSV cells', () => {
+    const { waypoints, skipped } = parseCSV(
+      `name,lat,lon\nBuoy,"27° 59' 16.3"" N","82° 26' 49.6"" W"\n`,
+    )
+    expect(skipped).toBe(0)
+    expect(waypoints[0].lat).toBeCloseTo(27.98786, 4)
+    expect(waypoints[0].lon).toBeCloseTo(-82.44711, 4)
   })
 
   it('refuses a CSV with no coordinate columns', () => {
     expect(() => parseCSV('name,note\na,b\n')).toThrow(/latitude and longitude/)
   })
 
-  it('drops rows whose coordinates are unusable', () => {
-    const parsed = parseCSV(
-      'name,lat,lon\nok,10,20\nbad,91,20\nblank,,20\ntext,north,20\n',
+  it('drops rows whose coordinates are unusable, and counts them', () => {
+    const { waypoints, skipped } = parseCSV(
+      'name,lat,lon\nok,10,20\nbad,91,20\nblank,,20\ntext,junk,20\n',
     )
-    expect(parsed.map((p) => p.name)).toEqual(['ok'])
+    expect(waypoints.map((p) => p.name)).toEqual(['ok'])
+    expect(skipped).toBe(3)
   })
 
   it('returns nothing for a header with no rows', () => {
-    expect(parseCSV('name,lat,lon\n')).toEqual([])
+    expect(parseCSV('name,lat,lon\n')).toEqual({ waypoints: [], skipped: 0 })
   })
 })
 
 describe('parseImport routing', () => {
   it('reads CSV when the filename says so', () => {
-    const parsed = parseImport(toCSV([wp()]), 'backup.csv')
-    expect(parsed[0].name).toBe('Marker 12')
+    const { waypoints } = parseImport(toCSV([wp()]), 'backup.csv')
+    expect(waypoints[0].name).toBe('Marker 12')
   })
 
   it('reads CSV from content alone when the header names coordinates', () => {
-    const parsed = parseImport('name,latitude,longitude\nA,1,2\n')
-    expect(parsed).toEqual([{ name: 'A', lat: 1, lon: 2, note: '' }])
+    const { waypoints } = parseImport('name,latitude,longitude\nA,1,2\n')
+    expect(waypoints).toEqual([{ name: 'A', lat: 1, lon: 2, note: '' }])
   })
 
   it('still throws on input that is neither JSON, GPX nor CSV', () => {
@@ -197,7 +227,7 @@ describe('serialize', () => {
 
 describe('missing coordinates are never coerced to zero', () => {
   it('drops a JSON row whose coordinate is null or blank', () => {
-    const parsed = parseImport(
+    const { waypoints } = parseImport(
       JSON.stringify([
         { name: 'null lat', lat: null, lon: 20 },
         { name: 'blank lat', lat: '', lon: 20 },
@@ -205,7 +235,7 @@ describe('missing coordinates are never coerced to zero', () => {
         { name: 'ok', lat: 10, lon: 20 },
       ]),
     )
-    expect(parsed.map((p) => p.name)).toEqual(['ok'])
+    expect(waypoints.map((p) => p.name)).toEqual(['ok'])
   })
 
   // The GPX branch feeds getAttribute() — string or null — through the same
