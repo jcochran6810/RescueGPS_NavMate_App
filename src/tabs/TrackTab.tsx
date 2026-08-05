@@ -9,10 +9,13 @@ import {
   formatDuration,
   formatEtaClock,
   formatSpeed,
+  trailDistanceNM,
   MPS_TO_KNOTS,
   type DistanceUnit,
 } from '@/lib/geo'
 import { toDD, toDMS } from '@/lib/coords'
+import { download, trackToGPX } from '@/lib/transfer'
+import { toast } from '@/store/useToast'
 import { Button, Card, Input, Label, Stat } from '@/components/ui'
 
 const UNITS: { id: DistanceUnit; label: string }[] = [
@@ -22,7 +25,7 @@ const UNITS: { id: DistanceUnit; label: string }[] = [
 ]
 
 export function TrackTab() {
-  const { fix, watching, error, start, stop } = useTracker()
+  const { fix, watching, error, trail, start, stop, clearTrail } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
 
   const [targetId, setTargetId] = useState('')
@@ -30,6 +33,12 @@ export function TrackTab() {
   const [unit, setUnit] = useState<DistanceUnit>('nm')
 
   const target = waypoints.find((w) => w.id === targetId) ?? null
+
+  const travelled = useMemo(() => trailDistanceNM(trail), [trail])
+  const elapsedH =
+    trail.length > 1
+      ? (trail[trail.length - 1].timestamp - trail[0].timestamp) / 3600_000
+      : 0
 
   const eta = useMemo(() => {
     if (!fix || !target) return null
@@ -187,6 +196,55 @@ export function TrackTab() {
             </p>
           )}
         </div>
+      </Card>
+
+      <Card>
+        <Label>Track recording</Label>
+        <div className="grid grid-cols-3 gap-2">
+          <Stat label="Points" value={String(trail.length)} />
+          <Stat
+            label="Travelled"
+            value={trail.length > 1 ? formatDistance(travelled, unit) : '—'}
+          />
+          <Stat
+            label="Elapsed"
+            value={elapsedH > 0 ? formatDuration(elapsedH) : '—'}
+          />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button
+            onClick={() => {
+              if (trail.length < 2) return toast('No track recorded yet', 'error')
+              const stamp = new Date().toISOString().slice(0, 10)
+              download(
+                `navmate-track-${stamp}.gpx`,
+                trackToGPX(trail, `NavMate track ${stamp}`),
+                'application/gpx+xml',
+              )
+              toast('Track exported', 'success')
+            }}
+          >
+            Export track (GPX)
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              if (trail.length === 0) return
+              if (!confirm('Discard the recorded track?')) return
+              clearTrail()
+              toast('Track cleared')
+            }}
+            disabled={trail.length === 0}
+          >
+            Clear track
+          </Button>
+        </div>
+        <p className="mt-1.5 text-xs text-slate-500">
+          Fixes are recorded while tracking is on, up to 2000 points, and kept
+          until you clear them or reload the app. Movement smaller than the GPS
+          accuracy is ignored so a stationary phone does not accumulate
+          distance.
+        </p>
       </Card>
     </div>
   )

@@ -77,6 +77,28 @@ export function formatDuration(hours: number): string {
   return `${h} h ${m} min`
 }
 
+/**
+ * Total distance along a sequence of fixes, in nautical miles.
+ *
+ * Consecutive fixes closer together than the worse of the two accuracy figures
+ * are treated as the same point. A phone sitting still reports a jittering
+ * position, and summing that jitter would otherwise invent miles of travel.
+ */
+export function trailDistanceNM(
+  points: { lat: number; lon: number; accuracy?: number | null }[],
+): number {
+  let total = 0
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    const legNM = haversineNM(a.lat, a.lon, b.lat, b.lon)
+    const slopM = Math.max(a.accuracy ?? 0, b.accuracy ?? 0)
+    if (legNM * NM_TO_METERS <= slopM) continue
+    total += legNM
+  }
+  return total
+}
+
 /** Clock time of arrival, given hours from now. */
 export function formatEtaClock(hours: number, now = new Date()): string {
   if (!Number.isFinite(hours) || hours < 0 || hours > 24 * 7) return ''

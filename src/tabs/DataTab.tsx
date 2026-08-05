@@ -14,16 +14,41 @@ const FORMATS: { id: ExportFormat; label: string }[] = [
 ]
 
 export function DataTab() {
-  const { visible, importMany, clearLocal, load, pending, lastSyncedAt, syncing, flush } =
-    useWaypoints()
-  const activeTeamId = useTeams((s) => s.activeTeamId)
+  const {
+    visible,
+    importMany,
+    clearLocal,
+    load,
+    pendingCount,
+    lastSyncedAt,
+    syncing,
+    flush,
+  } = useWaypoints()
+  const { activeTeamId, activeTeam } = useTeams()
   const online = useOnline()
 
   const [email, setEmail] = useState('')
   const [importing, setImporting] = useState(false)
+  const [scopeAll, setScopeAll] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const waypoints = visible()
+  const queued = pendingCount()
+  const team = activeTeam()
+  const all = visible()
+
+  // Default to the scope shown on the Waypoints tab, so the count here matches
+  // the list the user just looked at.
+  const waypoints = scopeAll
+    ? all
+    : all.filter((w) =>
+        activeTeamId ? w.team_id === activeTeamId : w.team_id === null,
+      )
+
+  const scopeLabel = scopeAll
+    ? 'every waypoint on this account'
+    : team
+      ? `shared with ${team.name}`
+      : 'private waypoints'
 
   return (
     <div className="space-y-3">
@@ -38,9 +63,9 @@ export function DataTab() {
         <Label>Sync</Label>
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm text-slate-300">
-            {pending.length > 0 ? (
+            {queued > 0 ? (
               <span className="text-sky-300">
-                {pending.length} change{pending.length === 1 ? '' : 's'} waiting
+                {queued} change{queued === 1 ? '' : 's'} waiting
               </span>
             ) : (
               <span className="text-emerald-300">Everything synced</span>
@@ -67,7 +92,29 @@ export function DataTab() {
       </Card>
 
       <Card>
-        <Label>Save to device ({waypoints.length} waypoints)</Label>
+        <Label>
+          Save to device ({waypoints.length} waypoint
+          {waypoints.length === 1 ? '' : 's'})
+        </Label>
+        <div className="mb-3 flex gap-1">
+          {[
+            { id: false, label: team ? team.name : 'Private' },
+            { id: true, label: 'Everything' },
+          ].map((s) => (
+            <button
+              key={String(s.id)}
+              onClick={() => setScopeAll(s.id)}
+              className={
+                'flex-1 truncate rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
+                (scopeAll === s.id
+                  ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                  : 'border-white/10 text-slate-400 hover:bg-white/5')
+              }
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
         <div className="grid grid-cols-3 gap-2">
           {FORMATS.map((f) => (
             <Button
@@ -85,8 +132,8 @@ export function DataTab() {
           ))}
         </div>
         <p className="mt-1.5 text-xs text-slate-500">
-          Photos are not embedded — they stay in cloud storage and travel with
-          your account.
+          Exporting {scopeLabel}. Photos are not embedded — they stay in cloud
+          storage and travel with your account.
         </p>
       </Card>
 
@@ -131,7 +178,7 @@ export function DataTab() {
         <input
           ref={fileRef}
           type="file"
-          accept="application/json,.json,.gpx,application/gpx+xml"
+          accept="application/json,.json,.gpx,application/gpx+xml,text/csv,.csv"
           hidden
           onChange={async (e) => {
             const file = e.target.files?.[0]
@@ -159,7 +206,7 @@ export function DataTab() {
         />
         <Button onClick={() => fileRef.current?.click()} disabled={importing}>
           {importing && <Spinner />}
-          Import JSON / GPX
+          Import JSON / GPX / CSV
         </Button>
         <p className="mt-1.5 text-xs text-slate-500">
           Imported waypoints go into your current scope

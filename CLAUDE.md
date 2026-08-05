@@ -216,6 +216,91 @@ scripts/          make-icons.mjs — regenerates PWA icons from public/icon.svg
 
 <!-- newest first; append a new dated entry on every "end session" -->
 
+### 2026-08-05 — claude/html-refactor-features-c0oebh
+
+Session opened with "the HTML files don't need to stay HTML — make everything
+functional and list the features". There was nothing left to convert: the
+prototype was already rebuilt as React/TS in the previous session and the only
+`.html` in the repo is `index.html`, Vite's mount point. So the session became
+an audit of the app for things declared but not wired up, plus the feature
+list.
+
+**Functional gaps closed**
+- **Waypoint editing.** The app could create and delete waypoints but never
+  correct one. Each card now has an inline edit form for name, coordinates and
+  note (`src/tabs/WaypointsTab.tsx`, extracted into a `WaypointCard`
+  component). It sends only the fields that actually changed, so two people
+  editing different fields of the same shared waypoint do not overwrite each
+  other.
+- **Edit/Delete now match the RLS policy** — own waypoints, or anything in a
+  team you administer. Previously Delete was offered to every member. A write
+  the database refuses stays at the head of the offline queue and blocks every
+  write behind it, so offering an impossible control was a real hazard, not a
+  cosmetic one. Wired `useTeams.myRole` in, which had been dead since it was
+  written.
+- **Track recording surfaced.** `useTracker` had been accumulating a
+  2000-point trail that nothing ever read. The Track tab now shows point
+  count, distance travelled and elapsed time, with GPX `<trk>` export and a
+  clear button (`trackToGPX` in `src/lib/transfer.ts`, `clearTrail` in the
+  store). `trailDistanceNM` in `src/lib/geo.ts` skips legs shorter than the
+  worse of the two fixes' accuracy, so a phone on a dashboard does not
+  accumulate miles of GPS jitter as distance travelled.
+- **CSV import.** CSV was an export format that could not be read back. Added
+  an RFC 4180 reader (`parseCsvRows` / `parseCSV`) handling quoted commas and
+  newlines, doubled quotes, BOM and CRLF, matching columns by header alias so
+  files from other tools work. `parseImport` routes to it on a `.csv` filename
+  or a header naming latitude and longitude — deliberately not on "anything
+  that isn't JSON", so genuinely unreadable input still fails loudly.
+- **Export scope.** The Data tab said "N waypoints" while exporting private
+  and team waypoints together, whatever scope the Waypoints tab was showing.
+  Export now follows the active scope, with an explicit Everything toggle.
+
+**Two bugs found while auditing**
+- A signed-out account's cache and offline queue stayed in `localStorage`. The
+  next person to sign in on that device saw the previous user's waypoints
+  until the first sync returned — indefinitely if offline — and queued deletes
+  would have been replayed under the new session. `useWaypoints` now records
+  an `ownerId` alongside the cache and drops it when a different account signs
+  in. The check uses `auth.getSession()` (local) rather than `getUser()`
+  (network) so it still works with no signal, which is exactly when it
+  matters. Clearing on sign-out was considered and rejected: it would destroy
+  a user's own unsynced queue every time they signed out.
+- Import coerced a missing coordinate to zero. `Number('')`, `Number(null)`
+  and `Number([])` are all `0`, so absent data became a plausible-looking
+  position in the Gulf of Guinea — precisely the failure mode `coords.ts` is
+  strict about. A test written for the CSV reader caught it. A shared
+  `toNumber` helper now rejects those, applied to all three import paths
+  (JSON, GPX, CSV).
+
+Tests: 65, up from 46. Typecheck, lint and build clean.
+
+**Deployment progress** (the second half of the session)
+- The Vercel project **now exists** — `rescuegps-navmate`
+  (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`), created by the user from the GitHub
+  import. The previous session's 403 was a token permission limit, not a
+  configuration problem, and it still applies: this session could read Vercel
+  but not create.
+- Root cause of the wrong deploy branch found: the **GitHub repo's
+  `default_branch` is still `claude/rescuegps-subdomain-setup-gchtnn`**, so
+  the Vercel import inherited it as the production branch. The user has since
+  set Vercel's production branch to `main` (Settings → **Environments** →
+  Production — Vercel moved it out of Settings → Git, which is where
+  DEPLOYMENT.md said to look). The GitHub default branch is still unchanged
+  and should be pointed at `main` too, or the next import repeats this.
+- Only one deployment existed before this merge: `90498e6` from the old
+  session branch. Content-matched `main`, but predated everything above.
+- Note for future sessions: the project's `-git-<branch>-` alias domain is
+  attached to the *deployment*, not the branch setting, so it is **not** a way
+  to verify which branch production tracks. The Environments page is.
+
+**Correction to the previous session log**
+- It recorded every commit as unsigned and showing Unverified on GitHub.
+  Vercel's deployment metadata for `90498e6` reports
+  `githubCommitVerification: "verified"`. Not confirmed directly in the GitHub
+  UI, so the `fix_list.md` item stays open — but the claim that they are all
+  Unverified looks wrong, and it should be checked before anyone spends effort
+  retrofitting signatures.
+
 ### 2026-08-03 — claude/rescuegps-subdomain-setup-gchtnn
 
 Initial build. Repo was empty at session start.
