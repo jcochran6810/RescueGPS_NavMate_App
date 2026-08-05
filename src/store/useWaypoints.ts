@@ -103,14 +103,36 @@ function newId(): string {
  * array until the cache or the queue actually changes is what makes the
  * derived list safe to select.
  */
-let memo: { cache: Waypoint[]; pending: PendingOp[]; result: Waypoint[] } | null =
-  null
+let memo: {
+  cache: Waypoint[]
+  failed: FailedOp[]
+  pending: PendingOp[]
+  result: Waypoint[]
+} | null = null
 
-/** Apply the queued ops on top of the cached server state. */
-function merge(cache: Waypoint[], pending: PendingOp[]): Waypoint[] {
-  if (memo && memo.cache === cache && memo.pending === pending) return memo.result
-  const result = mergeUncached(cache, pending)
-  memo = { cache, pending, result }
+/**
+ * Apply the queued ops on top of the cached server state.
+ *
+ * Failed ops are layered in too, ahead of the live queue: an op the server
+ * refused is still the crew's local data, and a waypoint disappearing from
+ * the screen because sync failed would read as data loss. It stays visible
+ * until the crew explicitly discards it from the Data tab.
+ */
+function merge(
+  cache: Waypoint[],
+  failed: FailedOp[],
+  pending: PendingOp[],
+): Waypoint[] {
+  if (
+    memo &&
+    memo.cache === cache &&
+    memo.failed === failed &&
+    memo.pending === pending
+  ) {
+    return memo.result
+  }
+  const result = mergeUncached(cache, [...failed.map((f) => f.op), ...pending])
+  memo = { cache, failed, pending, result }
   return result
 }
 
@@ -164,7 +186,7 @@ export const useWaypoints = create<WaypointState>()(
       ownerId: null,
       stagedPhotoCount: {},
 
-      visible: () => merge(get().cache, get().pending),
+      visible: () => merge(get().cache, get().failed, get().pending),
       pendingCount: () => get().pending.length,
 
       load: async () => {

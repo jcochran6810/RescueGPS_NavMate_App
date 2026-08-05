@@ -131,6 +131,9 @@ describe('flush', () => {
     expect(s.pending).toHaveLength(0)
     expect(s.failed).toHaveLength(1)
     expect(s.failed[0].op.kind).toBe('create')
+    // The refused waypoint is still the crew's local data — it must stay on
+    // screen until they explicitly discard it, not silently disappear.
+    expect(s.visible().some((w) => w.id === 'bad')).toBe(true)
   })
 
   it('does not replay a queue under a different account', async () => {

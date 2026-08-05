@@ -16,6 +16,16 @@ nothing else — separate codebase, separate hosting project, separate database.
 
 - **Home** — the screen the app opens on: current position in DDM, DMS and DD,
   the daylight countdown and the waypoints nearest you.
+- **Search datum** — the reason this app exists as a standalone tool: a single
+  unit searching for a victim logs the last known position (with time, source
+  and search-object type), on-scene wind and current, drift markers (deploy,
+  retrieve, and the measured set and drift), and clues found. A worksheet
+  keeps the datum current — LKP carried by current and leeway for the time
+  adrift, with left/right divergence positions and a first search radius from
+  the IAMSAR error method. The datum saves as a waypoint so ETA, Compass and
+  Track can steer to it, and the whole picture exports as a JSON report in
+  RescueGPS's own field names, ready for its drift engine. All of it works
+  offline and syncs later.
 - **Stamp my position** — fixed to the bottom of every screen, so it is under
   the thumb however far the page has scrolled. One press writes the fix, then a
   sheet opens for a name, notes and a photograph from the camera or the
@@ -113,6 +123,7 @@ scripts/
 | `teams` | name plus a unique 6-character join code |
 | `team_members` | roster with `owner` / `admin` / `member` roles |
 | `waypoints` | `team_id` null means private; otherwise visible to that team |
+| `sar_records` | LKP, clues, drift markers and conditions — the datum data. Carries `client_id` (RescueGPS's offline-sync idempotency contract) and `recorded_at` separate from `created_at`, so each kind projects onto the matching RescueGPS table (`lkp_history`, `field_events`, `field_drift_data`, `weather_snapshots`) when the databases merge |
 
 Photos are stored in the private `waypoint-photos` bucket under
 `{user_id}/{waypoint_id}/{file}` and served through short-lived signed URLs.
