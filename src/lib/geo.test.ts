@@ -9,6 +9,7 @@ import {
   formatDuration,
   formatSpeed,
   trailDistanceNM,
+  metersPerDegree,
   NM_TO_METERS,
 } from './geo'
 
@@ -188,5 +189,36 @@ describe('formatBearing', () => {
 
   it('renders an unknown bearing as an em dash', () => {
     expect(formatBearing(Number.NaN)).toBe('—')
+  })
+})
+
+describe('metersPerDegree', () => {
+  it('matches the WGS-84 figures at the equator and the pole', () => {
+    // The published values: 110 574 m of latitude at the equator, 111 694 at
+    // the pole, and 111 320 m of longitude at the equator.
+    expect(metersPerDegree(0).lat).toBeCloseTo(110_574, -2)
+    expect(metersPerDegree(90).lat).toBeCloseTo(111_694, -2)
+    expect(metersPerDegree(0).lon).toBeCloseTo(111_320, -2)
+  })
+
+  it('shrinks a degree of longitude towards the pole', () => {
+    expect(metersPerDegree(60).lon).toBeCloseTo(55_800, -2)
+    expect(metersPerDegree(90).lon).toBeCloseTo(0, 0)
+  })
+
+  it('is symmetric about the equator', () => {
+    expect(metersPerDegree(-45).lat).toBeCloseTo(metersPerDegree(45).lat, 6)
+    expect(metersPerDegree(-45).lon).toBeCloseTo(metersPerDegree(45).lon, 6)
+  })
+
+  it('agrees with the great-circle distance it has to live alongside', () => {
+    // A tenth of a degree of latitude, both ways round. They differ by about
+    // 35 m in 11 km — 0.3 % — which is the sphere the haversine assumes
+    // against the ellipsoid this table describes, and the reason the filter
+    // uses the table rather than 60 NM to the degree.
+    const viaTable = metersPerDegree(29.76).lat * 0.1
+    const viaHaversine = haversineNM(29.71, -95.37, 29.81, -95.37) * NM_TO_METERS
+    expect(Math.abs(viaTable - viaHaversine)).toBeLessThan(50)
+    expect(viaTable).toBeLessThan(viaHaversine)
   })
 })

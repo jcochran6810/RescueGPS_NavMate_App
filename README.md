@@ -43,9 +43,19 @@ nothing else — separate codebase, separate hosting project, separate database.
   to everything saved listed underneath.
 - **Convert** — type coordinates as decimal degrees, DMS or degrees-decimal-minutes
   and the other formats follow. UTM (WGS-84) is derived alongside.
-- **Track** — live position, speed in knots, heading with compass point,
-  accuracy and altitude, with the recorded path drawn north-up to fit and
-  saved waypoints marked.
+- **Live tracking** — position on a satellite map, with speed in knots,
+  heading, accuracy and altitude. The fix stream is gated and filtered before
+  anything is drawn on it: a fix reporting worse accuracy than you asked for
+  is refused, so is one that jumps further than the crew could have moved, and
+  what survives goes through a Kalman filter weighted by the receiver's own
+  accuracy figure. Speed and course are derived from that filter on the many
+  phones that report neither. Refusals are counted and explained on screen
+  rather than hidden. The map pans, pinches and follows you, draws the track,
+  your waypoints, an accuracy circle and a true scale bar, and can pull the
+  imagery around you onto the device before you lose signal. Imagery is Esri
+  World Imagery — no key, attributed on the map. `Plot only` fetches nothing
+  at all and draws the track north-up to fit, the view that cannot fail on a
+  dead link.
 - **ETA to waypoint** — distance, bearing and time to a saved waypoint, in
   NM / mi / km, using GPS speed or a manual override. Underneath it, the
   **60 D Street** working — `60 × D = S × T`, distance in nautical miles,
@@ -108,11 +118,12 @@ npm run lint
 ```
 src/
   lib/          coordinate math, distance/bearing, 60 D = S × T, sun events,
-                NOAA tides, import/export, Supabase client
+                NOAA tides, GPS gating and Kalman filter, Web Mercator tiles,
+                import/export, Supabase client
   store/        Zustand stores: auth, waypoints (with offline queue), teams,
                 tracker, tides, heading
   components/   shared UI, header, section menu, bottom sheet, auth screen,
-                daylight, tides, compass, track plot, stamp
+                daylight, tides, compass, satellite map, track plot, stamp
   tabs/         Home, Track, ETA, Tides, Compass, Convert, Waypoints, Team,
                 Data
 supabase/
@@ -146,6 +157,17 @@ by the team because the read policy matches on the waypoint id in the second
 segment.
 
 ### External data
+
+Satellite imagery comes from Esri World Imagery
+(`server.arcgisonline.com/.../World_Imagery/MapServer/tile/{z}/{y}/{x}` — note
+row before column), with place names from Esri's World Boundaries and Places as
+an optional overlay. Neither needs a key, which is what makes them usable in a
+static bundle with no server to hide a token behind; both are attributed under
+the map. Tiles are cached by the service worker for 90 days, cache-first — a
+photograph of the ground does not go stale on the timescale of an incident, and
+the crew who needs it most has no link left to revalidate it. **Save imagery for
+offline** fetches the tiles around you at the current zoom and one closer, which
+is what puts them in that cache before the signal goes.
 
 Tide predictions come from NOAA CO-OPS and need no key. The station list
 (`mdapi/prod/webapi/stations.json?type=tidepredictions`) is downloaded once,

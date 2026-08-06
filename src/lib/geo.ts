@@ -118,6 +118,26 @@ export function trailDistanceNM(
   return total
 }
 
+/**
+ * Metres in a degree of latitude and of longitude at a given latitude.
+ *
+ * The usual "60 NM to a degree" shortcut is a sphere; the WGS-84 ellipsoid is
+ * 110 574 m per degree at the equator and 111 694 m at the pole, a 1 % spread.
+ * That is nothing on a chart and everything on a track filter working in
+ * metres, where the same error turns straight into a speed and a drift. These
+ * are the standard series expansions, good to well under a metre per degree.
+ */
+export function metersPerDegree(lat: number): { lat: number; lon: number } {
+  const p = lat * RAD
+  return {
+    lat: 111132.92 - 559.82 * Math.cos(2 * p) + 1.175 * Math.cos(4 * p),
+    lon:
+      111412.84 * Math.cos(p) -
+      93.5 * Math.cos(3 * p) +
+      0.118 * Math.cos(5 * p),
+  }
+}
+
 /** Clock time of arrival, given hours from now. */
 export function formatEtaClock(hours: number, now = new Date()): string {
   if (!Number.isFinite(hours) || hours < 0 || hours > 24 * 7) return ''
