@@ -38,9 +38,18 @@ describe('search object types', () => {
     expect(searchObjectType('flying_carpet').key).toBe('person_in_water')
   })
 
-  it('leeway is a fraction of wind speed, zero for calm or missing wind', () => {
+  it('resolves the pre-canonical NavMate keys to Allen & Plourde codes', () => {
+    // Records saved before the ontology alignment carry these.
+    expect(searchObjectType('kayak').key).toBe('kayak_sea')
+    expect(searchObjectType('life_raft_4_person').key).toBe('life_raft_shallow')
+    expect(searchObjectType('medium_vessel').key).toBe('powerboat_cabin')
+    expect(searchObjectType('wood_debris').key).toBe('wooden_plank')
+  })
+
+  it('leeway follows slope × wind + offset, zero for calm or missing wind', () => {
+    // person_in_water: 0.011 × 10 + 0.07 = 0.18 kn (Allen & Plourde 1999).
     const piw = searchObjectType('person_in_water')
-    expect(leewayKts(10, piw)).toBeCloseTo(0.3, 5)
+    expect(leewayKts(10, piw)).toBeCloseTo(0.18, 5)
     expect(leewayKts(0, piw)).toBe(0)
     expect(leewayKts(Number.NaN, piw)).toBe(0)
   })
@@ -108,23 +117,27 @@ describe('computeDatum', () => {
     expect(r.totalErrorNM).toBeCloseTo(Math.hypot(0.1, 0.1, 1.8), 4)
   })
 
-  it('wind alone moves the object downwind at the leeway rate, with divergence', () => {
+  it('wind alone moves the object downwind at the leeway rate, with crosswind divergence', () => {
     // Northerly wind (FROM 0) pushes the object south (toward 180).
+    // person_in_water at 10 kn: downwind 0.18 kn, crosswind 0.07 kn.
     const r = computeDatum(
       baseInput({ windFromDeg: 0, windKts: 10, at: 10 * H }),
     )
-    expect(r.leewayKts).toBeCloseTo(0.3, 5)
+    expect(r.leewayKts).toBeCloseTo(0.18, 5)
+    expect(r.crosswindLeewayKts).toBeCloseTo(0.07, 5)
     expect(r.driftBearingDeg).toBeCloseTo(180, 5)
-    expect(r.driftDistanceNM).toBeCloseTo(3, 5)
-    // Divergence: left datum sits east of nothing… left = downwind - 15°.
+    expect(r.driftDistanceNM).toBeCloseTo(1.8, 5)
+    // The crosswind component swings the side datums atan(0.07/0.18) ≈ 21°
+    // off downwind: left toward ~159°, right toward ~201°.
+    const div = (Math.atan2(0.07, 0.18) * 180) / Math.PI
     const leftBrg = bearingDeg(29.5, -94.8, r.datumLeft.lat, r.datumLeft.lon)
     const rightBrg = bearingDeg(29.5, -94.8, r.datumRight.lat, r.datumRight.lon)
-    expect(leftBrg).toBeCloseTo(165, 0)
-    expect(rightBrg).toBeCloseTo(195, 0)
+    expect(leftBrg).toBeCloseTo(180 - div, 0)
+    expect(rightBrg).toBeCloseTo(180 + div, 0)
   })
 
   it('wind and current add as vectors', () => {
-    // Current 1 kt toward 000, wind FROM 270 → leeway toward 090 at 0.3 kt.
+    // Current 1 kt toward 000, wind FROM 270 → leeway toward 090 at 0.18 kt.
     const r = computeDatum(
       baseInput({
         currentTowardDeg: 0,
@@ -134,9 +147,9 @@ describe('computeDatum', () => {
         at: 1 * H,
       }),
     )
-    expect(r.driftKts).toBeCloseTo(Math.hypot(1, 0.3), 4)
+    expect(r.driftKts).toBeCloseTo(Math.hypot(1, 0.18), 4)
     expect(r.driftBearingDeg).toBeCloseTo(
-      (Math.atan2(0.3, 1) * 180) / Math.PI,
+      (Math.atan2(0.18, 1) * 180) / Math.PI,
       1,
     )
   })

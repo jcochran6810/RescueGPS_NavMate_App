@@ -8,6 +8,22 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-08-06 — **Incident handoff to RescueGPS is export-only for now.**
+      NavMate's `incidents` table mirrors rescuegps-navigator-pro's column
+      names and CHECK lists (see the migration comment in
+      `supabase/migrations/20260806150000_navmate_incidents.sql`), and the
+      "Handoff to command" button exports the incident + LKP history + drift
+      cards + clues in that system's exact table shapes. The live tie-in —
+      command adopting a field incident over the wire — needs either the
+      database merge (tracked below) or an import screen on the command
+      side. The two databases are still separate projects.
+- [ ] 2026-08-06 — Incident + search-pattern flows verified only against a
+      stubbed backend (this sandbox blocks `*.supabase.co`, as ever). The
+      stub now *accepts* writes and serves them back — which is how the
+      synced-record-vanishes bug was found — but the real RLS on
+      `incidents` (team member update, admin delete) has not been exercised
+      with live accounts. Same bucket as the existing signed-in-flow item.
+
 - [ ] 2026-08-06 — **Exercise the satellite imagery against the real Esri
       service in a browser.** The build sandbox's proxy 403s
       `server.arcgisonline.com`, exactly as it does NOAA, so every tile in

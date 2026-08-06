@@ -231,6 +231,101 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-08-06 — claude/navmate-search-aids-tools-hq8ezo (search aids & tools)
+
+"Work on the search aids and tools; consult rescuegps-navigator-pro and
+apply its ontology and rules; nothing that needs heavy backend computing;
+simplify so a search runs from a phone; team members on the same incident,
+picked up by rescuegps-navigator-pro when an IC gets on location."
+
+**The command repo was read first, thoroughly** — two research passes over
+`rescuegps-navigator-pro`: one over its data ontology (`incidents` schema,
+the `client_id` offline-sync contract, `field_drift_data`,
+`incident_participants`, the field-activation payload), one over its search
+doctrine (`manu/core/doctrine/ontology.json` v0.2.0, IAMSAR Vol II Ch 5 as
+amended by MSC.1/Circ.1594: pattern laws, sweep-width/POD tables, the
+88-entry Allen & Plourde leeway table, the survivability model). Everything
+below speaks that system's language; everything heavy — Monte Carlo drift,
+effort allocation, probability maps — deliberately stayed on the command
+side.
+
+**Incidents** (`supabase/migrations/20260806150000_navmate_incidents.sql`,
+`src/store/useIncidents.ts`, `src/lib/incident.ts`,
+`src/components/IncidentCard.tsx` — migration applied live). The container
+a search runs in: everyone on the team sees the same incident, and
+everything logged while it is open is tagged to it, so two phones on one
+boat — or two boats on one team — are working the same search. Column
+names, the 22 incident-type codes and the 9 status values mirror the
+command side's `incidents` table **exactly** (`lkp_lng`, never lon), so
+adoption is an INSERT, not a translation. Three deliberate divergences,
+each fixing a flaw documented in their own code: `client_id` idempotency
+(their incidents have none and their offline fallback ids never sync), a
+real `incident_time` column (they overload `lkp_time`, silently zeroing
+drift time), and no plaintext password column (team membership is the
+scope). Opening an incident adopts the last 24 h of untagged records in
+scope — LKP-first-incident-second is the real field order. **Handoff to
+command** exports the incident + `lkp_history` + `field_drift_data` (the
+measured drift card is their cleanest seeding channel) + clues as
+`field_events` + `simulate_drift_params`, all in their field names.
+Incident numbers are their field format with the random tail widened
+(`INC-YYMMDD-` + 5 base-32 chars) because their 4 digits can collide
+against a UNIQUE column.
+
+**Search patterns** (`src/lib/search.ts`, `src/tabs/SearchTab.tsx` — new
+"Search pattern" section). Expanding square (leg law ceil(i/2)×S, 90°
+starboard, CSP is always the datum), sector search (the 9-leg three-
+triangle clover, 120° turns, first leg down-drift), parallel track, and a
+**true creeping line** — legs across the drift axis advancing S along it;
+the command side's own generator relabels a parallel sweep there and
+records it as a known simplification, which was not copied. The tab
+suggests a pattern from the ontology's selection rules (datum radius +
+drift), sizes track spacing from the visual sweep-width table (object
+visibility × day/night × sea state — day/night defaults from the sun
+math), shows C = W/S and POD = 1 − e^(−C) honestly, estimates time with
+the 2-min turnaround allowance, draws the plan dashed on the satellite map
+next to the actual track ("the gap between them is what is left to
+search"), saves turn points as waypoints, and **steers the pattern leg by
+leg** — live course/distance to the next turn point, auto-advancing inside
+0.05 NM, with tracking held on so the track records coverage.
+
+**Survival clock** (`src/lib/survival.ts`, card on the pattern page). The
+water-temp field promised it since the datum session; now it exists: USCG
+baseline windows + PFD multipliers + immersion phases from the command
+side's survivability model, cut to the three inputs a coxswain has (water
+temp, time in, PFD status). The governing rule carried over verbatim:
+drowning kills faster than hypothermia, and past-the-estimate reads as
+urgency, not a verdict.
+
+**Leeway upgraded to Allen & Plourde form** (`src/lib/sar.ts`). The 15
+field choices stay 15, but each now carries its canonical `leeway_type`
+code and the real coefficients — downwind slope × wind + offset, plus a
+crosswind component that is what actually puts the left/right datums off
+the downwind line. Old saved keys resolve through an alias map; exports
+emit only canonical codes, so the drift engine never sees a key it would
+throw on.
+
+**A real bug found in all three queue stores, fixed with a regression
+test:** an op the server *accepted* left the queue without landing in the
+cache, so a successfully synced waypoint/record/incident vanished from the
+screen until the next load(). Every previous drive ran with Supabase
+blocked — ops stayed queued, so it never showed. This session's drive stub
+accepts writes and serves them back, which is what exposed it. The fix
+folds completed ops into the cache in the flush finally block.
+
+**Verification.** 284 tests (up from 251) — pattern geometry asserted
+against hand-computed spiral corners and leg laws, POD against the
+doctrine cheat sheet, the handoff against the command side's exact column
+names. Plus a 25-check headless-Chromium drive of the production build
+(stubbed PostgREST that persists writes, mocked GPS at the datum): LKP →
+conditions → open incident (adopts both records, patches `lkp_lng`) →
+plan, switch patterns, dashed route and turn squares on the map → save
+waypoints → steer live → survival clock incl. PFD change → close with
+outcome. No sideways scroll at 320 px; the menu with its new row is
+726 px in an 844 px viewport. Migration advisors clean. Still unverified,
+as ever: live Supabase RLS with real accounts (sandbox blocks it) — noted
+in fix_list.md, along with the fact that the command tie-in is export-only
+until the databases merge.
+
 ### 2026-08-06 — claude/project-ui-ux-plugins-ckldxe (UI/UX pass)
 
 "Use the following plug-ins to improve this project and the ui/ux: taste,

@@ -244,6 +244,12 @@ export const useWaypoints = create<WaypointState>()(
 
         let remaining: PendingOp[] = []
         const newlyFailed: FailedOp[] = []
+        // Ops the server accepted this pass. They leave the queue, so they
+        // must be folded into the cache — otherwise a successfully synced
+        // waypoint vanishes from the screen until the next load(). Found by
+        // driving the build against a stub that, unlike this sandbox's
+        // blocked network, actually accepts writes.
+        const completed: PendingOp[] = []
         let progressed = false
         try {
           for (let i = 0; i < queue.length; i++) {
@@ -285,6 +291,7 @@ export const useWaypoints = create<WaypointState>()(
                 }
               }
               progressed = true
+              completed.push(op)
             } catch (e) {
               if (isTerminal(e)) {
                 // A refusal, not an outage. Retry a bounded number of times —
@@ -320,6 +327,10 @@ export const useWaypoints = create<WaypointState>()(
           // stamp twice quickly and the second waypoint vanished.
           const added = get().pending.slice(queue.length)
           set({
+            cache:
+              completed.length > 0
+                ? mergeUncached(get().cache, completed)
+                : get().cache,
             pending: [...remaining, ...added],
             failed: [...get().failed, ...newlyFailed],
             syncing: false,

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useSarRecords } from '@/store/useSarRecords'
+import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
@@ -19,6 +20,7 @@ import {
   type LkpSource,
 } from '@/lib/sar'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
+import { IncidentCard } from '@/components/IncidentCard'
 import type {
   CluePayload,
   DriftMarkerPayload,
@@ -50,9 +52,11 @@ export function DatumTab() {
     discardFailed,
   } = useSarRecords()
   const online = useOnline()
+  const incident = useIncidents((s) => s.activeIncident(activeTeamId))
 
   useEffect(() => {
     void load()
+    void useIncidents.getState().load()
   }, [load])
 
   const all = visible()
@@ -114,10 +118,34 @@ export function DatumTab() {
         </div>
       )}
 
+      <IncidentCard />
+
       <LkpCard
         lkp={lkp}
         onSave={async (input) => {
-          const created = await createRecord({ ...input, team_id: activeTeamId })
+          const created = await createRecord({
+            ...input,
+            team_id: activeTeamId,
+            incident_id: incident?.id ?? null,
+          })
+          // The incident carries the LKP in RescueGPS's own columns, so the
+          // handoff row is always current. incident_time is only set once —
+          // it means "went into the water", and a corrected LKP later must
+          // not restart the drift clock.
+          if (created && incident) {
+            await useIncidents.getState().updateIncident(incident.id, {
+              lkp_lat: input.lat,
+              lkp_lng: input.lon,
+              lkp_time: input.recorded_at,
+              lkp_source:
+                input.payload.source === 'gps'
+                  ? 'field_gps'
+                  : input.payload.source,
+              ...(incident.incident_time
+                ? {}
+                : { incident_time: input.recorded_at }),
+            })
+          }
           toast(
             created
               ? online
@@ -141,6 +169,7 @@ export function DatumTab() {
             payload,
             note,
             team_id: activeTeamId,
+            incident_id: incident?.id ?? null,
           })
           toast(
             created ? 'Conditions recorded' : 'Could not record conditions',
@@ -170,6 +199,7 @@ export function DatumTab() {
             payload,
             note: '',
             team_id: activeTeamId,
+            incident_id: incident?.id ?? null,
           })
           toast(
             created ? 'Marker deployed — position logged' : 'Could not log the marker',
@@ -228,6 +258,7 @@ export function DatumTab() {
             payload,
             note: 'From drift marker observation',
             team_id: activeTeamId,
+            incident_id: incident?.id ?? null,
           })
           toast(
             created
@@ -254,6 +285,7 @@ export function DatumTab() {
             payload,
             note,
             team_id: activeTeamId,
+            incident_id: incident?.id ?? null,
           })
           toast(
             created

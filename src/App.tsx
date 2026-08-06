@@ -3,6 +3,7 @@ import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
 import { useTides } from '@/store/useTides'
 import { useSarRecords } from '@/store/useSarRecords'
+import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useAdmin } from '@/store/useAdmin'
 import { useSupport } from '@/store/useSupport'
@@ -16,6 +17,7 @@ import { Toast } from '@/components/Toast'
 import { Spinner } from '@/components/ui'
 import { HomeTab } from '@/tabs/HomeTab'
 import { DatumTab } from '@/tabs/DatumTab'
+import { SearchTab } from '@/tabs/SearchTab'
 import { AdminTab } from '@/tabs/AdminTab'
 import { ConvertTab } from '@/tabs/ConvertTab'
 import { TrackTab } from '@/tabs/TrackTab'
@@ -43,6 +45,7 @@ export default function App() {
       const wp = useWaypoints.getState()
       void wp.flush().then(() => wp.drainStagedPhotos())
       void useSarRecords.getState().flush()
+      void useIncidents.getState().flush()
     }
     window.addEventListener('online', onOnline)
     return () => window.removeEventListener('online', onOnline)
@@ -62,6 +65,7 @@ export default function App() {
     void useTeams.getState().load()
     void useWaypoints.getState().load()
     void useSarRecords.getState().load()
+    void useIncidents.getState().load()
     void useAdmin.getState().check()
   }, [session])
 
@@ -99,6 +103,7 @@ export default function App() {
       <main className="mx-auto max-w-3xl px-3 pt-3 pb-24">
         {tab === 'home' && <HomeTab onNavigate={setTab} />}
         {tab === 'datum' && <DatumTab />}
+        {tab === 'search' && <SearchTab />}
         {tab === 'track' && <TrackTab />}
         {tab === 'eta' && <EtaTab />}
         {tab === 'tides' && <TidesTab />}

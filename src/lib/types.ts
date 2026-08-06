@@ -106,6 +106,8 @@ export interface SarRecord {
   user_id: string
   /** null = private to this account; otherwise shared with that team. */
   team_id: string | null
+  /** The search this record was collected under, when one was open. */
+  incident_id: string | null
   kind: SarKind
   lat: number | null
   lon: number | null
@@ -121,7 +123,55 @@ export interface SarRecord {
 export type NewSarRecord = Pick<
   SarRecord,
   'kind' | 'lat' | 'lon' | 'recorded_at' | 'payload' | 'note'
-> & { team_id?: string | null }
+> & { team_id?: string | null; incident_id?: string | null }
+
+/* -------------------------------------------------------------------------
+ * Incidents — the container a search runs in. Column names, type codes and
+ * status values mirror the RescueGPS `incidents` table so a field-opened
+ * incident can be adopted by command as an insert, not a translation.
+ * Note lkp_lng: RescueGPS says lng, never lon, and this row is theirs.
+ * ---------------------------------------------------------------------- */
+
+export type IncidentStatus =
+  | 'active'
+  | 'suspended'
+  | 'completed'
+  | 'cancelled'
+  | 'found_alive'
+  | 'found_deceased'
+  | 'not_found'
+  | 'false_alarm'
+  | 'closed'
+
+export type UrgencyLevel = 'critical' | 'high' | 'medium' | 'low'
+
+export interface Incident {
+  id: string
+  /** Offline-sync idempotency key. Equals id here. */
+  client_id: string
+  /** null = private to this account; otherwise the whole team's search. */
+  team_id: string | null
+  incident_number: string
+  incident_type: string
+  incident_name: string
+  urgency_level: UrgencyLevel
+  status: IncidentStatus
+  lkp_lat: number | null
+  lkp_lng: number | null
+  lkp_time: string | null
+  lkp_source: string | null
+  /** When the person went into the water — drift time starts here. */
+  incident_time: string | null
+  summary: string
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+/** Fields the client supplies when opening an incident. */
+export type NewIncident = Pick<Incident, 'incident_type' | 'incident_name'> & {
+  team_id?: string | null
+}
 
 /* -------------------------------------------------------------------------
  * Platform admin

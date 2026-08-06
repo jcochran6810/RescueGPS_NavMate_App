@@ -28,47 +28,86 @@ const EARTH_RADIUS_NM = 3440.065
  * ---------------------------------------------------------------------- */
 
 export interface SearchObjectType {
+  /** Canonical RescueGPS leeway_type code (Allen & Plourde 1999 category). */
   key: string
   label: string
-  /** Leeway speed as a fraction of wind speed (USCG/IAMSAR-derived). */
-  downwindFactor: number
-  /** Leeway divergence either side of downwind, degrees. */
-  divergenceDeg: number
+  /** Downwind leeway: speed = slope × wind + offset, knots. */
+  downwindSlope: number
+  downwindOffsetKts: number
+  /** Crosswind leeway component: speed = slope × wind, either side. */
+  crosswindSlope: number
+  /** How visible the object is to a lookout — drives sweep width. */
+  visibility: 'high' | 'medium' | 'low'
 }
 
 /**
- * The common USCG/IAMSAR leeway table, keyed the way RescueGPS's drift engine
- * keys `leeway_type` (lower snake case). RescueGPS carries 88 Allen & Plourde
- * categories; these are the ones a single field unit actually chooses between.
+ * The choices a single field unit actually picks between, keyed by the
+ * canonical Allen & Plourde codes RescueGPS's drift engine accepts as
+ * `leeway_type`, carrying that ontology's exact coefficients
+ * (downwind_slope / downwind_offset_kts / crosswind_slope). RescueGPS
+ * carries 88 categories; fifteen is what fits a gloved thumb on a pitching
+ * deck, so each entry here is the nearest canonical category.
  */
 export const SEARCH_OBJECT_TYPES: SearchObjectType[] = [
-  { key: 'person_in_water', label: 'Person in water', downwindFactor: 0.03, divergenceDeg: 15 },
-  { key: 'person_with_pfd', label: 'Person in water with PFD', downwindFactor: 0.04, divergenceDeg: 20 },
-  { key: 'person_in_drysuit', label: 'Person in drysuit', downwindFactor: 0.05, divergenceDeg: 25 },
-  { key: 'life_raft_4_person', label: 'Life raft (4 person)', downwindFactor: 0.06, divergenceDeg: 10 },
-  { key: 'life_raft_6_person', label: 'Life raft (6 person)', downwindFactor: 0.065, divergenceDeg: 12 },
-  { key: 'life_raft_10_plus', label: 'Life raft (10+)', downwindFactor: 0.07, divergenceDeg: 15 },
-  { key: 'small_vessel', label: 'Small vessel (< 20 ft)', downwindFactor: 0.05, divergenceDeg: 5 },
-  { key: 'medium_vessel', label: 'Vessel (20–40 ft)', downwindFactor: 0.04, divergenceDeg: 3 },
-  { key: 'sailboat', label: 'Sailboat', downwindFactor: 0.08, divergenceDeg: 20 },
-  { key: 'kayak', label: 'Kayak', downwindFactor: 0.045, divergenceDeg: 18 },
-  { key: 'canoe', label: 'Canoe', downwindFactor: 0.05, divergenceDeg: 20 },
-  { key: 'surfboard', label: 'Surfboard', downwindFactor: 0.035, divergenceDeg: 25 },
-  { key: 'paddleboard', label: 'Paddleboard', downwindFactor: 0.04, divergenceDeg: 22 },
-  { key: 'wood_debris', label: 'Debris (wood)', downwindFactor: 0.02, divergenceDeg: 30 },
-  { key: 'cooler', label: 'Cooler / ice chest', downwindFactor: 0.055, divergenceDeg: 15 },
+  { key: 'person_in_water', label: 'Person in water', downwindSlope: 0.011, downwindOffsetKts: 0.07, crosswindSlope: 0.007, visibility: 'low' },
+  { key: 'person_with_pfd', label: 'Person in water with PFD', downwindSlope: 0.014, downwindOffsetKts: 0.08, crosswindSlope: 0.009, visibility: 'low' },
+  { key: 'person_scuba', label: 'Person in drysuit / scuba', downwindSlope: 0.012, downwindOffsetKts: 0.06, crosswindSlope: 0.007, visibility: 'low' },
+  { key: 'life_raft_no_ballast_canopy_light', label: 'Life raft (no ballast)', downwindSlope: 0.04, downwindOffsetKts: 0.35, crosswindSlope: 0.026, visibility: 'medium' },
+  { key: 'life_raft_shallow', label: 'Life raft (shallow ballast)', downwindSlope: 0.035, downwindOffsetKts: 0.28, crosswindSlope: 0.022, visibility: 'medium' },
+  { key: 'life_raft_deep', label: 'Life raft (deep ballast)', downwindSlope: 0.019, downwindOffsetKts: 0.15, crosswindSlope: 0.012, visibility: 'medium' },
+  { key: 'skiff_v_hull', label: 'Small vessel (< 20 ft)', downwindSlope: 0.028, downwindOffsetKts: 0.18, crosswindSlope: 0.017, visibility: 'medium' },
+  { key: 'powerboat_cabin', label: 'Powerboat (20–40 ft)', downwindSlope: 0.04, downwindOffsetKts: 0.45, crosswindSlope: 0.028, visibility: 'high' },
+  { key: 'sailboat_monohull', label: 'Sailboat', downwindSlope: 0.03, downwindOffsetKts: 0.3, crosswindSlope: 0.024, visibility: 'high' },
+  { key: 'kayak_sea', label: 'Kayak', downwindSlope: 0.022, downwindOffsetKts: 0.1, crosswindSlope: 0.014, visibility: 'medium' },
+  { key: 'canoe', label: 'Canoe', downwindSlope: 0.02, downwindOffsetKts: 0.1, crosswindSlope: 0.013, visibility: 'medium' },
+  { key: 'surfboard', label: 'Surfboard', downwindSlope: 0.018, downwindOffsetKts: 0.08, crosswindSlope: 0.011, visibility: 'low' },
+  { key: 'standup_paddleboard', label: 'Paddleboard', downwindSlope: 0.016, downwindOffsetKts: 0.08, crosswindSlope: 0.01, visibility: 'low' },
+  { key: 'wooden_plank', label: 'Debris (wood)', downwindSlope: 0.015, downwindOffsetKts: 0.08, crosswindSlope: 0.009, visibility: 'low' },
+  { key: 'cooler_small', label: 'Cooler / ice chest', downwindSlope: 0.035, downwindOffsetKts: 0.22, crosswindSlope: 0.021, visibility: 'low' },
 ]
 
+/**
+ * The keys NavMate used before it adopted the canonical codes. Records saved
+ * with these still resolve; without the map an old LKP would silently fall
+ * back to person_in_water.
+ */
+const OBJECT_TYPE_ALIASES: Record<string, string> = {
+  person_in_drysuit: 'person_scuba',
+  life_raft_4_person: 'life_raft_shallow',
+  life_raft_6_person: 'life_raft_shallow',
+  life_raft_10_plus: 'life_raft_deep',
+  small_vessel: 'skiff_v_hull',
+  medium_vessel: 'powerboat_cabin',
+  sailboat: 'sailboat_monohull',
+  kayak: 'kayak_sea',
+  paddleboard: 'standup_paddleboard',
+  wood_debris: 'wooden_plank',
+  cooler: 'cooler_small',
+}
+
 export function searchObjectType(key: string): SearchObjectType {
+  const canonical = OBJECT_TYPE_ALIASES[key] ?? key
   return (
-    SEARCH_OBJECT_TYPES.find((t) => t.key === key) ?? SEARCH_OBJECT_TYPES[0]
+    SEARCH_OBJECT_TYPES.find((t) => t.key === canonical) ??
+    SEARCH_OBJECT_TYPES[0]
   )
 }
 
-/** Leeway speed in knots for a wind, per object type. */
+/** The canonical leeway_type code for any stored key, old or new. */
+export function canonicalObjectKey(key: string): string {
+  return searchObjectType(key).key
+}
+
+/** Downwind leeway speed in knots: slope × wind + offset, zero in a calm. */
 export function leewayKts(windKts: number, type: SearchObjectType): number {
   if (!Number.isFinite(windKts) || windKts <= 0) return 0
-  return windKts * type.downwindFactor
+  return windKts * type.downwindSlope + type.downwindOffsetKts
+}
+
+/** Crosswind leeway component in knots, either side of downwind. */
+export function crosswindKts(windKts: number, type: SearchObjectType): number {
+  if (!Number.isFinite(windKts) || windKts <= 0) return 0
+  return windKts * type.crosswindSlope
 }
 
 /* -------------------------------------------------------------------------
@@ -201,9 +240,12 @@ export interface DatumResult {
   driftBearingDeg: number
   driftDistanceNM: number
   leewayKts: number
+  /** Crosswind leeway component, knots — what makes left and right differ. */
+  crosswindLeewayKts: number
   datum: { lat: number; lon: number }
-  /** Leeway diverges either side of downwind, so the object is as likely to
-   *  be off to one side as dead downwind. Both sides are worth marking. */
+  /** Leeway carries a crosswind component either side of downwind, so the
+   *  object is as likely to be off to one side as dead downwind. Both sides
+   *  are worth marking. */
   datumLeft: { lat: number; lon: number }
   datumRight: { lat: number; lon: number }
   /** Total probable position error, NM (RSS of LKP, nav and drift error). */
@@ -217,11 +259,15 @@ export interface DatumResult {
  *
  * datum = LKP + (total water current × time) + (leeway × time)
  *
- * Drift error is taken as 0.3 × drift distance, combined with the initial
- * position error and the search unit's navigation error as a root-sum-square,
- * and the first search radius is that total with a 10 % safety factor. With
- * no wind or current entered the datum is the LKP and the radius is just the
- * position errors — still a real answer.
+ * Leeway follows the Allen & Plourde form RescueGPS's drift engine uses:
+ * a downwind component (slope × wind + offset) plus a crosswind component
+ * (slope × wind) that can act to either side — which is what puts the left
+ * and right datums off the downwind line. Drift error is taken as 0.3 ×
+ * drift distance, combined with the initial position error and the search
+ * unit's navigation error as a root-sum-square, and the first search radius
+ * is that total with a 10 % safety factor. With no wind or current entered
+ * the datum is the LKP and the radius is just the position errors — still a
+ * real answer.
  */
 export function computeDatum(input: DatumInput): DatumResult {
   const hours = Math.max(0, (input.at - input.lkp.time) / 3_600_000)
@@ -233,18 +279,15 @@ export function computeDatum(input: DatumInput): DatumResult {
       ? toVector(input.currentTowardDeg, input.currentKts)
       : { n: 0, e: 0 }
 
-  const lee =
+  const windOn =
     input.windFromDeg !== null && input.windKts !== null && input.windKts > 0
-      ? leewayKts(input.windKts, input.objectType)
-      : 0
+  const lee = windOn ? leewayKts(input.windKts!, input.objectType) : 0
+  const cross = windOn ? crosswindKts(input.windKts!, input.objectType) : 0
   const downwind = input.windFromDeg !== null ? (input.windFromDeg + 180) % 360 : 0
 
-  const total = (leewayToward: number): Vector => {
-    const l = toVector(leewayToward, lee)
-    return { n: current.n + l.n, e: current.e + l.e }
-  }
+  const add = (a: Vector, b: Vector): Vector => ({ n: a.n + b.n, e: a.e + b.e })
 
-  const centre = total(downwind)
+  const centre = add(current, toVector(downwind, lee))
   const driftKts = vectorSpeed(centre)
   const driftBearing = vectorBearing(centre)
   const driftDistanceNM = driftKts * hours
@@ -256,10 +299,11 @@ export function computeDatum(input: DatumInput): DatumResult {
       : { lat: input.lkp.lat, lon: input.lkp.lon }
   }
 
-  const div = input.objectType.divergenceDeg
   const datum = place(centre)
-  const datumLeft = lee > 0 ? place(total((downwind - div + 360) % 360)) : datum
-  const datumRight = lee > 0 ? place(total((downwind + div) % 360)) : datum
+  const datumLeft =
+    cross > 0 ? place(add(centre, toVector((downwind + 270) % 360, cross))) : datum
+  const datumRight =
+    cross > 0 ? place(add(centre, toVector((downwind + 90) % 360, cross))) : datum
 
   const driftErrorNM = 0.3 * driftDistanceNM
   const totalErrorNM = Math.hypot(input.lkpErrorNM, NAV_ERROR_NM, driftErrorNM)
@@ -271,6 +315,7 @@ export function computeDatum(input: DatumInput): DatumResult {
     driftBearingDeg: driftBearing,
     driftDistanceNM,
     leewayKts: lee,
+    crosswindLeewayKts: cross,
     datum,
     datumLeft,
     datumRight,
@@ -330,7 +375,7 @@ export function datumReport(input: DatumReportInput): string {
         position_error_nm: input.lkp.errorNM,
         note: input.lkp.note ?? '',
       },
-      search_object: { leeway_type: input.objectTypeKey },
+      search_object: { leeway_type: canonicalObjectKey(input.objectTypeKey) },
       environmental: {
         wind_speed_kts: input.windKts,
         wind_direction_deg: input.windFromDeg,
@@ -370,7 +415,7 @@ export function datumReport(input: DatumReportInput): string {
         wind_direction_deg: input.windFromDeg ?? 0,
         current_speed_kts: input.currentKts ?? 0,
         current_direction_deg: input.currentTowardDeg ?? 0,
-        leeway_type: input.objectTypeKey,
+        leeway_type: canonicalObjectKey(input.objectTypeKey),
         duration_hrs: Math.max(1, Math.ceil(result.hoursAdrift) + 6),
       },
     },
