@@ -170,9 +170,14 @@ export function SixtyDstSolver({
       )}
 
       <div className="mt-2 flex items-center justify-between gap-2">
+        {/* "Fill in two, leave the third blank" used to live here as well as in
+            the solver's own empty-state message directly above, so the same
+            instruction was printed twice, one line apart. This keeps the part
+            the empty state does not say — the units, which are the thing that
+            silently produces a wrong answer. */}
         <p className="text-xs text-slate-500">
-          Fill in two, leave the third blank. Nautical miles and knots — a
-          statute mile or a kilometre here gives a wrong answer.
+          Nautical miles and knots — a statute mile or a kilometre here gives a
+          wrong answer.
         </p>
         <Button
           variant="ghost"

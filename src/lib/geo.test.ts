@@ -9,6 +9,8 @@ import {
   formatDuration,
   formatSpeed,
   trailDistanceNM,
+  isAtPosition,
+  AT_POSITION_NM,
   NM_TO_METERS,
 } from './geo'
 
@@ -188,5 +190,30 @@ describe('formatBearing', () => {
 
   it('renders an unknown bearing as an em dash', () => {
     expect(formatBearing(Number.NaN)).toBe('—')
+  })
+})
+
+describe('isAtPosition', () => {
+  it('treats a point inside GPS error as underfoot', () => {
+    // A metre of jitter swings the bearing between two coincident points
+    // through the whole compass, so the UI must not print one.
+    expect(isAtPosition(0)).toBe(true)
+    expect(isAtPosition(0.009)).toBe(true)
+  })
+
+  it('leaves a point you could actually walk to alone', () => {
+    expect(isAtPosition(AT_POSITION_NM)).toBe(false)
+    expect(isAtPosition(0.5)).toBe(false)
+  })
+
+  it('is false without a distance to judge', () => {
+    expect(isAtPosition(null)).toBe(false)
+    expect(isAtPosition(Number.NaN)).toBe(false)
+  })
+
+  it('sits inside a consumer GPS error', () => {
+    // 0.01 NM is about 18 m. If this ever grows past a phone's accuracy the
+    // app starts hiding bearings a crew could have used.
+    expect(AT_POSITION_NM * 1852).toBeLessThan(20)
   })
 })

@@ -9,6 +9,7 @@ import {
   formatCountdown,
   formatDayLength,
   formatSunClock,
+  sunClockParts,
   isNextDay,
 } from './sun'
 
@@ -174,6 +175,29 @@ describe('formatting', () => {
 
   it('renders a missing sun event as an em dash', () => {
     expect(formatSunClock(null)).toBe('—')
+  })
+})
+
+describe('sunClockParts', () => {
+  it('splits the clock and the suffix so neither can wrap away from the other', () => {
+    const at = new Date('2026-08-06T11:19:00Z')
+    const parts = sunClockParts(at)
+    // The suffix is whatever the runtime locale uses, or absent on a 24-hour
+    // clock — but rejoining the two halves must reproduce the single-string
+    // formatter exactly, or the tiles would disagree with the countdown row.
+    const rejoined = parts.suffix
+      ? `${parts.time} ${parts.suffix}`
+      : parts.time
+    expect(rejoined).toBe(formatSunClock(at))
+  })
+
+  it('never leaves the suffix stuck to the digits', () => {
+    const { time } = sunClockParts(new Date('2026-08-06T23:45:00Z'))
+    expect(time).toMatch(/^\d{1,2}:\d{2}$/)
+  })
+
+  it('renders a missing sun event as an em dash with no suffix', () => {
+    expect(sunClockParts(null)).toEqual({ time: '—', suffix: null })
   })
 })
 

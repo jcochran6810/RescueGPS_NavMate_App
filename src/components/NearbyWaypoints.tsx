@@ -6,6 +6,7 @@ import {
   formatBearing,
   formatDistance,
   haversineNM,
+  isAtPosition,
 } from '@/lib/geo'
 import { toDD } from '@/lib/coords'
 import { Card, Label } from '@/components/ui'
@@ -85,9 +86,14 @@ export function NearbyWaypoints({
                   {w.name}
                 </div>
                 <div className="tnum truncate text-xs text-slate-500">
-                  {bearing !== null
-                    ? formatBearing(bearing)
-                    : `${toDD(w.lat)}, ${toDD(w.lon)}`}
+                  {/* Standing on it, the bearing is pure GPS noise — this read
+                      "0° N" for a waypoint 0.00 NM away, which is a heading a
+                      crew could act on and should not. */}
+                  {bearing === null
+                    ? `${toDD(w.lat)}, ${toDD(w.lon)}`
+                    : isAtPosition(distanceNM)
+                      ? 'At your position'
+                      : formatBearing(bearing)}
                   {w.photos.length > 0 &&
                     ` · ${w.photos.length} photo${w.photos.length === 1 ? '' : 's'}`}
                 </div>

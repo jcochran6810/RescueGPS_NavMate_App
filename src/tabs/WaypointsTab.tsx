@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { parseCoord, toDD, toDMS } from '@/lib/coords'
+import {
+  bearingDeg,
+  formatBearing,
+  formatDistance,
+  haversineNM,
+  isAtPosition,
+} from '@/lib/geo'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
@@ -118,7 +125,10 @@ export function WaypointsTab() {
           {activeTeam
             ? `Shared with ${activeTeam.name}.`
             : 'Private to your account.'}{' '}
-          Switch scope in the bar above.
+          {/* The scope switcher is only in the header once the account is on a
+              team, so pointing at it before then sends the crew looking for a
+              control that is not there. */}
+          {teams.length > 0 && 'Switch scope in the bar above.'}
         </p>
       </div>
 
@@ -259,6 +269,10 @@ export function WaypointsTab() {
   )
 }
 
+/** Shared look for the card's non-destructive controls. */
+const ACTION =
+  'rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5'
+
 /** One saved waypoint, with an inline edit form for whoever may change it. */
 function WaypointCard({
   waypoint: w,
@@ -276,6 +290,20 @@ function WaypointCard({
   const addPhotos = useWaypoints((s) => s.addPhotos)
   const userId = useAuth((s) => s.user?.id)
   const online = useOnline()
+  const fix = useTracker((s) => s.fix)
+
+  // Only shown once there is a fix to measure from — a bearing with no origin
+  // is worse than no bearing at all.
+  const relative = useMemo(
+    () =>
+      fix
+        ? {
+            distanceNM: haversineNM(fix.lat, fix.lon, w.lat, w.lon),
+            bearing: bearingDeg(fix.lat, fix.lon, w.lat, w.lon),
+          }
+        : null,
+    [fix, w.lat, w.lon],
+  )
 
   const [editing, setEditing] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -431,71 +459,88 @@ function WaypointCard({
 
   return (
     <Card>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate font-semibold text-slate-50">{w.name}</div>
-          <div className="tnum text-sm text-slate-400">
-            {toDD(w.lat)}, {toDD(w.lon)}
+      {/* The detail spans the full card and the controls sit under it. They
+          used to share the row as a narrow right-hand column, which stacked
+          four buttons vertically — it made every card twice as tall as its
+          content, squeezed the name into half the width, and put Delete
+          directly beneath Edit, where a thumb aiming for one lands on the
+          other. */}
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="min-w-0 truncate font-semibold text-slate-50">{w.name}</div>
+        {/* The field question is "how far, and which way" — it was only ever
+            answered on the home screen's nearest-four list. */}
+        {relative && (
+          <div className="tnum shrink-0 text-sm text-slate-300">
+            {formatDistance(relative.distanceNM, 'nm')}
+            <span className="text-slate-500">
+              {' · '}
+              {isAtPosition(relative.distanceNM)
+                ? 'here'
+                : formatBearing(relative.bearing)}
+            </span>
           </div>
-          <div className="tnum text-xs text-slate-500">
-            {toDMS(w.lat, 'lat')} {toDMS(w.lon, 'lon')}
-          </div>
-          {savedBy && (
-            <div className="mt-1 text-xs text-sky-300/80">Saved by {savedBy}</div>
-          )}
-        </div>
-        <div className="flex shrink-0 flex-col gap-1.5">
-          <button
-            onClick={async () => {
-              const text = `${w.name}: ${toDD(w.lat)}, ${toDD(w.lon)}`
-              try {
-                await navigator.clipboard.writeText(text)
-                toast('Copied', 'success')
-              } catch {
-                toast(text)
-              }
-            }}
-            className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
-          >
-            Copy
-          </button>
-          {canEdit && (
-            <button
-              onClick={beginEdit}
-              className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
-            >
-              Edit
-            </button>
-          )}
-          {activeTeamId && w.team_id === activeTeamId && w.user_id === userId && (
-            <button
-              onClick={() => void update(w.id, { team_id: null })}
-              className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
-            >
-              Unshare
-            </button>
-          )}
-          {!activeTeamId && w.user_id === userId && (
-            <ShareButton waypointId={w.id} />
-          )}
-          {canEdit && (
-            <button
-              onClick={() => {
-                if (!confirm(`Delete “${w.name}”?`)) return
-                void remove(w.id)
-                toast('Waypoint deleted')
-              }}
-              className="rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/10"
-            >
-              Delete
-            </button>
-          )}
-        </div>
+        )}
       </div>
+      <div className="tnum text-sm text-slate-400">
+        {toDD(w.lat)}, {toDD(w.lon)}
+      </div>
+      <div className="tnum text-xs text-slate-500">
+        {toDMS(w.lat, 'lat')} {toDMS(w.lon, 'lon')}
+      </div>
+      {savedBy && (
+        <div className="mt-1 text-xs text-sky-300/80">Saved by {savedBy}</div>
+      )}
 
       {w.note && (
         <p className="mt-2 text-sm whitespace-pre-wrap text-slate-300">{w.note}</p>
       )}
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        <button
+          onClick={async () => {
+            const text = `${w.name}: ${toDD(w.lat)}, ${toDD(w.lon)}`
+            try {
+              await navigator.clipboard.writeText(text)
+              toast('Copied', 'success')
+            } catch {
+              toast(text)
+            }
+          }}
+          className={ACTION}
+        >
+          Copy
+        </button>
+        {canEdit && (
+          <button onClick={beginEdit} className={ACTION}>
+            Edit
+          </button>
+        )}
+        {activeTeamId && w.team_id === activeTeamId && w.user_id === userId && (
+          <button
+            onClick={() => void update(w.id, { team_id: null })}
+            className={ACTION}
+          >
+            Unshare
+          </button>
+        )}
+        {!activeTeamId && w.user_id === userId && (
+          <ShareButton waypointId={w.id} />
+        )}
+        {canEdit && (
+          <button
+            onClick={() => {
+              if (!confirm(`Delete “${w.name}”?`)) return
+              void remove(w.id)
+              toast('Waypoint deleted')
+            }}
+            // Pushed to the opposite end of the row, so the destructive
+            // control is never the neighbour of the one next reached for.
+            className="ml-auto rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/10"
+          >
+            Delete
+          </button>
+        )}
+      </div>
 
       {w.photos.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">

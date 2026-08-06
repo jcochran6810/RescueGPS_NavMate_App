@@ -6,6 +6,7 @@ import {
   formatSunClock,
   isNextDay,
   nextSunEvent,
+  sunClockParts,
   sunEvents,
   SUN_EVENT_LABELS,
   type SunEventName,
@@ -97,8 +98,13 @@ export function DaylightTracker({
                   <div className="text-xs font-semibold text-slate-200">
                     {SUN_EVENT_LABELS[name]}
                   </div>
-                  <div className="tnum mt-0.5 text-sm text-slate-50">
-                    {formatSunClock(at)}
+                  <div className="tnum mt-0.5 whitespace-nowrap text-slate-50">
+                    <span className="text-sm">{sunClockParts(at).time}</span>
+                    {sunClockParts(at).suffix && (
+                      <span className="ml-0.5 text-[10px] text-slate-400">
+                        {sunClockParts(at).suffix}
+                      </span>
+                    )}
                   </div>
                 </div>
               )

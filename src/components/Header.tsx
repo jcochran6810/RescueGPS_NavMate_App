@@ -14,8 +14,20 @@ export function Header({
 }) {
   const { teams, activeTeamId, setActiveTeam } = useTeams()
   const watching = useTracker((s) => s.watching)
+  const fix = useTracker((s) => s.fix)
   const pending = useWaypoints((s) => s.pending.length)
   const online = useOnline()
+
+  // Three states, not two. The badge used to read "GPS off" whenever the
+  // continuous watch was stopped — including on the Home screen, which takes a
+  // single fix and prints the position right underneath. Saying the GPS is off
+  // above a live set of coordinates teaches a crew to distrust the badge, so it
+  // now distinguishes a running watch from a fix already in hand.
+  const gps = watching
+    ? { label: 'GPS live', tone: 'bg-emerald-500/15 text-emerald-300' }
+    : fix
+      ? { label: 'GPS fix', tone: 'bg-sky-500/15 text-sky-300' }
+      : { label: 'GPS off', tone: 'bg-white/5 text-slate-400' }
 
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-white/10 bg-navy-950/85 backdrop-blur">
@@ -54,14 +66,16 @@ export function Header({
             </span>
           )}
           <span
-            className={
-              'rounded-full px-2 py-1 text-[11px] font-semibold ' +
-              (watching
-                ? 'bg-emerald-500/15 text-emerald-300'
-                : 'bg-white/5 text-slate-400')
+            title={
+              watching
+                ? 'Recording a continuous track'
+                : fix
+                  ? 'A position fix is in hand; the continuous track is not running'
+                  : 'No position yet'
             }
+            className={'rounded-full px-2 py-1 text-[11px] font-semibold ' + gps.tone}
           >
-            GPS {watching ? 'live' : 'off'}
+            {gps.label}
           </span>
 
           {/* The two corner controls: the account circle, then the menu in
@@ -71,24 +85,31 @@ export function Header({
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pb-2">
-        <label className="sr-only" htmlFor="team-switcher">
-          Active team
-        </label>
-        <select
-          id="team-switcher"
-          value={activeTeamId ?? ''}
-          onChange={(e) => setActiveTeam(e.target.value || null)}
-          className="min-h-9 flex-1 rounded-lg border border-white/10 bg-navy-900 px-2 text-sm text-slate-200 focus:border-sky-400/60 focus:outline-none"
-        >
-          <option value="">Private — only me</option>
-          {teams.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* The scope switcher only appears once there is something to switch
+          between. On a solo account it was a full-width control with exactly
+          one option, costing a row of the header on every screen to say
+          nothing — and vertical space on a phone held one-handed in the field
+          is the scarcest thing this layout has. */}
+      {teams.length > 0 && (
+        <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pb-2">
+          <label className="sr-only" htmlFor="team-switcher">
+            Active team
+          </label>
+          <select
+            id="team-switcher"
+            value={activeTeamId ?? ''}
+            onChange={(e) => setActiveTeam(e.target.value || null)}
+            className="min-h-9 flex-1 rounded-lg border border-white/10 bg-navy-900 px-2 text-sm text-slate-200 focus:border-sky-400/60 focus:outline-none"
+          >
+            <option value="">Private — only me</option>
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
     </header>
   )
 }
