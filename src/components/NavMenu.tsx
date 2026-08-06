@@ -8,6 +8,7 @@ export const TABS = [
   { id: 'compass', label: 'Compass', hint: 'Heading and bearings to waypoints', group: 'Position' },
   { id: 'convert', label: 'Convert', hint: 'Coordinate formats and UTM', group: 'Position' },
   { id: 'datum', label: 'Search datum', hint: 'LKP, drift, clues and where to search', group: 'Search' },
+  { id: 'search', label: 'Search pattern', hint: 'Run a pattern, spacing, survival clock', group: 'Search' },
   { id: 'eta', label: 'ETA to waypoint', hint: 'Time to run, and 60 D = S × T', group: 'Search' },
   { id: 'tides', label: 'Tides', hint: 'High and low water near you', group: 'Search' },
   { id: 'waypoints', label: 'Waypoints', hint: 'Everything saved, with photos', group: 'Records' },

@@ -82,6 +82,20 @@ beforeEach(() => {
 })
 
 describe('flush', () => {
+  it('keeps a successfully synced create visible (folded into the cache)', async () => {
+    // The op leaves the queue when the server accepts it; if it does not
+    // land in the cache at the same moment, the waypoint vanishes from the
+    // screen until the next load(). Regression for exactly that.
+    upsertImpl.mockResolvedValue({ error: null })
+    useWaypoints.setState({ pending: [createOp('a1')] })
+
+    await useWaypoints.getState().flush()
+
+    expect(useWaypoints.getState().pending).toHaveLength(0)
+    const visible = useWaypoints.getState().visible()
+    expect(visible.map((w) => w.id)).toContain('a1')
+  })
+
   it('keeps ops appended while a flush is in flight', async () => {
     // First upsert blocks until we let it finish, simulating a slow link.
     let releaseFirst!: () => void

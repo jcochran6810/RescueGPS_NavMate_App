@@ -2,24 +2,21 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
-import type { NewSarRecord, SarRecord } from '@/lib/types'
+import { newIncidentNumber } from '@/lib/incident'
+import type { Incident, IncidentStatus, NewIncident } from '@/lib/types'
 
 /**
- * SAR datum records, offline-first.
- *
- * Same discipline as the waypoint store, for the same reason: the unit
- * collecting an LKP or retrieving a drift marker is very often out of
- * coverage, and capture must always succeed locally with sync waiting its
- * turn. The queue carries the same three safeguards the waypoint queue
- * earned the hard way — ops appended mid-flush survive, a permanently
- * refused op is set aside after bounded retries instead of wedging the
- * queue, and a queue is never replayed under a different account.
+ * Incidents, offline-first — the same queue discipline as waypoints and SAR
+ * records, for the same reason: the unit opening a search is very often the
+ * one outside coverage, and opening must always succeed locally. The three
+ * safeguards carry over: ops appended mid-flush survive, a permanently
+ * refused op is set aside after bounded retries, and a queue is never
+ * replayed under a different account.
  */
 
 type PendingOp = (
-  | { kind: 'create'; record: SarRecord }
-  | { kind: 'update'; id: string; patch: Partial<SarRecord> }
-  | { kind: 'delete'; id: string }
+  | { kind: 'create'; incident: Incident }
+  | { kind: 'update'; id: string; patch: Partial<Incident> }
 ) & { attempts?: number }
 
 interface FailedOp {
@@ -30,8 +27,8 @@ interface FailedOp {
 
 const MAX_ATTEMPTS = 3
 
-interface SarState {
-  cache: SarRecord[]
+interface IncidentState {
+  cache: Incident[]
   pending: PendingOp[]
   failed: FailedOp[]
   loading: boolean
@@ -39,14 +36,16 @@ interface SarState {
   ownerId: string | null
 
   /** Cache merged with the queue — what the UI renders. Newest first. */
-  visible: () => SarRecord[]
+  visible: () => Incident[]
+  /** The search currently being run in a scope: newest active/suspended. */
+  activeIncident: (teamId: string | null) => Incident | null
   pendingCount: () => number
 
   load: () => Promise<void>
   flush: () => Promise<void>
-  createRecord: (input: NewSarRecord) => Promise<SarRecord | null>
-  updateRecord: (id: string, patch: Partial<SarRecord>) => Promise<void>
-  removeRecord: (id: string) => Promise<void>
+  openIncident: (input: NewIncident) => Promise<Incident | null>
+  updateIncident: (id: string, patch: Partial<Incident>) => Promise<void>
+  closeIncident: (id: string, status: IncidentStatus) => Promise<void>
   retryFailed: () => Promise<void>
   discardFailed: () => void
   clearLocal: () => void
@@ -69,38 +68,32 @@ function isTerminal(e: unknown): boolean {
   return !isOffline(e) && !isTransient(e)
 }
 
-/**
- * Memoised exactly like the waypoint merge — `visible()` is a selector.
- * Failed ops stay layered in: a refused record is still the crew's local
- * data, and an LKP vanishing because sync failed would read as data loss.
- */
 let memo: {
-  cache: SarRecord[]
+  cache: Incident[]
   failed: FailedOp[]
   pending: PendingOp[]
-  result: SarRecord[]
+  result: Incident[]
 } | null = null
 
-function applyOps(cache: SarRecord[], ops: PendingOp[]): SarRecord[] {
+function applyOps(cache: Incident[], ops: PendingOp[]): Incident[] {
   const byId = new Map(cache.map((r) => [r.id, r]))
   for (const op of ops) {
-    if (op.kind === 'create') byId.set(op.record.id, op.record)
-    else if (op.kind === 'delete') byId.delete(op.id)
+    if (op.kind === 'create') byId.set(op.incident.id, op.incident)
     else {
       const existing = byId.get(op.id)
       if (existing) byId.set(op.id, { ...existing, ...op.patch })
     }
   }
   return [...byId.values()].sort((a, b) =>
-    b.recorded_at.localeCompare(a.recorded_at),
+    b.created_at.localeCompare(a.created_at),
   )
 }
 
 function merge(
-  cache: SarRecord[],
+  cache: Incident[],
   failed: FailedOp[],
   pending: PendingOp[],
-): SarRecord[] {
+): Incident[] {
   if (
     memo &&
     memo.cache === cache &&
@@ -117,12 +110,22 @@ function merge(
 let flushSeq = 0
 
 /** The row columns sent to the server (never updated_at — a trigger owns it). */
-function toRow(r: SarRecord) {
-  const { id, client_id, user_id, team_id, incident_id, kind, lat, lon, recorded_at, payload, note } = r
-  return { id, client_id, user_id, team_id, incident_id, kind, lat, lon, recorded_at, payload, note }
+function toRow(r: Incident) {
+  const {
+    id, client_id, team_id, incident_number, incident_type, incident_name,
+    urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
+    incident_time, summary, created_by,
+  } = r
+  return {
+    id, client_id, team_id, incident_number, incident_type, incident_name,
+    urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
+    incident_time, summary, created_by,
+  }
 }
 
-export const useSarRecords = create<SarState>()(
+const OPEN: IncidentStatus[] = ['active', 'suspended']
+
+export const useIncidents = create<IncidentState>()(
   persist(
     (set, get) => ({
       cache: [],
@@ -133,6 +136,16 @@ export const useSarRecords = create<SarState>()(
       ownerId: null,
 
       visible: () => merge(get().cache, get().failed, get().pending),
+
+      activeIncident: (teamId) =>
+        get()
+          .visible()
+          .find(
+            (i) =>
+              OPEN.includes(i.status) &&
+              (teamId ? i.team_id === teamId : i.team_id === null),
+          ) ?? null,
+
       pendingCount: () => get().pending.length,
 
       load: async () => {
@@ -150,15 +163,15 @@ export const useSarRecords = create<SarState>()(
           for (let attempt = 0; attempt < 2; attempt++) {
             const seqBefore = flushSeq
             const { data, error } = await supabase
-              .from('sar_records')
+              .from('incidents')
               .select('*')
-              .order('recorded_at', { ascending: false })
+              .order('created_at', { ascending: false })
             if (error) throw error
-            set({ cache: (data ?? []) as SarRecord[] })
+            set({ cache: (data ?? []) as Incident[] })
             if (flushSeq === seqBefore) break
           }
         } catch (e) {
-          console.warn('sar records load failed', errorMessage(e))
+          console.warn('incidents load failed', errorMessage(e))
         } finally {
           set({ loading: false })
         }
@@ -177,7 +190,7 @@ export const useSarRecords = create<SarState>()(
         let remaining: PendingOp[] = []
         const newlyFailed: FailedOp[] = []
         // Accepted ops leave the queue, so they must land in the cache too —
-        // otherwise a successfully synced record vanishes from the screen
+        // otherwise a successfully synced incident vanishes from the screen
         // until the next load().
         const completed: PendingOp[] = []
         let progressed = false
@@ -187,19 +200,13 @@ export const useSarRecords = create<SarState>()(
             try {
               if (op.kind === 'create') {
                 const { error } = await supabase
-                  .from('sar_records')
-                  .upsert(toRow(op.record), { onConflict: 'id' })
-                if (error) throw error
-              } else if (op.kind === 'update') {
-                const { error } = await supabase
-                  .from('sar_records')
-                  .update(op.patch)
-                  .eq('id', op.id)
+                  .from('incidents')
+                  .upsert(toRow(op.incident), { onConflict: 'id' })
                 if (error) throw error
               } else {
                 const { error } = await supabase
-                  .from('sar_records')
-                  .delete()
+                  .from('incidents')
+                  .update(op.patch)
                   .eq('id', op.id)
                 if (error) throw error
               }
@@ -238,46 +245,47 @@ export const useSarRecords = create<SarState>()(
         }
       },
 
-      createRecord: async (input) => {
+      openIncident: async (input) => {
         const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return null
 
         const id = newId()
         const now = new Date().toISOString()
-        const record: SarRecord = {
+        const incident: Incident = {
           id,
           client_id: id,
-          user_id: uid,
           team_id: input.team_id ?? null,
-          incident_id: input.incident_id ?? null,
-          kind: input.kind,
-          lat: input.lat,
-          lon: input.lon,
-          recorded_at: input.recorded_at,
-          payload: input.payload,
-          note: input.note ?? '',
+          incident_number: newIncidentNumber(new Date(), id),
+          incident_type: input.incident_type,
+          incident_name: input.incident_name.trim(),
+          urgency_level: 'high',
+          status: 'active',
+          lkp_lat: null,
+          lkp_lng: null,
+          lkp_time: null,
+          lkp_source: null,
+          incident_time: null,
+          summary: '',
+          created_by: uid,
           created_at: now,
           updated_at: now,
         }
 
         set({
           ownerId: uid,
-          pending: [...get().pending, { kind: 'create', record }],
+          pending: [...get().pending, { kind: 'create', incident }],
         })
         await get().flush()
-        return record
+        return incident
       },
 
-      updateRecord: async (id, patch) => {
-        set({
-          pending: [...get().pending, { kind: 'update', id, patch }],
-        })
+      updateIncident: async (id, patch) => {
+        set({ pending: [...get().pending, { kind: 'update', id, patch }] })
         await get().flush()
       },
 
-      removeRecord: async (id) => {
-        set({ pending: [...get().pending, { kind: 'delete', id }] })
-        await get().flush()
+      closeIncident: async (id, status) => {
+        await get().updateIncident(id, { status })
       },
 
       retryFailed: async () => {
@@ -299,7 +307,7 @@ export const useSarRecords = create<SarState>()(
         set({ cache: [], pending: [], failed: [], ownerId: null }),
     }),
     {
-      name: 'navmate.sar.v1',
+      name: 'navmate.incidents.v1',
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({
         cache: s.cache,

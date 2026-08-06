@@ -36,6 +36,7 @@ export function SatelliteMap({
   trail,
   fix,
   markers = [],
+  route = [],
   labels = false,
   height = 320,
   className = '',
@@ -43,6 +44,10 @@ export function SatelliteMap({
   trail: Fix[]
   fix: Fix | null
   markers?: PathMarker[]
+  /** A planned line to steer — a search pattern — drawn dashed, under the
+   *  track, with a square at each turn point. Drawn from the coordinates
+   *  like everything else, so it is exact even when imagery is not. */
+  route?: { lat: number; lon: number }[]
   /** Draw place names and boundaries over the imagery. */
   labels?: boolean
   height?: number
@@ -98,7 +103,10 @@ export function SatelliteMap({
     }
   }, [])
 
-  const anchor = fix ?? trail[trail.length - 1] ?? null
+  // With neither a fix nor a track, a planned route still gives the map a
+  // place to be — a crew plans the pattern before they start running it.
+  const anchor: { lat: number; lon: number } | null =
+    fix ?? trail[trail.length - 1] ?? route[0] ?? null
   // Read inside the state updaters, which run after this render rather than
   // during it, so they need the current anchor and not the one they closed
   // over.
@@ -347,13 +355,24 @@ export function SatelliteMap({
       .join(' ')
   }, [trail, project])
 
+  const routePath = useMemo(() => {
+    if (route.length < 2) return ''
+    return route
+      .map((p, i) => {
+        const v = project(p.lat, p.lon)
+        return `${i === 0 ? 'M' : 'L'}${v.x.toFixed(1)},${v.y.toFixed(1)}`
+      })
+      .join(' ')
+  }, [route, project])
+
   const here = fix ? project(fix.lat, fix.lon) : null
   const bar = pickScaleBar(mpp, Math.min(120, w * 0.4))
 
   const fitTrack = () => {
-    if (trail.length === 0) return
-    const lats = trail.map((f) => f.lat)
-    const lons = trail.map((f) => f.lon)
+    if (trail.length === 0 && route.length === 0) return
+    const pts = [...trail, ...route]
+    const lats = pts.map((f) => f.lat)
+    const lons = pts.map((f) => f.lon)
     const lat = (Math.min(...lats) + Math.max(...lats)) / 2
     const lon = (Math.min(...lons) + Math.max(...lons)) / 2
     const spanM = Math.max(
@@ -469,6 +488,44 @@ export function SatelliteMap({
             )
           })}
 
+          {routePath && (
+            <>
+              <path
+                d={routePath}
+                fill="none"
+                stroke="#06131f"
+                strokeWidth="4"
+                strokeOpacity="0.6"
+                strokeLinejoin="round"
+              />
+              <path
+                d={routePath}
+                fill="none"
+                className="stroke-amber-300"
+                strokeWidth="1.5"
+                strokeDasharray="6 4"
+                strokeLinejoin="round"
+              />
+              {route.map((p, i) => {
+                const v = project(p.lat, p.lon)
+                if (v.x < -20 || v.x > w + 20 || v.y < -20 || v.y > h + 20) {
+                  return null
+                }
+                return (
+                  <rect
+                    key={i}
+                    x={v.x - 3}
+                    y={v.y - 3}
+                    width="6"
+                    height="6"
+                    className="fill-amber-300 stroke-navy-950"
+                    strokeWidth="1"
+                  />
+                )
+              })}
+            </>
+          )}
+
           {path && (
             <>
               <path
@@ -579,9 +636,13 @@ export function SatelliteMap({
             'absolute right-2 bottom-2 flex gap-1 ' + (placed ? '' : 'hidden')
           }
         >
-          {trail.length > 1 && (
-            <MapButton label="Fit the whole track" onClick={fitTrack} wide>
-              Fit track
+          {(trail.length > 1 || route.length > 1) && (
+            <MapButton
+              label={route.length > 1 ? 'Fit the pattern and track' : 'Fit the whole track'}
+              onClick={fitTrack}
+              wide
+            >
+              {route.length > 1 ? 'Fit pattern' : 'Fit track'}
             </MapButton>
           )}
           <MapButton
