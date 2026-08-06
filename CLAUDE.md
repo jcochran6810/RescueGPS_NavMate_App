@@ -233,6 +233,36 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 <!-- newest first; append a new dated entry on every "end session" -->
 
+### 2026-08-06 — claude/rescue-gps-datum-app-074wfq (navigation rework)
+
+Direct feedback on the admin dashboard and the app shell: fewer counters,
+help as its own section, the menu in the top corner, account as a circle
+button.
+
+- **Menu moved from the bottom bar to the header's top-right corner** as a
+  ☰ button dropping a panel down over the page (`NavMenu.tsx`, replacing
+  `TabBar.tsx`). It carries both a ✕ close and a ▲ collapse control —
+  visibly, not just Escape/backdrop, which still work. The footer now holds
+  only the stamp button.
+- **Account is a circle button** next to the menu (`AccountButton.tsx`),
+  initials from callsign → name → email, opening a top-right panel with the
+  profile fields (name/callsign, saved via the existing updateProfile) and
+  sign out (keeping the unsynced-queue warning). The profile card left the
+  Team page; the sign-out button left the header row.
+- **Help / Contact is its own menu section** (`HelpTab.tsx`); the
+  contact-admin card moved there from the Team page.
+- **Admin metrics trimmed** to what runs the platform: users, active (7d),
+  teams, open requests, app errors (24h), photo storage. New-this-week/month
+  counters, waypoint/datum totals and the by-kind line are gone from the UI;
+  `admin_metrics()` still returns them, so restoring any is a render change,
+  not a migration.
+- Verified in headless Chromium: 18-check drive of the new nav (corner
+  position by bounding box, ✕ and ▲ both close, help section works, account
+  panel edits save through the stub, admin reachable, trimmed metrics
+  confirmed absent, stamp button still fixed) plus a no-horizontal-scroll
+  check at 320/360/390 px with the offline badge forced on. 193 tests,
+  typecheck, lint, build clean.
+
 ### 2026-08-06 — claude/rescue-gps-datum-app-074wfq (admin dashboard)
 
 "Create an admin dashboard like MyTradeCrate's, jason.cochran@

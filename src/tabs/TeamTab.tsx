@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useTeams } from '@/store/useTeams'
 import { useAuth } from '@/store/useAuth'
 import { toast } from '@/store/useToast'
-import { SupportRequests } from '@/components/SupportRequests'
 import { Button, Card, EmptyState, Input, Label } from '@/components/ui'
 import type { TeamRole } from '@/lib/types'
 
@@ -27,21 +26,14 @@ export function TeamTab() {
     setRole,
     removeMember,
   } = useTeams()
-  const { user, profile, updateProfile } = useAuth()
+  const { user } = useAuth()
 
   const [newName, setNewName] = useState('')
   const [code, setCode] = useState('')
-  const [fullName, setFullName] = useState('')
-  const [callsign, setCallsign] = useState('')
 
   useEffect(() => {
     void load()
   }, [load])
-
-  useEffect(() => {
-    setFullName(profile?.full_name ?? '')
-    setCallsign(profile?.callsign ?? '')
-  }, [profile?.full_name, profile?.callsign])
 
   const team = activeTeam()
   const myRole = members.find((m) => m.user_id === user?.id)?.role ?? null
@@ -67,39 +59,6 @@ export function TeamTab() {
           </button>
         </div>
       )}
-
-      <Card>
-        <Label>Your profile</Label>
-        <div className="grid grid-cols-2 gap-2">
-          <Input
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            placeholder="Name"
-            aria-label="Your name"
-          />
-          <Input
-            value={callsign}
-            onChange={(e) => setCallsign(e.target.value)}
-            placeholder="Callsign"
-            aria-label="Your callsign"
-          />
-        </div>
-        <Button
-          className="mt-2"
-          onClick={async () => {
-            const { error } = await updateProfile({
-              full_name: fullName.trim(),
-              callsign: callsign.trim(),
-            })
-            toast(error ?? 'Profile saved', error ? 'error' : 'success')
-          }}
-        >
-          Save profile
-        </Button>
-        <p className="mt-1.5 text-xs text-slate-500">
-          Teammates see this next to waypoints you share.
-        </p>
-      </Card>
 
       {team ? (
         <Card>
@@ -304,8 +263,6 @@ export function TeamTab() {
           You are in “Private” scope — new waypoints stay on your account only.
         </p>
       )}
-
-      <SupportRequests />
     </div>
   )
 }

@@ -127,7 +127,6 @@ function MetricsSection() {
   }
 
   const mb = metrics.storage_bytes / (1024 * 1024)
-  const kinds = Object.entries(metrics.sar_by_kind)
 
   return (
     <Card>
@@ -137,54 +136,31 @@ function MetricsSection() {
           As of {new Date(metrics.generated_at).toLocaleTimeString()}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat
-          label="Users"
-          value={String(metrics.users_total)}
-          hint={`+${metrics.users_new_7d} this week · +${metrics.users_new_30d} this month`}
-        />
+      {/* Deliberately short: the totals that matter for running the platform,
+          not activity counters. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <Stat label="Users" value={String(metrics.users_total)} />
         <Stat
           label="Active (7d)"
           value={String(metrics.users_active_7d)}
           hint="signed in this week"
         />
-        <Stat
-          label="Teams"
-          value={String(metrics.teams_total)}
-          hint={`${metrics.team_members_total} membership${metrics.team_members_total === 1 ? '' : 's'}`}
-        />
-        <Stat
-          label="Waypoints"
-          value={String(metrics.waypoints_total)}
-          hint={`+${metrics.waypoints_7d} this week · ${metrics.photos_total} photos`}
-        />
-        <Stat
-          label="Datum records"
-          value={String(metrics.sar_records_total)}
-          hint={`+${metrics.sar_records_7d} this week`}
-        />
+        <Stat label="Teams" value={String(metrics.teams_total)} />
         <Stat
           label="Open requests"
           value={String(metrics.requests_open)}
-          hint={`${metrics.requests_in_progress} in progress · ${metrics.requests_total} all time`}
+          hint={`${metrics.requests_in_progress} in progress`}
         />
         <Stat
           label="App errors"
           value={String(metrics.errors_24h)}
-          hint={`last 24 h · ${metrics.errors_7d} this week`}
+          hint="last 24 h"
         />
         <Stat
           label="Photo storage"
           value={mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`}
-          hint="waypoint-photos bucket"
         />
       </div>
-      {kinds.length > 0 && (
-        <p className="tnum mt-2 text-xs text-slate-500">
-          Datum records by kind:{' '}
-          {kinds.map(([k, n]) => `${k.replace('_', ' ')} ${n}`).join(' · ')}
-        </p>
-      )}
     </Card>
   )
 }

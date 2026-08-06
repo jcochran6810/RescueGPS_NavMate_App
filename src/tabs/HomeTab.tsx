@@ -5,7 +5,7 @@ import { formatSpeed } from '@/lib/geo'
 import { DaylightTracker } from '@/components/DaylightTracker'
 import { NearbyWaypoints } from '@/components/NearbyWaypoints'
 import { Card, Label } from '@/components/ui'
-import type { TabId } from '@/components/TabBar'
+import type { TabId } from '@/components/NavMenu'
 
 /**
  * The screen the app opens on: where you are, what the light and the water are

@@ -10,7 +10,7 @@ import { installErrorReporting } from '@/lib/errlog'
 import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
-import { TabBar, type TabId } from '@/components/TabBar'
+import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
 import { Toast } from '@/components/Toast'
 import { Spinner } from '@/components/ui'
@@ -25,6 +25,7 @@ import { CompassTab } from '@/tabs/CompassTab'
 import { WaypointsTab } from '@/tabs/WaypointsTab'
 import { TeamTab } from '@/tabs/TeamTab'
 import { DataTab } from '@/tabs/DataTab'
+import { HelpTab } from '@/tabs/HelpTab'
 
 export default function App() {
   const { session, ready, recovering, init } = useAuth()
@@ -92,10 +93,10 @@ export default function App() {
 
   return (
     <div className="min-h-full">
-      <Header />
-      {/* Clears the footer, which is the stamp button and the section row
-          stacked together. */}
-      <main className="mx-auto max-w-3xl px-3 pt-3 pb-40">
+      <Header active={tab} onChange={setTab} />
+      {/* Clears the footer, which now carries only the stamp button — the
+          section menu lives in the header's top corner. */}
+      <main className="mx-auto max-w-3xl px-3 pt-3 pb-24">
         {tab === 'home' && <HomeTab onNavigate={setTab} />}
         {tab === 'datum' && <DatumTab />}
         {tab === 'track' && <TrackTab />}
@@ -106,15 +107,15 @@ export default function App() {
         {tab === 'waypoints' && <WaypointsTab />}
         {tab === 'team' && <TeamTab />}
         {tab === 'data' && <DataTab />}
+        {tab === 'help' && <HelpTab />}
         {tab === 'admin' && <AdminTab />}
       </main>
 
       {/* Stamping is the one action that can be urgent, so the button sits on
           every screen, in the same place, however far the page has scrolled. */}
       <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-navy-950/95 backdrop-blur">
-        <div className="mx-auto max-w-3xl">
+        <div className="mx-auto max-w-3xl pb-2">
           <StampWaypoint />
-          <TabBar active={tab} onChange={setTab} />
         </div>
       </div>
 
