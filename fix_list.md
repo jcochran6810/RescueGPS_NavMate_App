@@ -8,6 +8,36 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-08-06 — **Exercise the satellite imagery against the real Esri
+      service in a browser.** The build sandbox's proxy 403s
+      `server.arcgisonline.com`, exactly as it does NOAA, so every tile in
+      this session's verification came from a stubbed 256 px PNG. What is
+      confirmed: the tile arithmetic against independently computed Web
+      Mercator values, that the app requests `{z}/{y}/{x}` row-before-column
+      for the right tile, that tiles paint and decode, and that a dead
+      imagery link degrades to a drawn track with a banner. What is not:
+      that Esri serves those exact URLs with `Access-Control-Allow-Origin`
+      (the `<img crossOrigin="anonymous">` in `src/lib/tiles.ts` assumes it —
+      if imagery is blank in the field with CORS errors in the console, drop
+      `crossOrigin` on `SATELLITE`/`LABELS` and accept opaque, quota-hungry
+      cache entries), and that zoom 19 has coverage everywhere the crews work.
+- [ ] 2026-08-06 — Decide how much imagery a device may keep. The service
+      worker caches tiles for 90 days, capped at 2000 entries
+      (`vite.config.ts`), which is roughly 40–60 MB at Esri's tile sizes;
+      `purgeOnQuotaError` clears the lot if the device pushes back. There is
+      no per-area management and no "how much am I holding" figure in the UI.
+      Worth revisiting once someone has actually saved a few operating areas.
+
+- [ ] 2026-08-06 — Tracking still stops when the app is not on screen. The
+      tracker now takes a screen wake lock while running
+      (`src/store/useTracker.ts`), which covers a phone left face-up in a
+      pocket-free hand, but a browser tab that is backgrounded or a screen
+      the user actively locks stops delivering fixes, and the track simply
+      has a hole in it. A real fix means a background geolocation API no
+      browser gives a web app; the honest alternatives are saying so in the
+      UI (done — the tracker says when the screen is held awake) or an
+      installed-PWA periodic sync, which does not give positions either.
+
 - [ ] 2026-08-05 — **Confirm where the `planner` exposed-schema setting came
       from.** From ~20:30 to ~21:21 UTC today every REST request 503'd:
       the `authenticator` role had `pgrst.db_schemas = public,
@@ -108,12 +138,17 @@ Add new items at the top. Use the format:
       coming back. But the bytes themselves are never queued, because
       localStorage is not sized for photographs; the UI says so plainly.
       Queuing them properly needs IndexedDB (src/store/useWaypoints.ts).
-- [ ] 2026-08-03 — No map view. The Track tab now plots the recorded path
-      north-up to scale with waypoints marked, which covers "show me where I
-      have been", but there is still no basemap under it. The offline tile
-      story is the hard part and is why it wasn't rushed into the first pass.
+
 
 ## Done
+
+- [x] 2026-08-06 — No map view. Live tracking now draws on Esri World Imagery
+      (`src/components/SatelliteMap.tsx`), with the north-up plot kept as the
+      `Plot only` view that fetches nothing. The offline story that held this
+      up: tiles are cached by the service worker cache-first, and the map has
+      a button that pulls the surrounding area down before the signal goes.
+      See the open item above for what is still unverified against the live
+      service.
 
 - [x] 2026-08-05 — Rename the Supabase project from `plan-review-repeat` to
       `RescueGPS NavMate`. Confirmed done — the management API reports the
