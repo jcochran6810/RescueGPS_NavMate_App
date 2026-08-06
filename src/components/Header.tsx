@@ -1,49 +1,45 @@
-import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
 import { useTracker } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
+import { NavMenu, type TabId } from '@/components/NavMenu'
+import { AccountButton } from '@/components/AccountButton'
 
-export function Header() {
-  const { profile, user, signOut } = useAuth()
+export function Header({
+  active,
+  onChange,
+}: {
+  active: TabId
+  onChange: (id: TabId) => void
+}) {
   const { teams, activeTeamId, setActiveTeam } = useTeams()
   const watching = useTracker((s) => s.watching)
   const pending = useWaypoints((s) => s.pending.length)
   const online = useOnline()
 
-  const who = profile?.callsign || profile?.full_name || user?.email || ''
-
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-white/10 bg-navy-950/85 backdrop-blur">
       <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pb-2">
         {/* Emblem only up here — the wordmark would be unreadable at this
-            size, and the row already competes with the team switcher. The
-            artwork has no field of its own, so it sits on the header's blur. */}
+            size. The artwork has no field of its own, so it sits on the
+            header's blur. Hidden on the narrowest screens, where the name
+            and the two corner buttons need every pixel. */}
         <img
           src="/emblem-192.png"
           alt=""
           width={192}
           height={192}
-          // Hidden on the narrowest screens. With both status badges showing
-          // there is not room for the mark and the full name at 320 px, and the
-          // name is what identifies the app — this image is decorative, which
-          // is why it has no alt text.
-          className="size-6 shrink-0 max-[359px]:hidden"
+          className="size-6 shrink-0 max-[379px]:hidden"
         />
         {/* NavMate is the field app; RescueGPS is the system it reports into.
-            Naming both, with the product name secondary, says which is which
-            without spending the width of a second line on it. `min-w-0` lets
-            this give way to the status badges rather than pushing them off the
-            edge of a narrow phone. */}
-        {/* Steps down rather than truncating: with both status badges showing,
-            "RescueGPS NavMate" does not fit a 320 px screen at 14 px, and
-            losing the product name to an ellipsis defeats the point of it. */}
-        <span className="min-w-0 truncate text-xs tracking-tight min-[360px]:text-sm sm:text-base">
+            `min-w-0 truncate` lets the name give way to the status badges and
+            the corner buttons rather than pushing them off a narrow phone. */}
+        <span className="min-w-0 flex-1 truncate text-xs tracking-tight min-[360px]:text-sm sm:text-base">
           <span className="font-semibold text-slate-50">RescueGPS</span>{' '}
           <span className="font-medium text-sky-300">NavMate</span>
         </span>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {!online && (
             <span className="rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-300">
               Offline
@@ -67,6 +63,11 @@ export function Header() {
           >
             GPS {watching ? 'live' : 'off'}
           </span>
+
+          {/* The two corner controls: the account circle, then the menu in
+              the very corner. */}
+          <AccountButton />
+          <NavMenu active={active} onChange={onChange} />
         </div>
       </div>
 
@@ -87,30 +88,6 @@ export function Header() {
             </option>
           ))}
         </select>
-
-        <span className="max-w-[9rem] truncate text-xs text-slate-400">
-          {who}
-        </span>
-        <button
-          onClick={() => {
-            // Signing out does not destroy the queue (it stays on the device,
-            // guarded by ownerId), but nothing will sync until this account
-            // signs back in — worth a warning while changes are waiting.
-            if (
-              pending > 0 &&
-              !confirm(
-                `${pending} change${pending === 1 ? '' : 's'} have not synced yet. ` +
-                  'They stay saved on this device and sync next time you sign ' +
-                  'in here. Sign out anyway?',
-              )
-            )
-              return
-            void signOut()
-          }}
-          className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-slate-300 hover:bg-white/5"
-        >
-          Sign out
-        </button>
       </div>
     </header>
   )

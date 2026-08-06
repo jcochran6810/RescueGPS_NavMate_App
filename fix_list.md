@@ -8,6 +8,18 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-08-05 — **Confirm where the `planner` exposed-schema setting came
+      from.** From ~20:30 to ~21:21 UTC today every REST request 503'd:
+      the `authenticator` role had `pgrst.db_schemas = public,
+      graphql_public, planner`, no `planner` schema exists, and PostgREST
+      crash-looped on its schema cache (postgres logged `schema "planner"
+      does not exist` every 32 s). Fixed by resetting the role setting to
+      `public, graphql_public`. `planner` is a RescueGPS-side schema name —
+      if it was added in Dashboard → Settings → API → "Exposed schemas",
+      remove it there too or the dashboard may re-apply it; if a planner
+      schema is actually wanted for the shared-database future, create the
+      schema first, then expose it.
+
 - [ ] 2026-08-05 — SAR record photos. `sar_records` (clues especially) has no
       photo path yet; the clue card tells the crew to stamp a waypoint for
       photographs. Wiring clues to the photo bucket needs a storage-policy

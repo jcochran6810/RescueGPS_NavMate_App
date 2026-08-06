@@ -233,6 +233,80 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 <!-- newest first; append a new dated entry on every "end session" -->
 
+### 2026-08-06 — claude/rescue-gps-datum-app-074wfq (navigation rework)
+
+Direct feedback on the admin dashboard and the app shell: fewer counters,
+help as its own section, the menu in the top corner, account as a circle
+button.
+
+- **Menu moved from the bottom bar to the header's top-right corner** as a
+  ☰ button dropping a panel down over the page (`NavMenu.tsx`, replacing
+  `TabBar.tsx`). It carries both a ✕ close and a ▲ collapse control —
+  visibly, not just Escape/backdrop, which still work. The footer now holds
+  only the stamp button.
+- **Account is a circle button** next to the menu (`AccountButton.tsx`),
+  initials from callsign → name → email, opening a top-right panel with the
+  profile fields (name/callsign, saved via the existing updateProfile) and
+  sign out (keeping the unsynced-queue warning). The profile card left the
+  Team page; the sign-out button left the header row.
+- **Help / Contact is its own menu section** (`HelpTab.tsx`); the
+  contact-admin card moved there from the Team page.
+- **Admin metrics trimmed** to what runs the platform: users, active (7d),
+  teams, open requests, app errors (24h), photo storage. New-this-week/month
+  counters, waypoint/datum totals and the by-kind line are gone from the UI;
+  `admin_metrics()` still returns them, so restoring any is a render change,
+  not a migration.
+- Verified in headless Chromium: 18-check drive of the new nav (corner
+  position by bounding box, ✕ and ▲ both close, help section works, account
+  panel edits save through the stub, admin reachable, trimmed metrics
+  confirmed absent, stamp button still fixed) plus a no-horizontal-scroll
+  check at 320/360/390 px with the offline badge forced on. 193 tests,
+  typecheck, lint, build clean.
+
+### 2026-08-06 — claude/rescue-gps-datum-app-074wfq (admin dashboard)
+
+"Create an admin dashboard like MyTradeCrate's, jason.cochran@
+universalhazard.com as platform admin, track metrics, take care of requests,
+make user profile changes." The Pressure-washing repo was read first; its
+pattern — `platform_admins` membership + SECURITY DEFINER `is_platform_admin()`
++ per-table "platform admin read" policies + an `admin_actions` audit row on
+every mutation — ports to this serverless SPA verbatim, minus the Next.js API
+routes: here every mutation is an audited SECURITY DEFINER RPC, because this
+app has no server and never a service-role key.
+
+**Schema** (two migrations, applied live): `platform_admins` (seeded by email
+lookup, not a hardcoded uuid — the admin account already existed),
+`support_requests` (kind/subject/body/status/admin_notes; users insert-only
+and read their own; no user update — a filed request is part of the record),
+`admin_actions` (append-only), `app_errors` (any signed-in client inserts,
+admin reads), admin read policies on profiles/teams/team_members/waypoints/
+sar_records, and RPCs `admin_metrics()`, `admin_list_users()`,
+`admin_update_profile()`, `admin_update_request()` — each check
+is_platform_admin() inside and write their own audit row. EXECUTE revoked
+from public/anon everywhere.
+
+**UI:** a Platform admin section, listed in the menu only for admins (the
+database enforces regardless): metrics grid (users + new/active, teams,
+waypoints + photos, datum records by kind, open requests, app errors 24h/7d,
+photo storage), the request queue (Needs action / Resolved / Dismissed
+filters, note back to the requester, Start/Reopen/Resolve/Dismiss), accounts
+with inline profile edit (name + callsign via the audited RPC), and the
+recent-actions log. Deliberately online-only — a dashboard is a desk tool;
+it keeps the last numbers and says why when a load fails. Users file
+requests from a "Contact the platform admin" card on the Team page and see
+the admin's note come back under their request. MyTradeCrate has no requests
+table at all — this queue is NavMate's own answer to "take care of
+requests". Runtime errors report into `app_errors` via window handlers
+(throttled, deduped, never queued offline, silent on failure).
+
+**Verification:** 193 tests still green; 12-check headless-Chromium drive of
+the production build with a stubbed Supabase: non-admin never sees the menu
+entry and files/sees own requests; admin sees metrics, works the queue with a
+note, edits a profile, and both mutations land in the audit log. One find on
+the way: Playwright route stubs don't intercept service-worker fetches — the
+drive blocks SWs; noted here because the next person to stub the backend in a
+test will hit the same wall.
+
 ### 2026-08-05 — claude/rescue-gps-datum-app-074wfq
 
 "Do a full code based analysis, fix bugs and dead ends, finish the planned
