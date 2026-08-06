@@ -45,7 +45,7 @@ export function CompassTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Compass</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Heading, and the bearing to everything you have saved.
         </p>
       </div>
@@ -84,7 +84,7 @@ export function CompassTab() {
                 <span className="min-w-0 truncate text-sm text-slate-100">
                   {w.name}
                 </span>
-                <span className="tnum shrink-0 text-sm text-slate-400">
+                <span className="tnum shrink-0 text-sm text-slate-300">
                   {formatBearing(bearing)}
                 </span>
                 <span className="tnum shrink-0 text-sm text-slate-300">
@@ -94,7 +94,7 @@ export function CompassTab() {
             ))}
           </ul>
         )}
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-slate-400">
           Bearings are true, worked from the coordinates. The dial above may be
           magnetic depending on the device — it says which.
         </p>

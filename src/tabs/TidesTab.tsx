@@ -48,7 +48,7 @@ export function TidesTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Tides</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           High and low water from the nearest NOAA station.
         </p>
       </div>
@@ -81,7 +81,7 @@ export function TidesTab() {
           <div className="space-y-3">
             {days.map(([day, entries]) => (
               <div key={day}>
-                <div className="mb-1 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+                <div className="mb-1 text-xs font-semibold tracking-wide text-slate-300 uppercase">
                   {day}
                 </div>
                 <ul className="divide-y divide-white/5 rounded-xl border border-white/10">
@@ -111,7 +111,7 @@ export function TidesTab() {
             ))}
           </div>
         )}
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-slate-400">
           Heights are above MLLW. Predictions are astronomical — they do not
           account for wind or barometric pressure, both of which can move real
           water level by a foot or more in a blow.

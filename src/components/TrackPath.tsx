@@ -84,7 +84,7 @@ export function TrackPath({
     return (
       <div
         className={
-          'grid h-48 place-items-center rounded-xl border border-dashed border-white/10 text-sm text-slate-500 ' +
+          'grid h-48 place-items-center rounded-xl border border-dashed border-white/10 text-sm text-slate-400 ' +
           className
         }
       >
@@ -174,7 +174,7 @@ export function TrackPath({
         </text>
       </svg>
 
-      <div className="pointer-events-none absolute top-1.5 left-2 text-[10px] font-semibold text-slate-500">
+      <div className="pointer-events-none absolute top-1.5 left-2 text-[10px] font-semibold text-slate-400">
         N ↑
       </div>
     </div>

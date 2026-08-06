@@ -121,7 +121,7 @@ export function WaypointsTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Waypoints</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           {activeTeam
             ? `Shared with ${activeTeam.name}.`
             : 'Private to your account.'}{' '}
@@ -161,7 +161,7 @@ export function WaypointsTab() {
           onChange={(e) => setNote(e.target.value)}
           placeholder="Notes…"
           rows={2}
-          className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+          className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
         />
 
         <div className="mt-2">
@@ -241,7 +241,7 @@ export function WaypointsTab() {
 
       {loading && shown.length === 0 ? (
         <EmptyState>
-          <Spinner className="text-slate-400" />
+          <Spinner className="text-slate-300" />
         </EmptyState>
       ) : shown.length === 0 ? (
         <EmptyState>
@@ -396,7 +396,7 @@ function WaypointCard({
           placeholder="Notes…"
           rows={2}
           aria-label="Notes"
-          className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+          className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
         />
 
         <input
@@ -472,7 +472,7 @@ function WaypointCard({
         {relative && (
           <div className="tnum shrink-0 text-sm text-slate-300">
             {formatDistance(relative.distanceNM, 'nm')}
-            <span className="text-slate-500">
+            <span className="text-slate-400">
               {' · '}
               {isAtPosition(relative.distanceNM)
                 ? 'here'
@@ -481,10 +481,10 @@ function WaypointCard({
           </div>
         )}
       </div>
-      <div className="tnum text-sm text-slate-400">
+      <div className="tnum text-sm text-slate-300">
         {toDD(w.lat)}, {toDD(w.lon)}
       </div>
-      <div className="tnum text-xs text-slate-500">
+      <div className="tnum text-xs text-slate-400">
         {toDMS(w.lat, 'lat')} {toDMS(w.lon, 'lon')}
       </div>
       {savedBy && (

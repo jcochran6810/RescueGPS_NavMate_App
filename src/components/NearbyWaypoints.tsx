@@ -74,7 +74,7 @@ export function NearbyWaypoints({
       </div>
 
       {nearest.length === 0 ? (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Nothing saved in this scope yet. Stamp a position to start.
         </p>
       ) : (
@@ -85,7 +85,7 @@ export function NearbyWaypoints({
                 <div className="truncate text-sm font-semibold text-slate-100">
                   {w.name}
                 </div>
-                <div className="tnum truncate text-xs text-slate-500">
+                <div className="tnum truncate text-xs text-slate-400">
                   {/* Standing on it, the bearing is pure GPS noise — this read
                       "0° N" for a waypoint 0.00 NM away, which is a heading a
                       crew could act on and should not. */}

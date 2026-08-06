@@ -25,7 +25,7 @@ const STATUS_TONE: Record<RequestStatus, string> = {
   open: 'bg-amber-500/15 text-amber-300',
   in_progress: 'bg-sky-500/15 text-sky-300',
   resolved: 'bg-emerald-500/15 text-emerald-300',
-  dismissed: 'bg-white/5 text-slate-400',
+  dismissed: 'bg-white/5 text-slate-300',
 }
 
 /**
@@ -68,7 +68,7 @@ export function SupportRequests() {
   return (
     <Card>
       <Label>Contact the platform admin</Label>
-      <p className="mb-2 text-xs text-slate-500">
+      <p className="mb-2 text-xs text-slate-400">
         Account changes, team problems, bugs — file it here and the platform
         admin picks it up. You will see their answer below.
       </p>
@@ -101,7 +101,7 @@ export function SupportRequests() {
         rows={3}
         maxLength={4000}
         aria-label="Request details"
-        className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+        className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
       />
       <Button
         variant="primary"
@@ -141,7 +141,7 @@ export function SupportRequests() {
                   {STATUS_LABEL[r.status]}
                 </span>
               </div>
-              <p className="tnum text-xs text-slate-500">
+              <p className="tnum text-xs text-slate-400">
                 {new Date(r.created_at).toLocaleString()}
               </p>
               {r.admin_notes && (
@@ -154,7 +154,7 @@ export function SupportRequests() {
         </ul>
       )}
       {loading && mine.length === 0 && (
-        <p className="mt-2 text-center text-xs text-slate-500">Loading your requests…</p>
+        <p className="mt-2 text-center text-xs text-slate-400">Loading your requests…</p>
       )}
     </Card>
   )

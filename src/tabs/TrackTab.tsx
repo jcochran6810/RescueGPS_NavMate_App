@@ -47,7 +47,7 @@ export function TrackTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Live tracker</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Live position, and the path you have covered.
         </p>
       </div>
@@ -98,7 +98,7 @@ export function TrackTab() {
       </div>
 
       {fix && (
-        <p className="text-center text-xs text-slate-500">
+        <p className="text-center text-xs text-slate-400">
           Last fix {new Date(fix.timestamp).toLocaleTimeString()}
         </p>
       )}
@@ -114,7 +114,7 @@ export function TrackTab() {
             lon: w.lon,
           }))}
         />
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           North up, drawn to fit, with saved waypoints marked. This is a plot of
           the track itself — there is no basemap under it, because chart tiles
           need a connection at exactly the moment you may not have one.
@@ -125,7 +125,7 @@ export function TrackTab() {
         <Label>Track recording</Label>
 
         <div className="mb-3">
-          <span className="mb-1.5 block text-xs text-slate-400">
+          <span className="mb-1.5 block text-xs text-slate-300">
             Record a point every
           </span>
           <div className="flex gap-1">
@@ -137,7 +137,7 @@ export function TrackTab() {
                   'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                   (intervalS === s
                     ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                    : 'border-white/10 text-slate-400 hover:bg-white/5')
+                    : 'border-white/10 text-slate-300 hover:bg-white/5')
                 }
               >
                 {s}s
@@ -155,7 +155,7 @@ export function TrackTab() {
                 'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                 (unit === u.id
                   ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                  : 'border-white/10 text-slate-400 hover:bg-white/5')
+                  : 'border-white/10 text-slate-300 hover:bg-white/5')
               }
             >
               {u.label}
@@ -202,7 +202,7 @@ export function TrackTab() {
             Clear track
           </Button>
         </div>
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           While tracking is on a breadcrumb is dropped every {intervalS} seconds,
           up to 2000 of them, and kept until you clear them or reload the app.
           The live readout above still follows every fix. Movement smaller than

@@ -80,7 +80,7 @@ export function EtaTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">ETA to waypoint</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Distance, bearing and time to anything you have saved.
         </p>
       </div>
@@ -115,7 +115,7 @@ export function EtaTab() {
                 'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                 (unit === u.id
                   ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                  : 'border-white/10 text-slate-400 hover:bg-white/5')
+                  : 'border-white/10 text-slate-300 hover:bg-white/5')
               }
             >
               {u.label}
@@ -158,17 +158,17 @@ export function EtaTab() {
             inputMode="decimal"
           />
           {!fix && (
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               Waiting for a position fix.
             </p>
           )}
           {fix && !target && (
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               Choose a waypoint to see distance and ETA.
             </p>
           )}
           {fix && waypoints.length === 0 && (
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               Nothing saved yet — stamp a position first.
             </p>
           )}

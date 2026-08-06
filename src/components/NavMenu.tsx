@@ -107,7 +107,7 @@ export function NavMenu({
             >
               <div className="mx-auto max-w-3xl">
                 <div className="flex items-center justify-between pt-2 pb-1.5">
-                  <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+                  <span className="text-xs font-semibold tracking-wide text-slate-300 uppercase">
                     Go to
                   </span>
                   <button
@@ -126,7 +126,7 @@ export function NavMenu({
                     <div key={group} className="mt-1.5 first:mt-0">
                       <div
                         role="presentation"
-                        className="px-1 pb-1 text-[10px] font-semibold tracking-wider text-slate-500 uppercase"
+                        className="px-1 pb-1 text-[10px] font-semibold tracking-wider text-slate-400 uppercase"
                       >
                         {group}
                       </div>
@@ -160,7 +160,7 @@ export function NavMenu({
                                   is secondary — it shares the row rather than
                                   taking one of its own, and it is what gives
                                   way when the screen is narrow. */}
-                              <span className="min-w-0 flex-1 truncate text-right text-[11px] text-slate-500">
+                              <span className="min-w-0 flex-1 truncate text-right text-[11px] text-slate-400">
                                 {t.hint}
                               </span>
                             </button>

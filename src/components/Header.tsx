@@ -27,7 +27,7 @@ export function Header({
     ? { label: 'GPS live', tone: 'bg-emerald-500/15 text-emerald-300' }
     : fix
       ? { label: 'GPS fix', tone: 'bg-sky-500/15 text-sky-300' }
-      : { label: 'GPS off', tone: 'bg-white/5 text-slate-400' }
+      : { label: 'GPS off', tone: 'bg-white/5 text-slate-300' }
 
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-white/10 bg-navy-950/85 backdrop-blur">

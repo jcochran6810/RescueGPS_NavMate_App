@@ -21,7 +21,7 @@ export function WaypointPhoto({ path }: { path: string }) {
 
   if (failed) {
     return (
-      <div className="grid size-16 place-items-center rounded-lg border border-white/10 bg-navy-950 text-[10px] text-slate-500">
+      <div className="grid size-16 place-items-center rounded-lg border border-white/10 bg-navy-950 text-[10px] text-slate-400">
         offline
       </div>
     )

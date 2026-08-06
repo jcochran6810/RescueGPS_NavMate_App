@@ -67,7 +67,7 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="grid min-h-full place-items-center text-slate-400">
+      <div className="grid min-h-full place-items-center text-slate-300">
         <Spinner />
       </div>
     )

@@ -76,7 +76,7 @@ export function DatumTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Search datum</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Log the LKP, the conditions and what you find; the worksheet keeps
           the datum current. Everything works offline and syncs later.
         </p>
@@ -375,20 +375,20 @@ function LkpCard({
           <div className="tnum text-slate-100">
             {toDD(lkp.lat ?? Number.NaN)}, {toDD(lkp.lon ?? Number.NaN)}
           </div>
-          <div className="tnum text-xs text-slate-500">
+          <div className="tnum text-xs text-slate-400">
             {toDMS(lkp.lat ?? Number.NaN, 'lat')} {toDMS(lkp.lon ?? Number.NaN, 'lon')}
           </div>
-          <div className="text-slate-400">
+          <div className="text-slate-300">
             Last seen {new Date(lkp.recorded_at).toLocaleString()}
           </div>
           {payload && (
-            <div className="text-xs text-slate-500">
+            <div className="text-xs text-slate-400">
               {SOURCES.find((s) => s.id === payload.source)?.label} · ±
               {payload.position_error_nm} NM ·{' '}
               {searchObjectType(payload.object_type).label}
             </div>
           )}
-          {lkp.note && <p className="text-xs text-slate-400">{lkp.note}</p>}
+          {lkp.note && <p className="text-xs text-slate-300">{lkp.note}</p>}
         </div>
       ) : (
         <>
@@ -427,7 +427,7 @@ function LkpCard({
           </Button>
 
           <div className="mt-2">
-            <span className="mb-1 block text-xs text-slate-400">
+            <span className="mb-1 block text-xs text-slate-300">
               When was the victim last seen here?
             </span>
             <Input
@@ -450,7 +450,7 @@ function LkpCard({
                   'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                   (source === s.id
                     ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                    : 'border-white/10 text-slate-400 hover:bg-white/5')
+                    : 'border-white/10 text-slate-300 hover:bg-white/5')
                 }
               >
                 {s.label}
@@ -460,7 +460,7 @@ function LkpCard({
 
           <div className="mt-2 grid grid-cols-2 gap-2">
             <div>
-              <span className="mb-1 block text-xs text-slate-400">
+              <span className="mb-1 block text-xs text-slate-300">
                 Search object
               </span>
               <select
@@ -477,7 +477,7 @@ function LkpCard({
               </select>
             </div>
             <div>
-              <span className="mb-1 block text-xs text-slate-400">
+              <span className="mb-1 block text-xs text-slate-300">
                 Position error (NM)
               </span>
               <Input
@@ -495,7 +495,7 @@ function LkpCard({
             placeholder="Notes — who saw them, what they were wearing, activity…"
             rows={2}
             aria-label="LKP notes"
-            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
           />
 
           <div className="mt-3 grid grid-cols-2 gap-2">
@@ -511,7 +511,7 @@ function LkpCard({
             </Button>
           </div>
           {lkp && (
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               Recording again keeps the old LKP as history — the newest one
               drives the worksheet.
             </p>
@@ -563,7 +563,7 @@ function ConditionsCard({
   return (
     <Card>
       <Label>On-scene conditions</Label>
-      <p className="mb-2 text-xs text-slate-500">
+      <p className="mb-2 text-xs text-slate-400">
         Wind is where it blows <em>from</em>; current is where it flows{' '}
         <em>toward</em> — the conventions RescueGPS uses. A retrieved drift
         marker beats any estimate; log one below.
@@ -571,7 +571,7 @@ function ConditionsCard({
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <span className="mb-1 block text-xs text-slate-400">
+          <span className="mb-1 block text-xs text-slate-300">
             Wind from (°T)
           </span>
           <Input
@@ -583,7 +583,7 @@ function ConditionsCard({
           />
         </div>
         <div>
-          <span className="mb-1 block text-xs text-slate-400">Wind (kn)</span>
+          <span className="mb-1 block text-xs text-slate-300">Wind (kn)</span>
           <Input
             value={windKts}
             onChange={(e) => setWindKts(e.target.value)}
@@ -593,7 +593,7 @@ function ConditionsCard({
           />
         </div>
         <div>
-          <span className="mb-1 block text-xs text-slate-400">
+          <span className="mb-1 block text-xs text-slate-300">
             Current toward (°T)
           </span>
           <Input
@@ -605,7 +605,7 @@ function ConditionsCard({
           />
         </div>
         <div>
-          <span className="mb-1 block text-xs text-slate-400">Current (kn)</span>
+          <span className="mb-1 block text-xs text-slate-300">Current (kn)</span>
           <Input
             value={currentKts}
             onChange={(e) => setCurrentKts(e.target.value)}
@@ -616,7 +616,7 @@ function ConditionsCard({
         </div>
       </div>
       <div className="mt-2">
-        <span className="mb-1 block text-xs text-slate-400">
+        <span className="mb-1 block text-xs text-slate-300">
           Water temp (°C, for the survival clock)
         </span>
         <Input
@@ -647,7 +647,7 @@ function ConditionsCard({
         Record conditions
       </Button>
       {environment && (
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           Last recorded {new Date(environment.recorded_at).toLocaleString()}
           {environment.note ? ` · ${environment.note}` : ''}. Each recording is
           kept — conditions change and the history matters.
@@ -687,7 +687,7 @@ function DriftMarkerCard({
   return (
     <Card>
       <Label>Drift marker</Label>
-      <p className="mb-2 text-xs text-slate-500">
+      <p className="mb-2 text-xs text-slate-400">
         Throw something that floats like the victim, log it, come back to it.
         The measured set and drift is the truest current you will get.
       </p>
@@ -737,7 +737,7 @@ function DriftMarkerCard({
                   <span className="text-slate-100 capitalize">
                     {p.marker_type} marker
                   </span>
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-slate-400">
                     {new Date(p.deploy.time).toLocaleTimeString([], {
                       hour: '2-digit',
                       minute: '2-digit',
@@ -760,7 +760,7 @@ function DriftMarkerCard({
                   </div>
                 ) : (
                   <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="tnum text-xs text-slate-500">
+                    <span className="tnum text-xs text-slate-400">
                       In the water at {toDD(p.deploy.lat, 4)},{' '}
                       {toDD(p.deploy.lon, 4)}
                     </span>
@@ -878,7 +878,7 @@ function WorksheetCard({
   return (
     <Card>
       <Label>Datum worksheet</Label>
-      <p className="mb-2 text-xs text-slate-500">
+      <p className="mb-2 text-xs text-slate-400">
         LKP carried {formatDuration(result.hoursAdrift)} by{' '}
         {hasDrift
           ? `${result.driftKts.toFixed(2)} kn toward ${formatBearing(result.driftBearingDeg)}`
@@ -895,7 +895,7 @@ function WorksheetCard({
         <div className="tnum mt-0.5 text-lg font-semibold text-slate-50">
           {toDD(result.datum.lat)}, {toDD(result.datum.lon)}
         </div>
-        <div className="tnum text-xs text-slate-400">
+        <div className="tnum text-xs text-slate-300">
           {toDMS(result.datum.lat, 'lat')} {toDMS(result.datum.lon, 'lon')}
         </div>
       </div>
@@ -918,7 +918,7 @@ function WorksheetCard({
       </div>
 
       {hasDrift && result.leewayKts > 0 && (
-        <p className="tnum mt-2 text-xs text-slate-500">
+        <p className="tnum mt-2 text-xs text-slate-400">
           Leeway divergence: also mark {toDD(result.datumLeft.lat, 4)},{' '}
           {toDD(result.datumLeft.lon, 4)} and {toDD(result.datumRight.lat, 4)},{' '}
           {toDD(result.datumRight.lon, 4)}.
@@ -989,7 +989,7 @@ function WorksheetCard({
           Email
         </Button>
       </div>
-      <p className="mt-1.5 text-xs text-slate-500">
+      <p className="mt-1.5 text-xs text-slate-400">
         The report carries the LKP, conditions, observations and clues in
         RescueGPS's own field names, ready for its drift engine.
       </p>
@@ -1027,7 +1027,7 @@ function ClueCard({
   return (
     <Card>
       <Label>Clue log</Label>
-      <p className="mb-2 text-xs text-slate-500">
+      <p className="mb-2 text-xs text-slate-400">
         Anything found gets a position and a time — a clue is a datum in its
         own right, and RescueGPS back-drifts them to refine the origin. For
         photographs, stamp a waypoint at the clue too.
@@ -1086,7 +1086,7 @@ function ClueCard({
                     {CLUE_TYPES.find((t) => t.id === p.clue_type)?.label ?? p.clue_type}
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500">
+                    <span className="text-xs text-slate-400">
                       {new Date(c.recorded_at).toLocaleTimeString([], {
                         hour: '2-digit',
                         minute: '2-digit',
@@ -1104,11 +1104,11 @@ function ClueCard({
                   </div>
                 </div>
                 {c.lat != null && c.lon != null && (
-                  <div className="tnum text-xs text-slate-500">
+                  <div className="tnum text-xs text-slate-400">
                     {toDD(c.lat)}, {toDD(c.lon)}
                   </div>
                 )}
-                {c.note && <p className="text-xs text-slate-400">{c.note}</p>}
+                {c.note && <p className="text-xs text-slate-300">{c.note}</p>}
               </li>
             )
           })}

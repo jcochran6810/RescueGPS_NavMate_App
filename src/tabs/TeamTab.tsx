@@ -43,7 +43,7 @@ export function TeamTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Team</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Share waypoints with the people working the same incident.
         </p>
       </div>
@@ -94,7 +94,7 @@ export function TeamTab() {
                 Copy
               </Button>
             </div>
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               Anyone with this code can join and see the team's waypoints.
               {isAdmin && ' Rotate it if it gets out.'}
             </p>
@@ -133,13 +133,13 @@ export function TeamTab() {
                       <div className="truncate text-sm text-slate-100">
                         {label}
                         {isMe && (
-                          <span className="ml-1.5 text-xs text-slate-500">
+                          <span className="ml-1.5 text-xs text-slate-400">
                             (you)
                           </span>
                         )}
                       </div>
                       {m.profile?.full_name && m.profile.callsign && (
-                        <div className="truncate text-xs text-slate-500">
+                        <div className="truncate text-xs text-slate-400">
                           {m.profile.full_name}
                         </div>
                       )}
@@ -163,7 +163,7 @@ export function TeamTab() {
                         <option value="owner">Owner</option>
                       </select>
                     ) : (
-                      <span className="text-xs text-slate-400">
+                      <span className="text-xs text-slate-300">
                         {ROLE_LABEL[m.role]}
                       </span>
                     )}
@@ -259,7 +259,7 @@ export function TeamTab() {
       </Card>
 
       {activeTeamId === null && teams.length > 0 && (
-        <p className="text-center text-xs text-slate-500">
+        <p className="text-center text-xs text-slate-400">
           You are in “Private” scope — new waypoints stay on your account only.
         </p>
       )}

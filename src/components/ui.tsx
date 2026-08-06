@@ -54,7 +54,7 @@ export function Card({
 
 export function Label({ children }: { children: ReactNode }) {
   return (
-    <span className="mb-1.5 block text-xs font-semibold tracking-wide text-slate-400 uppercase">
+    <span className="mb-1.5 block text-xs font-semibold tracking-wide text-slate-300 uppercase">
       {children}
     </span>
   )
@@ -69,7 +69,7 @@ export function Input({
       {...props}
       className={
         'min-h-11 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 ' +
-        'text-slate-100 placeholder:text-slate-500 ' +
+        'text-slate-100 placeholder:text-slate-400 ' +
         'focus:border-sky-400/60 focus:ring-2 focus:ring-sky-400/20 focus:outline-none ' +
         'disabled:opacity-60 read-only:text-slate-300 ' +
         className
@@ -89,13 +89,13 @@ export function Stat({
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-navy-900/60 px-3 py-2.5">
-      <div className="text-[11px] font-semibold tracking-wide text-slate-400 uppercase">
+      <div className="text-[11px] font-semibold tracking-wide text-slate-300 uppercase">
         {label}
       </div>
       <div className="tnum mt-0.5 text-lg font-semibold text-slate-50">
         {value}
       </div>
-      {hint ? <div className="text-[11px] text-slate-500">{hint}</div> : null}
+      {hint ? <div className="text-[11px] text-slate-400">{hint}</div> : null}
     </div>
   )
 }
@@ -116,7 +116,7 @@ export function Spinner({ className = '' }: { className?: string }) {
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <p className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center text-sm text-slate-400">
+    <p className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center text-sm text-slate-300">
       {children}
     </p>
   )

@@ -34,7 +34,7 @@ export function RecoverPassword() {
     <div className="grid min-h-full place-items-center px-4">
       <Card className="w-full max-w-sm">
         <Label>Set a new password</Label>
-        <p className="mb-3 text-sm text-slate-400">
+        <p className="mb-3 text-sm text-slate-300">
           You arrived here from a password-reset email. Choose a new password
           to finish, or keep the old one if you remember it after all.
         </p>

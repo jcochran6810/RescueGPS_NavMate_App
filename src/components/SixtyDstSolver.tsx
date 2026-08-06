@@ -73,7 +73,7 @@ export function SixtyDstSolver({
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+        <span className="text-xs font-semibold tracking-wide text-slate-300 uppercase">
           60 D = S × T
         </span>
         {canFill && (
@@ -100,7 +100,7 @@ export function SixtyDstSolver({
 
       <div className="mt-2 grid grid-cols-3 gap-2">
         <label className="block">
-          <span className="mb-1 block text-[11px] text-slate-500">
+          <span className="mb-1 block text-[11px] text-slate-400">
             Distance (NM)
           </span>
           <Input
@@ -112,7 +112,7 @@ export function SixtyDstSolver({
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-[11px] text-slate-500">
+          <span className="mb-1 block text-[11px] text-slate-400">
             Speed (kn)
           </span>
           <Input
@@ -124,7 +124,7 @@ export function SixtyDstSolver({
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-[11px] text-slate-500">
+          <span className="mb-1 block text-[11px] text-slate-400">
             Time (min)
           </span>
           <Input
@@ -138,7 +138,7 @@ export function SixtyDstSolver({
       </div>
 
       {!result.ok ? (
-        <p className="mt-2 text-xs text-slate-500">{result.error}</p>
+        <p className="mt-2 text-xs text-slate-400">{result.error}</p>
       ) : (
         <div
           className="mt-2 rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2.5"
@@ -147,7 +147,7 @@ export function SixtyDstSolver({
         >
           {answer && (
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-[11px] font-semibold tracking-wide text-slate-400 uppercase">
+              <span className="text-[11px] font-semibold tracking-wide text-slate-300 uppercase">
                 {answer[0]}
               </span>
               <span className="tnum text-xl font-semibold text-sky-300">
@@ -155,9 +155,9 @@ export function SixtyDstSolver({
               </span>
             </div>
           )}
-          <p className="tnum mt-0.5 text-xs text-slate-400">{result.working}</p>
+          <p className="tnum mt-0.5 text-xs text-slate-300">{result.working}</p>
           {result.solvedFor === 'time' && formatEtaClock(result.timeMin / 60) && (
-            <p className="mt-0.5 text-xs text-slate-500">
+            <p className="mt-0.5 text-xs text-slate-400">
               Arriving about {formatEtaClock(result.timeMin / 60)}
             </p>
           )}
@@ -175,7 +175,7 @@ export function SixtyDstSolver({
             instruction was printed twice, one line apart. This keeps the part
             the empty state does not say — the units, which are the thing that
             silently produces a wrong answer. */}
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-slate-400">
           Nautical miles and knots — a statute mile or a kilometre here gives a
           wrong answer.
         </p>

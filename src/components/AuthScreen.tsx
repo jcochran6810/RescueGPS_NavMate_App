@@ -64,7 +64,7 @@ export function AuthScreen() {
             className="mx-auto w-44 max-w-full"
           />
           <h1 className="mt-3 text-xl font-semibold text-slate-50">NavMate</h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm text-slate-300">
             Coordinates, tracking and shared waypoints for SAR teams.
           </p>
         </div>
@@ -167,7 +167,7 @@ export function AuthScreen() {
               <button
                 type="button"
                 onClick={() => { setMode('reset'); setError(''); setNotice('') }}
-                className="text-slate-400 hover:underline"
+                className="text-slate-300 hover:underline"
               >
                 Forgot password
               </button>
@@ -175,7 +175,7 @@ export function AuthScreen() {
           </div>
         </Card>
 
-        <p className="mt-4 text-center text-xs text-slate-500">
+        <p className="mt-4 text-center text-xs text-slate-400">
           Location access requires HTTPS. Your waypoints are private to your
           account unless you share them with a team.
         </p>
