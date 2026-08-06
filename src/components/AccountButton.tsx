@@ -62,7 +62,7 @@ export function AccountButton() {
               className="safe-top absolute top-0 right-0 m-2 w-[min(20rem,calc(100vw-1rem))] rounded-2xl border border-white/10 bg-navy-900 p-4 shadow-2xl shadow-black/50"
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="min-w-0 truncate text-sm text-slate-400">
+                <span className="min-w-0 truncate text-sm text-slate-300">
                   {user?.email}
                 </span>
                 <button
@@ -105,7 +105,7 @@ export function AccountButton() {
                 >
                   {saving && <Spinner />} Save profile
                 </Button>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Teammates see this next to waypoints you share.
                 </p>
               </div>

@@ -231,6 +231,96 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-08-06 — claude/project-ui-ux-plugins-ckldxe (UI/UX pass)
+
+"Use the following plug-ins to improve this project and the ui/ux: taste,
+impecable, playwright cli, awesome-design, img2threejs."
+
+**Four of the five do not exist anywhere this account can reach** — not in
+the plugin catalog, not in the MCP connector registry, not in the skill
+library, searched by name and by intent. Only `playwright` was available,
+already installed in the environment. The catalog's whole UI-relevant
+inventory is two plugins, neither enabled: **Design** (`/design:critique`,
+`/design:accessibility`) and **Modern Web Guidance**; install cards were
+rendered for both. `Three.js 3D Viewer` is connected but was deliberately
+not used — a WebGL scene in an offline-first field app is bundle weight and
+battery for no navigational gain.
+
+So the work was done with the one tool that was real: **every finding below
+came from driving the production build in headless Chromium at 320/360/390
+px**, not from reading the source. Verified the same way — 32 UI checks plus
+a WCAG audit, on top of the unit tests.
+
+**The section menu was the worst of it.** Twelve sections as one flat list of
+two-line cards ran **1490 px inside an 844 px viewport**, so half the app was
+reachable only by scrolling a menu and Help/Contact and Platform admin were
+below the fold every time. Grouped by the job being done now — Position /
+Search / Records / Support — on single-line rows with the hint sharing the
+row rather than taking one of its own. Fits without scrolling: 678 px for a
+crew account, 726 px for an admin's twelve, at all three widths. The ▲ and ✕
+buttons did the same thing, so one is gone; focus moves into the panel on
+open and returns to the trigger on close, including on Escape, which had
+been dropping it on `<body>`.
+
+**The GPS badge said "off" above a live set of coordinates.** It only ever
+tracked the continuous watch, so Home — which takes a single fix and prints
+the position underneath — showed "GPS off" next to it. Three states now:
+live / fix / off. A badge that contradicts the screen teaches a crew to stop
+reading it.
+
+**The team switcher is only rendered once there is something to switch
+between.** On a solo account it was a full-width control with one option,
+costing a header row on every screen to say nothing. The Waypoints tab
+stopped pointing at it when it isn't there.
+
+**Waypoint cards.** Copy/Edit/Delete were a narrow right-hand column, which
+stacked the buttons vertically, made every card twice as tall as its
+content, squeezed the name into half the width, and put Delete directly
+beneath Edit — where a thumb aiming for one lands on the other. A row under
+the detail now, Delete at the far end: **290 px → 162 px per card, 167 px
+between Edit and Delete**. Each card also carries range and bearing from the
+current fix, which is the field question and was only answered on Home's
+nearest-four list.
+
+**A bearing to a point you are standing on is noise.** Both lists printed
+"0° N" for a waypoint 0.00 NM away — a heading a crew could act on, produced
+by a metre of GPS jitter. `isAtPosition` in `geo.ts` is the single
+definition of underfoot (0.01 NM, about 18 m), used by both so they cannot
+disagree.
+
+**WCAG AA.** An audit measuring every rendered text node against its
+*composited* backdrop found 50 failures, all one cause: `text-slate-500`
+carries every hint, caption, footnote and unit label in the app — 76
+usages — and lands at 3.3–3.9:1 where AA wants 4.5:1 under 24 px. The whole
+secondary scale moved up one step rather than flattening the lighter end
+into the darker: slate-500 → slate-400 (7.3:1), and the labels that were
+slate-400 → slate-300 (12.6:1). Placeholders moved too, because in this app
+they *are* the visible label. 0 failures afterwards; tap targets and
+accessible names were already clean (0 under 24 px, 0 unnamed).
+
+**Trap for whoever measures contrast next:** Tailwind v4 emits `oklch()`, so
+`getComputedStyle` returns colours a digit-grabbing regex reads as nonsense.
+The first pass "found" 227 failures including white-on-navy at 2.3:1, which
+is how the bug was caught. Painting each colour to a canvas and reading the
+sRGB bytes back is what makes the numbers real.
+
+Smaller: daylight times no longer wrap `11:19 AM` across three lines
+(`sunClockParts` splits the digits from the suffix through `Intl`, so a
+24-hour locale gets no suffix rather than a hardcoded split); the 60 D = S ×
+T card printed its instruction twice one line apart; Home was the only
+section with no heading at all, so a screen reader moving by headings fell
+straight into the position card — it gets an `sr-only` h2 rather than a drawn
+one, because a title bar would push the position further down the screen the
+app opens on.
+
+**Merge note.** `main` moved three commits ahead mid-session with the
+satellite-map work. `TrackTab.tsx` conflicted structurally — main moved the
+path plot into a Map card and added Fix quality — so main's file was taken
+whole and the contrast sweep re-applied to it, along with the new
+`SatelliteMap.tsx`, which had never seen it. `geo.test.ts` was purely
+additive on both sides. 251 tests, typecheck, lint, build clean; both drives
+re-run green after the merge.
+
 ### 2026-08-06 — claude/live-tracking-satellite-map-v09ado
 
 "The live tracking needs to be more accurate. It also needs to show on a

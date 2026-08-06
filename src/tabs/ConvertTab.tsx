@@ -71,7 +71,7 @@ export function ConvertTab() {
         <h2 className="text-lg font-semibold text-slate-50">
           Coordinate converter
         </h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Type in any format — the others follow.
         </p>
       </div>

@@ -57,7 +57,7 @@ export function DataTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Data</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Waypoints sync to your account. Export or back them up here.
         </p>
       </div>
@@ -73,7 +73,7 @@ export function DataTab() {
             ) : (
               <span className="text-emerald-300">Everything synced</span>
             )}
-            <div className="text-xs text-slate-500">
+            <div className="text-xs text-slate-400">
               {lastSyncedAt
                 ? `Last synced ${new Date(lastSyncedAt).toLocaleString()}`
                 : 'Not synced yet'}
@@ -142,7 +142,7 @@ export function DataTab() {
                 'flex-1 truncate rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                 (scopeAll === s.id
                   ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                  : 'border-white/10 text-slate-400 hover:bg-white/5')
+                  : 'border-white/10 text-slate-300 hover:bg-white/5')
               }
             >
               {s.label}
@@ -165,7 +165,7 @@ export function DataTab() {
             </Button>
           ))}
         </div>
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           Exporting {scopeLabel}. Photos are not embedded — they stay in cloud
           storage and travel with your account.
         </p>
@@ -201,7 +201,7 @@ export function DataTab() {
         >
           Open email with data
         </Button>
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           Opens your mail app with the waypoints pasted in. For a file
           attachment, export JSON above and attach it.
         </p>
@@ -251,7 +251,7 @@ export function DataTab() {
           {importing && <Spinner />}
           Import JSON / GPX / CSV
         </Button>
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           Imported waypoints go into your current scope
           {activeTeamId ? ' and are shared with the active team' : ' as private'}.
         </p>
@@ -277,7 +277,7 @@ export function DataTab() {
         >
           Clear local copy
         </Button>
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           This does not delete waypoints from your account — delete those
           individually on the Waypoints tab.
         </p>

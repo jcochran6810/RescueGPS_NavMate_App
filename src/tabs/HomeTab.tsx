@@ -27,6 +27,13 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
 
   return (
     <div className="space-y-3">
+      {/* Every other section opens with a visible h2; Home had no heading at
+          all, so a screen reader moving by headings fell straight into the
+          position card with nothing naming the screen. It is hidden rather
+          than drawn because this is the screen the app opens on, and a title
+          bar would push the position itself further down the phone. */}
+      <h2 className="sr-only">Home — position, daylight and nearby waypoints</h2>
+
       {error && (
         <p className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">
           {error}
@@ -47,18 +54,18 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
         {fix ? (
           <div className="tnum space-y-0.5 text-sm text-slate-200">
             <div>
-              <span className="text-slate-500">DDM </span>
+              <span className="text-slate-400">DDM </span>
               {toDDM(fix.lat, 'lat')}, {toDDM(fix.lon, 'lon')}
             </div>
             <div>
-              <span className="text-slate-500">DMS </span>
+              <span className="text-slate-400">DMS </span>
               {toDMS(fix.lat, 'lat')}, {toDMS(fix.lon, 'lon')}
             </div>
             <div>
-              <span className="text-slate-500">DD </span>
+              <span className="text-slate-400">DD </span>
               {toDD(fix.lat)}, {toDD(fix.lon)}
             </div>
-            <div className="text-slate-400">
+            <div className="text-slate-300">
               {fix.altitude != null ? `Altitude ${Math.round(fix.altitude)} m` : 'Altitude —'}
               {' | '}
               Speed {formatSpeed(fix.speed)}
@@ -66,7 +73,7 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
             </div>
           </div>
         ) : (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-slate-300">
             Waiting for a GPS fix…
           </p>
         )}

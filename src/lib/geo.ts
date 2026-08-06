@@ -67,6 +67,25 @@ export function formatBearing(deg: number): string {
   return `${Math.round(norm)}° ${compassPoint(norm)}`
 }
 
+/**
+ * How close counts as standing on it — about 18 m, inside the error of a
+ * consumer GPS on a good day.
+ *
+ * Inside that radius the bearing between the fix and the point is noise: a
+ * metre of jitter swings it through the whole compass. The UI has to stop
+ * printing a heading there, because a printed heading is one a crew can act
+ * on, and this one means nothing.
+ */
+export const AT_POSITION_NM = 0.01
+
+export function isAtPosition(distanceNM: number | null): boolean {
+  return (
+    distanceNM !== null &&
+    Number.isFinite(distanceNM) &&
+    distanceNM < AT_POSITION_NM
+  )
+}
+
 export type DistanceUnit = 'nm' | 'mi' | 'km'
 
 export function formatDistance(nm: number, unit: DistanceUnit): string {

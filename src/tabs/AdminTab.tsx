@@ -29,7 +29,7 @@ const STATUS_TONE: Record<RequestStatus, string> = {
   open: 'bg-amber-500/15 text-amber-300',
   in_progress: 'bg-sky-500/15 text-sky-300',
   resolved: 'bg-emerald-500/15 text-emerald-300',
-  dismissed: 'bg-white/5 text-slate-400',
+  dismissed: 'bg-white/5 text-slate-300',
 }
 
 /**
@@ -52,7 +52,7 @@ export function AdminTab() {
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="text-lg font-semibold text-slate-50">Platform admin</h2>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-slate-300">
             Metrics, requests and accounts. Every change here is audited.
           </p>
         </div>
@@ -93,17 +93,17 @@ export function AdminTab() {
                 <span className="min-w-0 truncate text-slate-200">
                   {a.action}
                   {a.target_kind ? (
-                    <span className="text-slate-500"> · {a.target_kind}</span>
+                    <span className="text-slate-400"> · {a.target_kind}</span>
                   ) : null}
                 </span>
-                <span className="tnum shrink-0 text-xs text-slate-500">
+                <span className="tnum shrink-0 text-xs text-slate-400">
                   {new Date(a.created_at).toLocaleString()}
                 </span>
               </li>
             ))}
           </ul>
         )}
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           Append-only log ({users.length > 0 ? 'latest 25' : 'empty'}). Every
           profile change and request resolution lands here automatically.
         </p>
@@ -132,7 +132,7 @@ function MetricsSection() {
     <Card>
       <div className="flex items-baseline justify-between gap-2">
         <Label>Platform metrics</Label>
-        <span className="mb-1.5 text-xs text-slate-500">
+        <span className="mb-1.5 text-xs text-slate-400">
           As of {new Date(metrics.generated_at).toLocaleTimeString()}
         </span>
       </div>
@@ -201,7 +201,7 @@ function RequestsSection() {
               'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
               (filter === f.id
                 ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                : 'border-white/10 text-slate-400 hover:bg-white/5')
+                : 'border-white/10 text-slate-300 hover:bg-white/5')
             }
           >
             {f.label}
@@ -272,7 +272,7 @@ function RequestCard({
           {STATUS_LABEL[r.status]}
         </span>
       </div>
-      <p className="mt-1 text-xs text-slate-500">
+      <p className="mt-1 text-xs text-slate-400">
         {authorEmail} · {new Date(r.created_at).toLocaleString()}
       </p>
       {r.body && (
@@ -281,7 +281,7 @@ function RequestCard({
 
       {settled ? (
         r.admin_notes && (
-          <p className="mt-2 rounded-lg bg-white/5 px-2.5 py-1.5 text-xs text-slate-400">
+          <p className="mt-2 rounded-lg bg-white/5 px-2.5 py-1.5 text-xs text-slate-300">
             Admin note: {r.admin_notes}
           </p>
         )
@@ -293,7 +293,7 @@ function RequestCard({
             placeholder="Note back to the requester (they see this)…"
             rows={2}
             aria-label="Admin note"
-            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
           />
           <div className="mt-2 grid grid-cols-3 gap-2">
             {r.status === 'open' && (
@@ -417,7 +417,7 @@ function UserCard({ user: u }: { user: AdminUser }) {
             )}
           </div>
           {!editing && (
-            <div className="truncate text-xs text-slate-400">
+            <div className="truncate text-xs text-slate-300">
               {u.full_name || 'No name'}
               {u.callsign ? ` · ${u.callsign}` : ''}
             </div>
@@ -464,7 +464,7 @@ function UserCard({ user: u }: { user: AdminUser }) {
         </div>
       )}
 
-      <p className="tnum mt-1.5 text-xs text-slate-500">
+      <p className="tnum mt-1.5 text-xs text-slate-400">
         Joined {new Date(u.created_at).toLocaleDateString()} · last seen{' '}
         {u.last_sign_in_at
           ? new Date(u.last_sign_in_at).toLocaleString()

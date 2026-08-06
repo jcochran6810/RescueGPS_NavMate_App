@@ -77,11 +77,11 @@ export function TidesNearMe({
     <Card>
       <div className="flex items-start justify-between gap-2">
         <Label>Tides near me</Label>
-        {loading && <Spinner className="text-slate-400" />}
+        {loading && <Spinner className="text-slate-300" />}
       </div>
 
       {!hasFix ? (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Needs a position — take a fix to find the nearest NOAA tide station.
         </p>
       ) : (
@@ -92,7 +92,7 @@ export function TidesNearMe({
                 {active?.name ?? (loading ? 'Finding a station…' : 'No station yet')}
               </div>
               {activeDistance && (
-                <div className="tnum text-xs text-slate-500">
+                <div className="tnum text-xs text-slate-400">
                   {formatDistance(activeDistance.distanceNM, 'nm')}{' '}
                   {formatBearing(activeDistance.bearingDeg)}
                   {active?.state ? ` · ${active.state}` : ''}
@@ -107,7 +107,7 @@ export function TidesNearMe({
                   ? 'bg-sky-500/15 text-sky-300'
                   : current.trend === 'falling'
                     ? 'bg-amber-500/15 text-amber-300'
-                    : 'bg-white/5 text-slate-400')
+                    : 'bg-white/5 text-slate-300')
               }
             >
               {TREND_LABEL[current.trend]}
@@ -148,7 +148,7 @@ export function TidesNearMe({
                     <span className="text-slate-300">
                       {e.type === 'H' ? 'High' : 'Low'}
                     </span>
-                    <span className="tnum text-slate-400">
+                    <span className="tnum text-slate-300">
                       {e.at.toLocaleDateString([], {
                         weekday: 'short',
                       })}{' '}
@@ -170,7 +170,7 @@ export function TidesNearMe({
           )}
 
           {fetchedAt && (
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-slate-400">
               Predictions from NOAA CO-OPS, heights above MLLW, times in your
               local zone. Updated {new Date(fetchedAt).toLocaleString()}.
             </p>
@@ -210,7 +210,7 @@ export function TidesNearMe({
                     }
                   >
                     <span className="min-w-0 truncate">{s.name}</span>
-                    <span className="tnum ml-2 shrink-0 text-xs text-slate-500">
+                    <span className="tnum ml-2 shrink-0 text-xs text-slate-400">
                       {formatDistance(s.distanceNM, 'nm')}
                     </span>
                   </button>
@@ -223,7 +223,7 @@ export function TidesNearMe({
                       setPicking(false)
                       void pin(null, lat, lon)
                     }}
-                    className="w-full rounded-lg border border-white/10 px-3 py-2 text-left text-sm text-slate-400 hover:bg-white/5"
+                    className="w-full rounded-lg border border-white/10 px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5"
                   >
                     Follow the nearest station again
                   </button>

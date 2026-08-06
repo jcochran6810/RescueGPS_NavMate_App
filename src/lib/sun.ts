@@ -254,6 +254,31 @@ export function formatSunClock(at: Date | null): string {
   return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+/**
+ * The same clock time split into the digits and the AM/PM suffix, so a narrow
+ * column can set the suffix smaller and keep the whole time on one line.
+ *
+ * A 12-hour locale renders `11:19 AM`, which wraps in the daylight tracker's
+ * quarter-width tiles and pushed `AM` onto a line of its own. Locales on a
+ * 24-hour clock have no suffix and come back with `suffix: null`.
+ */
+export function sunClockParts(
+  at: Date | null,
+): { time: string; suffix: string | null } {
+  if (!at) return { time: '—', suffix: null }
+  const parts = new Intl.DateTimeFormat([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(at)
+  const suffix = parts.find((p) => p.type === 'dayPeriod')?.value ?? null
+  const time = parts
+    .filter((p) => p.type !== 'dayPeriod')
+    .map((p) => p.value)
+    .join('')
+    .trim()
+  return { time, suffix }
+}
+
 /** Hours as `13h 42m`, for day length. */
 export function formatDayLength(hours: number): string {
   if (!Number.isFinite(hours)) return '—'

@@ -156,7 +156,7 @@ export function StampWaypoint() {
           onDismiss={() => void done()}
         >
           <Label>Stamped — add detail</Label>
-          <p className="tnum mb-2 text-sm text-slate-400">
+          <p className="tnum mb-2 text-sm text-slate-300">
             {toDD(stamped.lat)}, {toDD(stamped.lon)}
           </p>
 
@@ -173,7 +173,7 @@ export function StampWaypoint() {
             placeholder="Notes — what is here, what you found, who was told…"
             rows={3}
             aria-label="Notes"
-            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-sky-400/60 focus:outline-none"
+            className="mt-2 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
           />
 
           <input

@@ -59,7 +59,7 @@ function Segmented<T extends string>({
             'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
             (value === o.id
               ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-              : 'border-white/10 text-slate-400 hover:bg-white/5')
+              : 'border-white/10 text-slate-300 hover:bg-white/5')
           }
         >
           {o.label}
@@ -119,7 +119,7 @@ export function TrackTab() {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Live tracker</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-300">
           Live position on satellite imagery, and the path you have covered.
         </p>
       </div>
@@ -139,7 +139,7 @@ export function TrackTab() {
         {view === 'plot' ? (
           <>
             <TrackPath trail={trail} markers={markers} />
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               North up, drawn to fit, with saved waypoints marked and no imagery
               fetched at all. This is the view that cannot fail on a dead link.
             </p>
@@ -152,12 +152,12 @@ export function TrackTab() {
               markers={markers}
               labels={view === 'hybrid'}
             />
-            <p className="mt-1.5 text-xs text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-400">
               Drag to pan, pinch or use + / − to zoom, Centre to follow yourself
               again. The circle around your position is how uncertain the fix
               is, drawn to the same scale as the ground. Imagery is fetched as
               you look at it and kept on the device — press{' '}
-              <span className="text-slate-400">Save imagery for offline</span>{' '}
+              <span className="text-slate-300">Save imagery for offline</span>{' '}
               before you lose signal to keep the area you are working.
             </p>
           </>
@@ -214,7 +214,7 @@ export function TrackTab() {
       </div>
 
       {fix && (
-        <p className="text-center text-xs text-slate-500">
+        <p className="text-center text-xs text-slate-400">
           Last fix {new Date(fix.timestamp).toLocaleTimeString()}
           {watching && screenAwake ? ' · screen held awake' : ''}
         </p>
@@ -233,7 +233,7 @@ export function TrackTab() {
 
         <p
           className={
-            'mt-2 text-xs ' + (fix ? QUALITY_COLOUR[quality] : 'text-slate-500')
+            'mt-2 text-xs ' + (fix ? QUALITY_COLOUR[quality] : 'text-slate-400')
           }
         >
           {waiting
@@ -243,11 +243,11 @@ export function TrackTab() {
               : 'No fix yet.'}
         </p>
         {lastReject && (
-          <p className="mt-1 text-xs text-slate-500">Last refused: {lastReject}</p>
+          <p className="mt-1 text-xs text-slate-400">Last refused: {lastReject}</p>
         )}
 
         <div className="mt-3">
-          <span className="mb-1.5 block text-xs text-slate-400">
+          <span className="mb-1.5 block text-xs text-slate-300">
             Ignore fixes worse than
           </span>
           <div className="flex gap-1">
@@ -259,14 +259,14 @@ export function TrackTab() {
                   'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                   (gateM === m
                     ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                    : 'border-white/10 text-slate-400 hover:bg-white/5')
+                    : 'border-white/10 text-slate-300 hover:bg-white/5')
                 }
               >
                 {m === 0 ? 'Any' : `±${m} m`}
               </button>
             ))}
           </div>
-          <p className="mt-1.5 text-xs text-slate-500">
+          <p className="mt-1.5 text-xs text-slate-400">
             A phone hands the page a cell-tower estimate hundreds of metres wide
             before its GNSS chip has locked, and throws the odd wild fix off a
             cliff face or a wheelhouse roof afterwards. Both are dropped rather
@@ -281,7 +281,7 @@ export function TrackTab() {
         <Label>Track recording</Label>
 
         <div className="mb-3">
-          <span className="mb-1.5 block text-xs text-slate-400">
+          <span className="mb-1.5 block text-xs text-slate-300">
             Record a point every
           </span>
           <div className="flex gap-1">
@@ -293,7 +293,7 @@ export function TrackTab() {
                   'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                   (intervalS === s
                     ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                    : 'border-white/10 text-slate-400 hover:bg-white/5')
+                    : 'border-white/10 text-slate-300 hover:bg-white/5')
                 }
               >
                 {s}s
@@ -311,7 +311,7 @@ export function TrackTab() {
                 'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
                 (unit === u.id
                   ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                  : 'border-white/10 text-slate-400 hover:bg-white/5')
+                  : 'border-white/10 text-slate-300 hover:bg-white/5')
               }
             >
               {u.label}
@@ -358,7 +358,7 @@ export function TrackTab() {
             Clear track
           </Button>
         </div>
-        <p className="mt-1.5 text-xs text-slate-500">
+        <p className="mt-1.5 text-xs text-slate-400">
           While tracking is on a breadcrumb is dropped every {intervalS} seconds,
           up to 2000 of them, and kept until you clear them or reload the app.
           The live readout above still follows every fix. A point is only

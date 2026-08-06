@@ -427,7 +427,7 @@ export function SatelliteMap({
         {placed && labels && layer(LABELS, 0.9)}
 
         {!placed && (
-          <div className="absolute inset-0 grid place-items-center px-6 text-center text-sm text-slate-500">
+          <div className="absolute inset-0 grid place-items-center px-6 text-center text-sm text-slate-300">
             No position yet. Start tracking, or take a fix, and the map will
             open where you are.
           </div>
@@ -608,7 +608,7 @@ export function SatelliteMap({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[10px] text-slate-500">
+        <p className="text-[10px] text-slate-300">
           {SATELLITE.attribution}
           {labels ? ` · ${LABELS.attribution}` : ''} · z{zoom.toFixed(1)}
         </p>

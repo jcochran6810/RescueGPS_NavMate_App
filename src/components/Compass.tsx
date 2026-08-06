@@ -90,10 +90,10 @@ export function Compass({
           <div className="tnum text-3xl font-semibold text-slate-50">
             {shown === null ? '—' : `${Math.round(shown)}°`}
           </div>
-          <div className="text-sm text-slate-400">
+          <div className="text-sm text-slate-300">
             {shown === null ? 'No heading' : compassPoint(shown)}
           </div>
-          <div className="mt-1 text-xs text-slate-500">
+          <div className="mt-1 text-xs text-slate-400">
             {source === 'compass'
               ? magnetic
                 ? 'Device compass — magnetic north'
@@ -131,7 +131,7 @@ export function Compass({
         </p>
       )}
       {source === 'compass' && magnetic && (
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-slate-400">
           Readings are magnetic. Apply your local declination before passing a
           bearing to anyone working from a chart.
         </p>
@@ -156,7 +156,7 @@ export function Compass({
             <p className="tnum mt-2 text-sm text-slate-300">
               {formatBearing(leg.bearing)} · {formatDistance(leg.distanceNM, 'nm')}
               {shown !== null && (
-                <span className="text-slate-500">
+                <span className="text-slate-400">
                   {' '}
                   · {describeTurn(leg.bearing, shown)}
                 </span>
@@ -164,7 +164,7 @@ export function Compass({
             </p>
           )}
           {target && lat === null && (
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-slate-400">
               Take a fix to get a bearing to it.
             </p>
           )}
