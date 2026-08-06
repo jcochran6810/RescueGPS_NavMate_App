@@ -231,6 +231,99 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-08-06 — claude/live-tracking-satellite-map-v09ado
+
+"The live tracking needs to be more accurate. It also needs to show on a
+satellite map." Two jobs, and the first one is the one that mattered: the
+tracker was plotting whatever the receiver handed it.
+
+**Accuracy** (`src/lib/track.ts`, `src/store/useTracker.ts`). Three stages
+now sit between the GPS and everything that reads a position — the readout,
+the track, the compass fallback, any datum taken from a fix.
+
+- **Gate.** A fix reporting worse accuracy than the crew asked for (default
+  ±25 m) is refused, so is one implying a speed nothing on the incident could
+  make (130 m/s ≈ 253 kn, above a SAR helicopter), and so is one older than
+  the fix before it. Refusals are **counted and explained on screen** — a
+  silent gate is indistinguishable from a broken receiver. The limit is
+  settable to ±10/25/50 m or off, because a crew under canopy or below deck
+  needs to loosen it rather than be left with no position at all.
+- **Filter.** A constant-velocity Kalman filter per axis, weighted by the
+  accuracy the receiver itself reports, so a ±4 m fix moves the estimate and a
+  ±40 m fix barely nudges it. A 4σ innovation gate drops the fix that jumped
+  off a wheelhouse roof; three refusals in a row restart the filter there,
+  because at that point the receiver has re-acquired somewhere else and is
+  right. Process noise was **swept, not guessed** — 0.3 m/s² against simulated
+  1 Hz fixes more than halves the scatter of a phone standing still while
+  staying within a few metres of a crew turning at five knots.
+- **Derive.** Velocity comes out of the filter, so speed and course exist on
+  the many devices that report `null` for both — which also gives the Compass
+  page a real GPS-course fallback for free. Speed reads zero rather than a
+  wandering fraction of a knot when the velocity is smaller than its own
+  uncertainty (the filter's covariance decides, not a fixed threshold), so a
+  moored boat stops showing three knots of tide.
+- Reported accuracy is the filter's own estimate, **floored at half what the
+  receiver claimed**. A white-noise filter will happily claim centimetres;
+  real GNSS error is correlated over minutes, so averaging does not beat it
+  down anything like that fast, and the datum worksheet takes this number as
+  an input.
+- `watchPosition` now asks for `maximumAge: 0` — the default let the browser
+  return a cached position, which makes a track of straight lines between
+  whenever the cache happened to refresh — and allows 30 s, because under
+  canopy a real fix genuinely takes that long and a timeout there reads as a
+  fault when it is only patience.
+- The tracker holds a **screen wake lock** while running, re-taken on every
+  return to the page (browsers drop it whenever the page hides and never give
+  it back). A breadcrumb now needs both the interval *and* movement larger
+  than the fix is uncertain. One-shot fixes (`once()`) reuse the filtered
+  position when it is seconds old rather than asking for a fresh, colder one —
+  stamping stays instant and gets better.
+
+**Satellite map** (`src/lib/tiles.ts`, `src/components/SatelliteMap.tsx`).
+Esri World Imagery, no key — this app has no server to hide a token behind,
+and a key compiled into a static bundle is a key given away. Written without a
+mapping library: the map needed here is pan, zoom, a track and some markers,
+and a library would have brought a second projection, a second event model and
+a second offline story into an app with opinions about all three.
+
+- Pan, pinch, wheel and buttons; follows the crew until they pan and comes
+  back on Centre; Fit track for the whole path; an optional labels layer.
+  View state is one object, so a gesture that moves and zooms at once cannot
+  land half-applied and every gesture is a functional update — a fast drag
+  never computes its next step from a centre React has not re-rendered yet.
+- **The overlay is drawn from the fixes, not the tiles**: track, waypoints, an
+  accuracy circle to scale, a true scale bar. That separation is the whole
+  design — when imagery does not arrive the overlay is still exact, failed
+  tiles are hidden rather than left as broken-image glyphs, and the map says
+  the imagery is missing instead of showing a crew a blank sea. `Plot only`
+  keeps the old north-up plot and fetches nothing at all. Before the first fix
+  the map fetches nothing either, and says it has nowhere to be.
+- Offline: tiles are cached by the service worker cache-first for 90 days (a
+  photograph of the ground does not go stale on the timescale of an incident,
+  and the crew who needs it most has no link left to revalidate it), and
+  **Save imagery for offline** pulls the surrounding area at two zoom levels
+  into that cache before the signal goes. That was the item that had kept a
+  basemap out of this app since the first pass.
+
+**Verification.** 244 tests, up from 193 — the filter is driven with seeded
+Gaussian noise so a failure reproduces, and the tile maths is asserted against
+Web Mercator values computed independently of the code. Plus a 34-check
+headless-Chromium drive of the production build with stubbed tiles: the
+requested tile is checked against those same values (Esri's path is
+`{z}/{y}/{x}`, row before column, and getting it backwards returns real
+imagery of the wrong place), a ±1500 m fix and a 5 km jump are both visibly
+refused and then a genuinely moved receiver is believed, panning stops the
+follow and Centre resumes it, `Plot only` fetches nothing, saving pulls tiles
+down, and a dead imagery link degrades to a drawn track with a banner. No
+horizontal scroll at 320 px. Typecheck, lint, build clean.
+
+**Not verified:** the build sandbox's proxy 403s `server.arcgisonline.com`
+exactly as it does NOAA, so no real tile has ever been fetched. What is
+unconfirmed is whether Esri sends `Access-Control-Allow-Origin` for the
+`crossOrigin="anonymous"` requests the map makes — the fallback (drop
+`crossOrigin`, accept opaque cache entries) is written down in `fix_list.md`
+along with the storage-budget question the new tile cache raises.
+
 <!-- newest first; append a new dated entry on every "end session" -->
 
 ### 2026-08-06 — claude/rescue-gps-datum-app-074wfq (navigation rework)
