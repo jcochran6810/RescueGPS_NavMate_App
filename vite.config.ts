@@ -66,6 +66,29 @@ export default defineConfig({
             urlPattern: ({ url }) => url.hostname.endsWith('.supabase.co'),
             handler: 'NetworkOnly',
           },
+          // Satellite imagery. Cache-first because a tile is a photograph of
+          // the ground: it does not go stale on the timescale of an incident,
+          // and the crew that needs it most is the one with no link left to
+          // revalidate it. This cache is also what the map's "Save imagery for
+          // offline" button fills — it fetches the tiles around you so they are
+          // already here when the signal goes.
+          //
+          // The host is written out rather than taken from TILE_HOSTS in
+          // src/lib/tiles.ts: workbox stringifies this function into the
+          // service worker, so anything it closes over would arrive undefined.
+          {
+            urlPattern: ({ url }) => url.hostname === 'server.arcgisonline.com',
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'navmate-imagery',
+              expiration: {
+                maxEntries: 2000,
+                maxAgeSeconds: 60 * 60 * 24 * 90,
+                purgeOnQuotaError: true,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
     }),
