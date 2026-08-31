@@ -231,6 +231,30 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-08-31 — claude/reset-cochranlawncare-password-8kty0x (account admin)
+
+"Reset my password for user cochranlawncare@gmail.com to station10." All
+work was on the live Supabase project (`puzwcsrtqtbutypzozvu`) — **no code
+changed**; this entry is the only commit.
+
+- The account did not exist — the project held only
+  `jason.cochran@universalhazard.com` (platform admin, owner of Baytown FD
+  Marine 2) and `tonyhenry2012@gmail.com` (member). Surfaced that instead
+  of guessing; the user chose **create it**.
+- Created `cochranlawncare@gmail.com` via SQL: `auth.users` row with
+  bcrypt password, email pre-confirmed, matching `auth.identities` row
+  (provider `email`, `sub` = user id — GoTrue misbehaves without it), the
+  string-typed token columns set to `''` not NULL (GoTrue scan errors on
+  NULL). The `profiles` row arrived by trigger. Verified in-database:
+  hash matches the password, identity and profile exist. Account has no
+  team, empty profile, no admin rights.
+- On request, also reset `jason.cochran@universalhazard.com` to the same
+  password (UPDATE of `encrypted_password`, verified against the stored
+  hash). Existing signed-in sessions were left valid — a password change
+  does not revoke refresh tokens, and the user was told so.
+- Both accounts now share one password; worth changing to distinct ones
+  before anyone else touches these accounts.
+
 ### 2026-08-06 — claude/navmate-search-aids-tools-hq8ezo (search aids & tools)
 
 "Work on the search aids and tools; consult rescuegps-navigator-pro and
