@@ -8,7 +8,8 @@ Target: **https://rescuegps.stationinsight.com**
   `main`.
 - The Vercel project **exists**: `rescuegps-navmate`, imported from the repo,
   production branch set to `main`. Pushes to `main` deploy automatically.
-- Supabase project `puzwcsrtqtbutypzozvu` has the full schema, RLS policies and
+- Supabase project `ekhvfypxuxskjglwwoqh` ("RescueGPS", shared with the command
+  system) has the full schema, RLS policies and
   the `waypoint-photos` storage bucket applied. The database is empty and ready.
 - `vercel.json` pins the framework, build command, output directory, SPA
   rewrite and security headers, so Vercel needs no build configuration.
@@ -135,11 +136,15 @@ Once the domain resolves, on a phone:
 | Vercel project | `bunker-gear` | `rescuegps-navmate` |
 | Domain | `stationinsight.com`, `www.` | `rescuegps.stationinsight.com` |
 | Repo | separate | `RescueGPS_NavMate_App` |
-| Database | separate | Supabase `puzwcsrtqtbutypzozvu` |
+| Database | shared with the command system | Supabase `ekhvfypxuxskjglwwoqh` |
 
 Nothing is shared except the registered domain name. Deploys, builds, env vars,
 auth users and data are all independent. The `rescuegps-production` Supabase
 project (`ekhvfypxuxskjglwwoqh`, the full SAR platform) was not touched.
+
+**Superseded as of 2026-09-13.** NavMate's original project was repurposed into
+an unrelated app; NavMate now lives on `ekhvfypxuxskjglwwoqh` alongside the
+command system. See `supabase/migrations/README.md`.
 
 ## Security verification
 

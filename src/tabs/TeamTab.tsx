@@ -119,7 +119,7 @@ export function TeamTab() {
             <ul className="space-y-1.5">
               {members.map((m) => {
                 const label =
-                  m.profile?.callsign ||
+                  m.profile?.call_sign ||
                   m.profile?.full_name ||
                   m.profile?.email ||
                   'Member'
@@ -138,7 +138,7 @@ export function TeamTab() {
                           </span>
                         )}
                       </div>
-                      {m.profile?.full_name && m.profile.callsign && (
+                      {m.profile?.full_name && m.profile.call_sign && (
                         <div className="truncate text-xs text-slate-400">
                           {m.profile.full_name}
                         </div>

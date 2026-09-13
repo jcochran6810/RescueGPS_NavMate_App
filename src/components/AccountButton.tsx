@@ -20,8 +20,8 @@ export function AccountButton() {
 
   useEffect(() => {
     setFullName(profile?.full_name ?? '')
-    setCallsign(profile?.callsign ?? '')
-  }, [profile?.full_name, profile?.callsign])
+    setCallsign(profile?.call_sign ?? '')
+  }, [profile?.full_name, profile?.call_sign])
 
   useEffect(() => {
     if (!open) return
@@ -33,7 +33,7 @@ export function AccountButton() {
   }, [open])
 
   const label =
-    profile?.callsign || profile?.full_name || user?.email || 'Account'
+    profile?.call_sign || profile?.full_name || user?.email || 'Account'
 
   return (
     <>
@@ -44,7 +44,7 @@ export function AccountButton() {
         aria-label={`Account — ${label}`}
         className="grid size-9 shrink-0 place-items-center rounded-full border border-sky-400/40 bg-sky-500/15 text-xs font-bold text-sky-200 hover:bg-sky-500/25"
       >
-        {initials(profile?.full_name, profile?.callsign, user?.email)}
+        {initials(profile?.full_name, profile?.call_sign, user?.email)}
       </button>
 
       {open &&
@@ -95,7 +95,7 @@ export function AccountButton() {
                     try {
                       const { error } = await updateProfile({
                         full_name: fullName.trim(),
-                        callsign: callsign.trim(),
+                        call_sign: callsign.trim(),
                       })
                       toast(error ?? 'Profile saved', error ? 'error' : 'success')
                     } finally {

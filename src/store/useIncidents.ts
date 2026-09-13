@@ -12,6 +12,10 @@ import type { Incident, IncidentStatus, NewIncident } from '@/lib/types'
  * safeguards carry over: ops appended mid-flush survive, a permanently
  * refused op is set aside after bounded retries, and a queue is never
  * replayed under a different account.
+ *
+ * The table is `navmate_incidents`, not `incidents`: NavMate shares its
+ * database with the RescueGPS command system, whose own `incidents` table is
+ * a different, much larger thing scoped by organisation and participant.
  */
 
 type PendingOp = (
@@ -163,7 +167,7 @@ export const useIncidents = create<IncidentState>()(
           for (let attempt = 0; attempt < 2; attempt++) {
             const seqBefore = flushSeq
             const { data, error } = await supabase
-              .from('incidents')
+              .from('navmate_incidents')
               .select('*')
               .order('created_at', { ascending: false })
             if (error) throw error
@@ -200,12 +204,12 @@ export const useIncidents = create<IncidentState>()(
             try {
               if (op.kind === 'create') {
                 const { error } = await supabase
-                  .from('incidents')
+                  .from('navmate_incidents')
                   .upsert(toRow(op.incident), { onConflict: 'id' })
                 if (error) throw error
               } else {
                 const { error } = await supabase
-                  .from('incidents')
+                  .from('navmate_incidents')
                   .update(op.patch)
                   .eq('id', op.id)
                 if (error) throw error

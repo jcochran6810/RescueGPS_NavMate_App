@@ -213,7 +213,18 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   the security boundary. Never add a service-role key to this repo.
 - **RLS is the security model.** Any schema change needs matching policies in
   a migration under `supabase/migrations/`, applied to project
-  `puzwcsrtqtbutypzozvu`. `anon` must have no policy on any table.
+  `ekhvfypxuxskjglwwoqh` ("RescueGPS"). `anon` must have no policy on any
+  table.
+- **The database is shared with the RescueGPS command system.** Read
+  `supabase/migrations/README.md` before touching schema. Three rules follow
+  from it: the `20260803`–`20260806` migrations are history and must never be
+  replayed here; `profiles` belongs to both applications, so NavMate reuses it
+  and never alters it (NavMate's `callsign` is that table's `call_sign`, and
+  teammate names come from `navmate_team_profiles()` rather than a policy);
+  and NavMate-internal helper functions are prefixed `navmate_` so they cannot
+  silently replace a same-named function of the command system's — which is
+  exactly what `create or replace function handle_new_user()` would have
+  done.
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
@@ -230,6 +241,208 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
+
+### 2026-09-13 — claude/charming-rubin-rlz3ks (re-home to RescueGPS, start point)
+
+Same branch, later session. "The NavMate project was merged into
+rescuegps-production… renamed to rescueGPS and contains the NavMate app and the
+previously built RescueGPS command software." Plus, mid-session: "before
+entering/selecting a destination the app needs to ask the user to select a
+starting point — use current location or select on map."
+
+**The rename had happened; the schema merge had not.** Checked before planning:
+`ekhvfypxuxskjglwwoqh` was renamed to "RescueGPS" but still held exactly the
+command-side 45 tables with the same row counts as the previous session. None
+of NavMate's tables were there. So the merge was a thing to *do*, not a thing
+to point at, and that was surfaced before any work.
+
+**Re-running the old migrations would have been destructive, quietly.** The
+pre-flight is why this is worth recording: `20260803040156` opens with
+`drop table if exists public.waypoints cascade`, then hard-fails on
+`create table public.profiles` — but the dangerous line is
+`create or replace function public.handle_new_user()`. That name is taken here
+by the command system's signup trigger (verified: an `on_auth_user_created`
+trigger on `auth.users` calls it, and its body fills `role`). `create or
+replace` does not error. It would have silently replaced their
+profile-creation logic with NavMate's, on a live database. `touch_updated_at`,
+`is_team_member`, `is_team_admin` and `is_platform_admin` are the same shape of
+hazard.
+
+**So: one new set of migrations, and a `navmate_` prefix on every internal
+helper** (`supabase/migrations/README.md` explains the two eras; the old files
+stay as history and are marked never-replay). Three `navmate_rehome_*`
+migrations plus `navmate_vessels`, applied and verified. Decisions inside them:
+
+- **`profiles` is reused and never altered** — no table, no trigger, no policy.
+  NavMate's `callsign` is this database's `call_sign`; the app was changed to
+  match rather than a duplicate column added. Their trigger already fills
+  full_name from signup metadata, which is what NavMate sends; the callsign is
+  carried across by `loadProfile` the first time it sees the row, and
+  `updateProfile` became an upsert because NavMate no longer owns the trigger
+  that guarantees a row exists.
+- **`navmate_incidents`**, not `incidents`. Theirs is 50 columns with live rows,
+  scoped by organisation and participant; NavMate's is the small offline-first
+  container scoped by team, with the `client_id` key offline sync needs.
+  Merging them is a decision about access models, not a rename.
+  `sar_records.incident_id` kept its column name, so no SAR client code moved.
+- **Teammate names come from `navmate_team_profiles()`**, a SECURITY DEFINER
+  function returning id/full_name/call_sign, rather than a NavMate read policy
+  on `profiles`. RLS is row-level: a policy would also have handed crews the
+  command system's push tokens, emergency contacts and clearance levels. This
+  also dropped the app's dependence on an exact FK constraint name that the old
+  PostgREST embed needed.
+
+**Verified in-database, which is new.** The browser sandbox still cannot reach
+`*.supabase.co`, but the Supabase connection is server-side, so the access
+checks were run for real with three throwaway accounts and then cleaned up: a
+team member sees the team's waypoints and not a teammate's private one; a
+signed-in outsider sees nothing (0 rows on every table, and the roster function
+returns nothing for a non-member); `anon` reads 0 from all ten NavMate tables;
+a plain member cannot change the team vessel's draft (0 rows), delete the
+owner's private waypoint (0 rows), grant themselves platform admin (42501) or
+forge a row owned by someone else (42501), while updating the shared incident
+is allowed, as designed. Row counts before and after confirm the command side
+untouched: `incidents` 4, `asset_tracks` 26, `field_events` 6, their
+`handle_new_user` unchanged. Advisors show **no NavMate function callable by
+`anon`** — the only ones flagged are PostGIS's.
+
+Note for the next reader: RLS filters rows on UPDATE/DELETE rather than
+raising, so "no exception" proves nothing. The checks above count rows actually
+changed. The first version of them reported four false passes.
+
+**One finding that is not NavMate's to fix**, now at the top of `fix_list.md`:
+the command system's policy `"Authenticated users can view all profiles"` means
+every signed-in user on this project can read every `profiles` row, including
+push tokens and emergency contacts — and adding NavMate crew accounts widens
+who that is. NavMate does not rely on that policy, so it can be tightened
+without breaking anything here.
+
+**Accounts:** both `cochranlawncare@gmail.com` and
+`jason.cochran@universalhazard.com` already existed on this project with
+working logins, so nothing was created and no password was touched — the admin
+seed picked up the latter by email on its own.
+
+**Start point selection** (`src/tabs/ChartTab.tsx`). The plotter silently used
+the GPS fix as the origin. Now a Start card comes first with **Use current
+location** and **Select on map**, the whole Destination card is inert until one
+is chosen, and the map's pick state is `'start' | 'dest' | null` so a tap knows
+which end it is filling. `plot()` routes from the chosen start; **steering still
+follows the live fix**, and when the two differ the route card says so rather
+than pretending leg 1 begins under the boat.
+
+**Verification.** 391 tests, typecheck, lint, build clean, and the committed
+headless drive extended to 34 checks: the destination really is unavailable
+until a start exists, both start controls work, and the rest of the flow
+(tap-to-pick, a course round the stubbed bar at 2.94 NM against 2.40 NM direct,
+legs, ETA, steering, save-as-waypoints, a dead ENC service degrading to a
+warned straight line, no sideways scroll at 320/360/390) still passes.
+
+**Still open:** the Supabase Auth Site URL on the new project has no API and
+must be set by hand, or password-reset emails point at the wrong host. And the
+live NOAA endpoints remain unexercised, as they have been since the tides were
+written.
+
+### 2026-09-13 — claude/charming-rubin-rlz3ks (chart plotter)
+
+"How can I add an automatic chart plotting feature… free API access… charts
+with depths… plots a course and provides distance, time until destination."
+Decisions taken with the user first: US waters only, team-shared vessel list,
+route at chart datum, build the whole feature.
+
+**A correction to the premise, surfaced before building.** The request said
+"boat draft, top speed and other information is already set". It was not —
+there was no vessel profile anywhere: `profiles` is `id/email/full_name/
+callsign` and had never been extended, the only persisted preferences in the
+app were the tracker's `intervalS`/`gateM`, and every speed on every screen
+was a transient `useState` (`SearchTab` defaulted to a hardcoded `'6'`). So
+the vessel profile is part of this work, not a prerequisite.
+
+**And a blocker found on the way, now at the top of `fix_list.md`:** the
+Supabase project the app compiles in (`puzwcsrtqtbutypzozvu`) **is no longer
+NavMate's database.** It is now named "Where's my note" and holds `notes`,
+`comments`, `calendar_events`, `attachments`. None of NavMate's tables exist
+there; `rescuegps-production` carries the *command* schema, not this one. Found
+because the vessels migration failed with `relation "public.teams" does not
+exist`. The migration is written and committed but **unapplied**, and the live
+app's sync is pointing at a database that cannot serve it. Everything in this
+session works offline against local caches regardless, which is the only reason
+the feature is still usable.
+
+**The route planner** (`src/lib/routing.ts`, 36 tests). Rasterise the charted
+depth areas, land and point hazards into a grid keeping the shoalest depth per
+cell; mark a cell usable when that depth clears draft + under-keel margin *at
+chart datum*; grow the blocked cells by the crew's stand-off with a 3-4 chamfer
+distance transform (which doubles as the mid-channel preference); A* with an
+octile heuristic and no corner-cutting; then a supercover line-of-sight
+string-pull that turns a 400-step staircase into the three or four legs a
+coxswain actually steers. Two refusals are deliberate and documented in the
+file header: **unsurveyed water is not usable** (not shallow, but not known to
+be deep — the same refusal `coords.ts` makes about an ambiguous coordinate),
+and **no tide is ever added to a charted depth** (tide is shown beside the
+route; `tidalOpportunity()` surfaces the shortcut as a decision rather than
+taking it). Every failure mode returns a straight line with a warning rather
+than a blank screen. Runs inline, not in a worker: 114 000 cells end-to-end in
+~60 ms.
+
+**The chart data** (`src/lib/chart.ts`, 40 tests). NOAA Chart Display Service
+for the raster — a WMS, so tiles are `GetMap` over each tile's EPSG:3857 bbox
+in **metres** (`tileBbox3857`, asserted against independently computed Mercator
+values; the retired `tileservice.charts.noaa.gov` XYZ service is deliberately
+not used). ENC Direct to GIS for the depths and hazards, by usage band chosen
+from the passage length. **Layer ids are discovered at runtime and matched by
+name, never hardcoded** — NOAA republishes weekly and renumbers, and a
+hardcoded id coming back as something else routes a boat through a shoal.
+`exceededTransferLimit` splits the box into quadrants and retries; still
+overflowing reports the area `partial`, which becomes a warning on the route
+rather than being swallowed. Geometry parsing accepts GeoJSON *and* Esri JSON,
+because `f=geojson` is not guaranteed on every ArcGIS version and none of this
+can be checked from a sandbox the proxy blocks.
+
+**The boat** (`src/lib/vessel.ts` + `supabase/migrations/…_navmate_vessels.sql`
++ `src/store/useVessels.ts`, 18 tests). Team-shared, because a department's
+Marine 2 has one draft and a member retyping it from memory is how a boat ends
+up on a bar. Metric in the record, feet in the form — charted depths are metres
+and a draft kept in two units is a draft that disagrees with itself. Store
+copied from `useIncidents` with all three queue safeguards intact.
+
+**The screen** (`src/tabs/ChartTab.tsx`). Boat → chart → destination → course →
+steering. Tap-to-pick needed an `unproject` on the map, which already existed
+inline inside `zoomAround` and is now factored out and used by both; tap-vs-drag
+has to be discriminated by hand because the container takes pointer capture and
+is `touch-none`, so no click event ever arrives. `SatelliteMap` gained a `base`
+prop (chart/satellite), a seamarks overlay, a **per-source zoom clamp** (it had
+been clamping everything to `SATELLITE`'s range, which would have requested
+levels the chart does not publish), and `saveArea` now pulls whatever layers are
+actually on screen. Destinations come from a tap, a saved waypoint, typed
+coordinates (through the strict parser), or **the active incident's LKP** —
+getting to the datum is the first move of every search this app exists for, and
+until now it was a straight line.
+
+**A real refactor rather than a copy:** `SteerCard` moved out of `SearchTab`
+into `src/components/SteerCard.tsx` with its rule in `src/lib/steer.ts`, and
+`buildLegs` is now exported from `search.ts`. A route leg and a pattern leg are
+the same object, so there is one definition of what to steer and no way for the
+two screens to drift apart.
+
+**Verification.** 391 tests, up from 284. The routing tests assert against
+hand-drawn ASCII charts with the answer read off the page — a hole in a
+polygon left unfilled, a wall with one gap, a corner two rocks touch at that a
+boat cannot use and neither may the route, a dead end, a bar that a 1.5 m boat
+must go round and a 0.8 m boat may cross. Plus a 31-check headless-Chromium
+drive of the production build against a stubbed NOAA (`scripts/drive-chart.mjs`,
+committed this time rather than discarded): tap-to-pick unprojects to the right
+place, the course goes **round** the stubbed bar (2.94 NM against 2.40 NM
+direct) with no leg shallower than the boat needs, legs/ETA/arrival/least-depth
+all render, steering advances, turn points save as waypoints, and a dead ENC
+service degrades to a warned straight line. No sideways scroll at 320/360/390.
+
+**Not verified, and in `fix_list.md`:** every NOAA endpoint here (the proxy
+403s all three hosts, exactly as it does for tides and imagery) — specifically
+the WMS `layers=` list, the ENC layer names per band, and whether any host
+sends `Access-Control-Allow-Origin`, which the **queries** genuinely need even
+though the tiles do not. Also: the service-worker offline path (Playwright
+cannot stub SW fetches), plot timing on a real phone, and that bridges are read
+for air draft but do not yet block a route.
 
 ### 2026-08-31 — claude/reset-cochranlawncare-password-8kty0x (account admin)
 

@@ -3,7 +3,9 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Fix } from '@/lib/types'
 import {
   LABELS,
+  NOAA_CHART,
   SATELLITE,
+  SEAMARKS,
   TILE_SIZE,
   latToTileY,
   lonToTileX,
@@ -20,6 +22,10 @@ import type { PathMarker } from '@/components/TrackPath'
 const MIN_ZOOM = 3
 const MAX_ZOOM = 19
 const DEFAULT_ZOOM = 16
+/** Movement under this is a tap, not a pan. */
+const TAP_SLOP_PX = 6
+/** And a tap held longer than this is a press, not a pick. */
+const TAP_MS = 500
 
 /**
  * A satellite map with the track drawn on it.
@@ -32,12 +38,18 @@ const DEFAULT_ZOOM = 16
  * right, and the map says the imagery is missing rather than quietly showing
  * the crew a blank ocean.
  */
+export type MapBase = 'satellite' | 'chart'
+
 export function SatelliteMap({
   trail,
   fix,
   markers = [],
   route = [],
   labels = false,
+  base = 'satellite',
+  seamarks = false,
+  onPick,
+  pickHint,
   height = 320,
   className = '',
 }: {
@@ -50,6 +62,17 @@ export function SatelliteMap({
   route?: { lat: number; lon: number }[]
   /** Draw place names and boundaries over the imagery. */
   labels?: boolean
+  /** Which base layer to draw: aerial imagery, or the NOAA chart. */
+  base?: MapBase
+  /** Draw OpenSeaMap buoys and lights over the base. */
+  seamarks?: boolean
+  /**
+   * Called with the position under a tap. Set it and the map becomes a picker
+   * as well as a display — the crew points at where they want to go.
+   */
+  onPick?: (p: { lat: number; lon: number }) => void
+  /** One line shown over the map while it is pickable. */
+  pickHint?: string
   height?: number
   className?: string
 }) {
@@ -134,6 +157,18 @@ export function SatelliteMap({
     [zoom, center.lat, center.lon, w, h],
   )
 
+  /**
+   * A pixel inside the map box back to a geographic position — the exact
+   * inverse of `project`, and what turns a tap into a destination.
+   */
+  const unproject = useCallback(
+    (px: number, py: number) => ({
+      lat: tileYToLat(latToTileY(center.lat, zoom) + (py - h / 2) / TILE_SIZE, zoom),
+      lon: tileXToLon(lonToTileX(center.lon, zoom) + (px - w / 2) / TILE_SIZE, zoom),
+    }),
+    [zoom, center.lat, center.lon, w, h],
+  )
+
   /* ---------------------------------------------------------------- gestures
    * One finger pans, two pinch, the wheel zooms. All of it moves the same two
    * pieces of state — where the middle of the map is and how far in it is —
@@ -143,6 +178,14 @@ export function SatelliteMap({
 
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const pinch = useRef<{ dist: number; zoom: number } | null>(null)
+  /**
+   * Where and when a single pointer went down, so a tap can be told from a
+   * drag. The box takes pointer capture and is `touch-none`, so no click event
+   * ever arrives and the discrimination has to be made here.
+   */
+  const tap = useRef<{ x: number; y: number; t: number; moved: boolean } | null>(
+    null,
+  )
 
   /** Where the map is looking right now, following the crew or not. */
   const from = useCallback(
@@ -224,6 +267,10 @@ export function SatelliteMap({
   const onPointerDown = (e: ReactPointerEvent) => {
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    tap.current =
+      pointers.current.size === 1
+        ? { x: e.clientX, y: e.clientY, t: Date.now(), moved: false }
+        : null
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()]
       pinch.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom }
@@ -234,6 +281,12 @@ export function SatelliteMap({
     const prev = pointers.current.get(e.pointerId)
     if (!prev) return
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (tap.current) {
+      // A finger on a boat is never perfectly still: a few pixels of slop is
+      // a tap, more than that is the start of a pan.
+      const slop = Math.hypot(e.clientX - tap.current.x, e.clientY - tap.current.y)
+      if (slop > TAP_SLOP_PX) tap.current.moved = true
+    }
 
     if (pointers.current.size >= 2 && pinch.current) {
       const [a, b] = [...pointers.current.values()]
@@ -259,11 +312,33 @@ export function SatelliteMap({
     if (pointers.current.size < 2) pinch.current = null
   }
 
+  const onPointerUp = (e: ReactPointerEvent) => {
+    const t = tap.current
+    tap.current = null
+    endPointer(e)
+    if (!onPick || !t || t.moved || Date.now() - t.t > TAP_MS) return
+    const r = boxRef.current?.getBoundingClientRect()
+    if (!r) return
+    onPick(unproject(e.clientX - r.left, e.clientY - r.top))
+  }
+
   /* ------------------------------------------------------------------ tiles */
 
+  const baseSource = base === 'chart' ? NOAA_CHART : SATELLITE
+  /**
+   * The overlays currently drawn. Kept as a list so `saveArea` fills the cache
+   * with exactly what is on screen rather than assuming imagery.
+   */
+  const overlaySources = useMemo(() => {
+    const out: TileSource[] = []
+    if (labels) out.push(LABELS)
+    if (seamarks) out.push(SEAMARKS)
+    return out
+  }, [labels, seamarks])
+
   const z = Math.max(
-    SATELLITE.minZoom,
-    Math.min(SATELLITE.maxZoom, Math.round(zoom)),
+    baseSource.minZoom,
+    Math.min(baseSource.maxZoom, Math.round(zoom)),
   )
   /** Between integer zooms the whole tile layer is scaled rather than refetched. */
   const scale = 2 ** (zoom - z)
@@ -300,7 +375,14 @@ export function SatelliteMap({
     e.currentTarget.style.visibility = 'hidden'
   }
 
-  const layer = (src: TileSource, opacity = 1) => (
+  /**
+   * One tile layer. Each source is clamped to its own zoom range: the chart
+   * stops at 18 and the seamarks at 18 too, and asking either for a level it
+   * does not publish returns nothing but a screen of failed requests.
+   */
+  const layer = (src: TileSource, opacity = 1) => {
+    if (z < src.minZoom || z > src.maxZoom) return null
+    return (
     <div
       key={src.id}
       className="pointer-events-none absolute top-1/2 left-1/2"
@@ -341,7 +423,8 @@ export function SatelliteMap({
         />
       ))}
     </div>
-  )
+    )
+  }
 
   /* ---------------------------------------------------------------- overlays */
 
@@ -401,11 +484,14 @@ export function SatelliteMap({
   const saveArea = async () => {
     if (saving) return
     const urls = new Set<string>()
-    for (const level of [z, Math.min(z + 1, SATELLITE.maxZoom)]) {
+    const sources = [baseSource, ...overlaySources]
+    for (const level of [z, Math.min(z + 1, baseSource.maxZoom)]) {
       const mult = 2 ** (level - z)
       for (const t of tilesForView(center, level, layerW * mult, layerH * mult)) {
-        urls.add(SATELLITE.url(t.z, t.x, t.y))
-        if (labels) urls.add(LABELS.url(t.z, t.x, t.y))
+        for (const src of sources) {
+          if (level < src.minZoom || level > src.maxZoom) continue
+          urls.add(src.url(level, t.x, t.y))
+        }
       }
     }
     const list = [...urls].slice(0, 400)
@@ -439,11 +525,17 @@ export function SatelliteMap({
         style={{ height }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
+        onPointerUp={onPointerUp}
         onPointerCancel={endPointer}
       >
-        {placed && layer(SATELLITE)}
-        {placed && labels && layer(LABELS, 0.9)}
+        {placed && layer(baseSource)}
+        {placed && overlaySources.map((src) => layer(src, 0.9))}
+
+        {placed && onPick && pickHint ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-navy-950/70 px-3 py-1.5 text-center text-xs text-slate-200">
+            {pickHint}
+          </div>
+        ) : null}
 
         {!placed && (
           <div className="absolute inset-0 grid place-items-center px-6 text-center text-sm text-slate-300">
@@ -460,7 +552,7 @@ export function SatelliteMap({
             'pointer-events-none absolute inset-0 ' + (placed ? '' : 'hidden')
           }
           role="img"
-          aria-label={`Satellite map, ${trail.length} track points`}
+          aria-label={`${baseSource.label} map, ${trail.length} track points`}
         >
           {markers.map((m) => {
             const p = project(m.lat, m.lon)
@@ -670,8 +762,8 @@ export function SatelliteMap({
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[10px] text-slate-300">
-          {SATELLITE.attribution}
-          {labels ? ` · ${LABELS.attribution}` : ''} · z{zoom.toFixed(1)}
+          {[baseSource, ...overlaySources].map((s) => s.attribution).join(' · ')}{' '}
+          · z{zoom.toFixed(1)}
         </p>
         <button
           onClick={() => void saveArea()}
@@ -680,7 +772,7 @@ export function SatelliteMap({
         >
           {saving
             ? `Saving ${saving.done}/${saving.total}…`
-            : 'Save imagery for offline'}
+            : `Save ${base === 'chart' ? 'chart' : 'imagery'} for offline`}
         </button>
       </div>
     </div>

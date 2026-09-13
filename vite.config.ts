@@ -89,6 +89,35 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
+          // Nautical chart tiles, and the ENC depth/hazard queries the route
+          // planner runs on. Their own cache rather than a share of the
+          // imagery budget, so a saved operating area cannot evict the chart
+          // that goes with it — and a shorter life, because ENC is republished
+          // weekly and a month-old wreck position is the wrong kind of stale
+          // to steer a rescue boat by. Imagery can sit for 90 days because a
+          // photograph of the ground does not move.
+          //
+          // Hosts are literal for the same reason as above: workbox
+          // stringifies this function into the service worker.
+          {
+            urlPattern: ({ url }) =>
+              url.hostname === 'gis.charttools.noaa.gov' ||
+              url.hostname === 'encdirect.noaa.gov' ||
+              url.hostname === 'tiles.openseamap.org',
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'navmate-charts',
+              expiration: {
+                maxEntries: 1500,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+                purgeOnQuotaError: true,
+              },
+              // 0 accepts opaque responses — neither NOAA host is confirmed to
+              // send Access-Control-Allow-Origin, and an opaque tile still
+              // draws.
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
     }),

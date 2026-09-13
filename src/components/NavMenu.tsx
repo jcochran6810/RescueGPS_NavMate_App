@@ -6,6 +6,12 @@ export const TABS = [
   { id: 'home', label: 'Home', hint: 'Position, daylight and nearby waypoints', group: 'Position' },
   { id: 'track', label: 'Live tracking', hint: 'Live position and your path', group: 'Position' },
   { id: 'compass', label: 'Compass', hint: 'Heading and bearings to waypoints', group: 'Position' },
+  {
+    id: 'chart',
+    label: 'Chart plotter',
+    hint: 'Charted depths, and a course to steer',
+    group: 'Position',
+  },
   { id: 'convert', label: 'Convert', hint: 'Coordinate formats and UTM', group: 'Position' },
   { id: 'datum', label: 'Search datum', hint: 'LKP, drift, clues and where to search', group: 'Search' },
   { id: 'search', label: 'Search pattern', hint: 'Run a pattern, spacing, survival clock', group: 'Search' },

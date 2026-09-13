@@ -2,7 +2,8 @@ export interface Profile {
   id: string
   email: string | null
   full_name: string
-  callsign: string
+  /** `call_sign` on the database — the command system's spelling. */
+  call_sign: string
   created_at: string
   updated_at: string
 }

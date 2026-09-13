@@ -8,13 +8,7 @@ import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { toDD } from '@/lib/coords'
-import {
-  bearingDeg,
-  formatBearing,
-  formatDistance,
-  formatDuration,
-  haversineNM,
-} from '@/lib/geo'
+import { formatDistance, formatDuration } from '@/lib/geo'
 import { computeDatum, searchObjectType } from '@/lib/sar'
 import {
   expandingSquare,
@@ -37,6 +31,8 @@ import {
 import { survivalEstimate, formatSurvivalMinutes, type PfdStatus } from '@/lib/survival'
 import { sunEvents } from '@/lib/sun'
 import { SatelliteMap } from '@/components/SatelliteMap'
+import { SteerCard } from '@/components/SteerCard'
+import { shouldAdvance } from '@/lib/steer'
 import { IncidentCard } from '@/components/IncidentCard'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
@@ -51,8 +47,6 @@ import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
  * drift, effort allocation, probability maps. One phone plans and runs one
  * unit's pattern.
  */
-
-const ARRIVAL_NM = 0.05 // close enough to a turn point to call it made
 
 export function SearchTab() {
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -192,12 +186,7 @@ export function SearchTab() {
   // big enough that a boat does not have to drive over the exact point.
   useEffect(() => {
     if (!running || !fix || !plan) return
-    const target = plan.points[targetIdx]
-    if (!target) return
-    const d = haversineNM(fix.lat, fix.lon, target.lat, target.lon)
-    if (d < ARRIVAL_NM && targetIdx < plan.points.length - 1) {
-      setTargetIdx(targetIdx + 1)
-    }
+    if (shouldAdvance(plan, targetIdx, fix)) setTargetIdx(targetIdx + 1)
   }, [running, fix, plan, targetIdx])
 
   /* --------------------------------------------------------------- render */
@@ -441,6 +430,7 @@ export function SearchTab() {
               targetIdx={targetIdx}
               setTargetIdx={setTargetIdx}
               fix={fix}
+              lastLabel="Last point — pattern complete when you arrive."
             />
           )}
 
@@ -480,89 +470,6 @@ export function SearchTab() {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
-}
-
-/* -------------------------------------------------------------------------
- * Steering
- * ---------------------------------------------------------------------- */
-
-function SteerCard({
-  plan,
-  targetIdx,
-  setTargetIdx,
-  fix,
-}: {
-  plan: SearchPatternPlan
-  targetIdx: number
-  setTargetIdx: (i: number | null) => void
-  fix: { lat: number; lon: number } | null
-}) {
-  const target = plan.points[targetIdx]
-  const last = targetIdx >= plan.points.length - 1
-  const distNM = fix && target
-    ? haversineNM(fix.lat, fix.lon, target.lat, target.lon)
-    : null
-  const course = fix && target && distNM !== null && distNM >= ARRIVAL_NM
-    ? bearingDeg(fix.lat, fix.lon, target.lat, target.lon)
-    : null
-  // The leg that starts at the target — what to steer after the turn.
-  const nextLeg = plan.legs[targetIdx] ?? null
-
-  return (
-    <Card>
-      <div className="flex items-start justify-between gap-2">
-        <Label>Steering</Label>
-        <span className="mb-1.5 text-xs text-slate-400">
-          {targetIdx === 0
-            ? 'To the start point'
-            : `Point ${targetIdx} of ${plan.points.length - 1}`}
-        </span>
-      </div>
-
-      {!fix ? (
-        <EmptyState>Waiting for a GPS fix…</EmptyState>
-      ) : (
-        <div className="rounded-xl border border-sky-400/30 bg-sky-500/5 px-3 py-2.5">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="tnum text-2xl font-semibold text-slate-50">
-              {course !== null ? formatBearing(course) : 'Here'}
-            </span>
-            <span className="tnum text-lg text-slate-200">
-              {distNM !== null ? formatDistance(distNM, 'nm') : '—'}
-            </span>
-          </div>
-          <div className="mt-0.5 text-xs text-slate-300">
-            {last
-              ? 'Last point — pattern complete when you arrive.'
-              : nextLeg
-                ? `Then ${formatBearing(nextLeg.courseDeg)} for ${formatDistance(nextLeg.lengthNM, 'nm')}`
-                : ''}
-          </div>
-        </div>
-      )}
-
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <Button
-          variant="ghost"
-          disabled={targetIdx === 0}
-          onClick={() => setTargetIdx(Math.max(0, targetIdx - 1))}
-        >
-          Previous point
-        </Button>
-        <Button
-          variant="ghost"
-          disabled={last}
-          onClick={() => setTargetIdx(Math.min(plan.points.length - 1, targetIdx + 1))}
-        >
-          Skip to next
-        </Button>
-      </div>
-      <p className="mt-1.5 text-xs text-slate-400">
-        Advances by itself within {formatDistance(ARRIVAL_NM, 'nm')} of each
-        point. Tracking stays on so the track records what you covered.
-      </p>
-    </Card>
-  )
 }
 
 /* -------------------------------------------------------------------------

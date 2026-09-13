@@ -9,8 +9,14 @@ is no signal, and sends them on to **RescueGPS**, the system that does the
 heavier work with them. Everything here is built around that job — capture
 first, sync second, and never lose a fix waiting for a network.
 
-This is a standalone app. It shares a subdomain with stationinsight.com and
-nothing else — separate codebase, separate hosting project, separate database.
+This is a standalone app with its own codebase and hosting project. Since
+September 2026 it **shares a Supabase database with the RescueGPS command
+system** (project `ekhvfypxuxskjglwwoqh`), which is what makes the eventual
+field-to-command tie-in a query rather than an export. See
+`supabase/migrations/README.md` for what that sharing costs and how it is kept
+safe — the short version is that `profiles` belongs to both applications, and
+NavMate's internal database functions are prefixed `navmate_` so the two
+cannot overwrite each other.
 
 ## Features
 
@@ -26,6 +32,29 @@ nothing else — separate codebase, separate hosting project, separate database.
   Track can steer to it, and the whole picture exports as a JSON report in
   RescueGPS's own field names, ready for its drift engine. All of it works
   offline and syncs later.
+- **Chart plotter** — a nautical chart with charted depths, and an automatic
+  course to anywhere you point at. Tap the chart, pick a saved waypoint, or run
+  straight to the active incident's LKP, and the app works out a route that
+  keeps the boat in water it can actually use: round the shoals, off the
+  wrecks, through the channel. It needs to know the boat first — draft, the
+  water you want under the keel, how far off a hazard you want to be, and
+  cruise speed — which is what the **vessel list** is for; boats are shared
+  with the team, so a department's Marine 2 is set up once. The route comes
+  back as legs with a course, a distance and the least charted depth on each
+  one, plus total distance, time to run, arrival clock time and fuel, and it
+  steers leg by leg like a search pattern, auto-advancing at each turn point.
+  Turn points save as waypoints. Charts are NOAA ENC (US waters), with
+  OpenSeaMap buoys and lights over the top, and the whole area can be pulled
+  onto the device before the signal goes.
+
+  Two things it deliberately will not do. It **never routes through water it
+  has not seen charted** — unsurveyed is not the same as deep, and where there
+  is no chart it says so and gives you a straight line it tells you not to
+  trust. And it **plans at chart datum**, never on the tide: the predicted tide
+  is shown beside the route because it matters, but a shortcut that needs the
+  tide to be in is a grounding waiting for a delay. NOAA publishes this data
+  for display and GIS, not as a certified navigation product, and every plotted
+  route says so on screen.
 - **Stamp my position** — fixed to the bottom of every screen, so it is under
   the thumb however far the page has scrolled. One press writes the fix, then a
   sheet opens for a name, notes and a photograph from the camera or the
@@ -118,21 +147,24 @@ npm run lint
 ```
 src/
   lib/          coordinate math, distance/bearing, 60 D = S × T, sun events,
-                NOAA tides, GPS gating and Kalman filter, Web Mercator tiles,
-                import/export, Supabase client
+                NOAA tides, GPS gating and Kalman filter, Web Mercator tiles
+                and chart sources, ENC depth/hazard fetching, the route
+                planner (rasterise → A* → string-pull), vessel and safe-depth
+                maths, import/export, Supabase client
   store/        Zustand stores: auth, waypoints (with offline queue), teams,
-                tracker, tides, heading
+                vessels, chart data, tracker, tides, heading
   components/   shared UI, header, section menu, bottom sheet, auth screen,
                 daylight, tides, compass, satellite map, track plot, stamp
-  tabs/         Home, Track, ETA, Tides, Compass, Convert, Waypoints, Team,
-                Data
+  tabs/         Home, Track, Chart plotter, ETA, Tides, Compass, Convert,
+                Waypoints, Team, Data
 supabase/
   migrations/   schema, RLS policies, storage rules
 brand/
   emblem.png      the RescueGPS cross, navy field knocked out
   logo.png        the whole logo including the wordmark
 scripts/
-  make-icons.mjs  regenerates every icon in public/ from the two masters
+  make-icons.mjs   regenerates every icon in public/ from the two masters
+  drive-chart.mjs  headless drive of the chart plotter against a stubbed NOAA
 ```
 
 ## Data model
@@ -144,6 +176,8 @@ scripts/
 | `team_members` | roster with `owner` / `admin` / `member` roles |
 | `waypoints` | `team_id` null means private; otherwise visible to that team |
 | `sar_records` | LKP, clues, drift markers and conditions — the datum data. Carries `client_id` (RescueGPS's offline-sync idempotency contract) and `recorded_at` separate from `created_at`, so each kind projects onto the matching RescueGPS table (`lkp_history`, `field_events`, `field_drift_data`, `weather_snapshots`) when the databases merge |
+| `vessels` | the boats a team runs — draft, air draft, speeds, fuel burn, under-keel margin and hazard stand-off. Metric, because charted depths are; feet are a display conversion. Read by any team member, written by team admins: a draft is a safety figure |
+| `navmate_incidents` | the incident a field unit opens — deliberately separate from the command system's own 50-column `incidents` on the same database, which is scoped by organisation and participant rather than by team |
 | `platform_admins` | who may use the admin dashboard; seeded by email |
 | `support_requests` | user → platform-admin requests, with status and admin notes |
 | `admin_actions` | append-only audit of every admin mutation |
@@ -169,6 +203,32 @@ the crew who needs it most has no link left to revalidate it. **Save imagery for
 offline** fetches the tiles around you at the current zoom and one closer, which
 is what puts them in that cache before the signal goes.
 
+Nautical charts come from the **NOAA Chart Display Service**
+(`gis.charttools.noaa.gov/.../MaritimeChartService/WMSServer`), which renders
+NOAA ENC with paper-chart symbology. It is a WMS rather than an XYZ tile
+service, so each tile is requested as a `GetMap` over that tile's EPSG:3857
+bounding box — in metres, not degrees (`tileBbox3857` in `src/lib/tiles.ts`,
+which has its own test for exactly that reason). The older
+`tileservice.charts.noaa.gov` raster service has been shut down and is not
+used. Buoys and lights come from OpenSeaMap as an optional transparent
+overlay.
+
+The depths and hazards the route planner runs on come from **NOAA ENC Direct
+to GIS** (`encdirect.noaa.gov`), queried by bounding box per usage band —
+harbour, approach, coastal, general, overview, chosen by how long the passage
+is. Layer ids are **discovered at runtime** from the service's own layer list
+and matched by name, never hardcoded: NOAA republishes weekly and renumbers,
+and a hardcoded id that silently came back as something else would route a boat
+through a shoal. A query that hits its transfer limit is split into quadrants
+and retried, and if it still overflows the area is reported as `partial`, which
+the route turns into a warning rather than swallowing. Coverage is US waters,
+the same limit the tides have. None of these services needs a key.
+
+Chart tiles and ENC queries are cached by the service worker for 30 days in
+their own cache (`navmate-charts`), separate from the imagery's 90 — ENC is
+republished weekly, and a month-old wreck position is the wrong kind of stale
+to steer by.
+
 Tide predictions come from NOAA CO-OPS and need no key. The station list
 (`mdapi/prod/webapi/stations.json?type=tidepredictions`) is downloaded once,
 slimmed and cached in `localStorage`, so nearest-station lookups keep working
@@ -179,7 +239,19 @@ including sunrise, sunset and twilight — is computed on the device.
 ### Security
 
 Row level security is on for every table, and `anon` has no policy anywhere —
-an unauthenticated visitor holding the publishable key can read nothing. The
+an unauthenticated visitor holding the publishable key can read nothing. That
+was re-verified against the shared database on 2026-09-13 with three throwaway
+accounts: a team member sees the team's waypoints but not a teammate's private
+ones, a signed-in outsider sees nothing at all, `anon` reads zero rows from
+every NavMate table, and a plain member cannot change the team's vessel draft,
+grant themselves platform admin, or forge a row owned by someone else.
+
+`profiles` is the one table NavMate does not own. It is shared with the command
+system, so NavMate reuses it and never alters it: `callsign` is that table's
+`call_sign`, and teammate names come from `navmate_team_profiles()` — a
+function returning id, name and callsign — rather than a read policy, because
+RLS is row-level and a policy would also hand over the command system's push
+tokens and emergency contacts. The
 policies were verified against a live database with three test accounts
 covering read isolation, write refusal, cascade behaviour and role escalation.
 See `DEPLOYMENT.md` for the full list of what was checked.

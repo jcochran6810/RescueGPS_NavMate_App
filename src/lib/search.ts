@@ -65,7 +65,16 @@ export interface SearchPatternPlan {
   spacingNM: number
 }
 
-function buildLegs(points: LatLon[], searchLeg: (i: number) => boolean): {
+/**
+ * Legs from an ordered list of points: leg i is the one arriving at
+ * `points[i]`. Exported because a plotted route is the same object as a
+ * pattern — one definition of a leg means the steering card cannot drift
+ * between the two.
+ */
+export function buildLegs(
+  points: LatLon[],
+  searchLeg: (i: number) => boolean,
+): {
   legs: PatternLeg[]
   totalNM: number
 } {

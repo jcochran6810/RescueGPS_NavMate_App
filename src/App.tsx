@@ -4,6 +4,7 @@ import { useTeams } from '@/store/useTeams'
 import { useTides } from '@/store/useTides'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useIncidents } from '@/store/useIncidents'
+import { useVessels } from '@/store/useVessels'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useAdmin } from '@/store/useAdmin'
 import { useSupport } from '@/store/useSupport'
@@ -19,6 +20,7 @@ import { HomeTab } from '@/tabs/HomeTab'
 import { DatumTab } from '@/tabs/DatumTab'
 import { SearchTab } from '@/tabs/SearchTab'
 import { AdminTab } from '@/tabs/AdminTab'
+import { ChartTab } from '@/tabs/ChartTab'
 import { ConvertTab } from '@/tabs/ConvertTab'
 import { TrackTab } from '@/tabs/TrackTab'
 import { EtaTab } from '@/tabs/EtaTab'
@@ -46,6 +48,7 @@ export default function App() {
       void wp.flush().then(() => wp.drainStagedPhotos())
       void useSarRecords.getState().flush()
       void useIncidents.getState().flush()
+      void useVessels.getState().flush()
     }
     window.addEventListener('online', onOnline)
     return () => window.removeEventListener('online', onOnline)
@@ -66,6 +69,7 @@ export default function App() {
     void useWaypoints.getState().load()
     void useSarRecords.getState().load()
     void useIncidents.getState().load()
+    void useVessels.getState().load()
     void useAdmin.getState().check()
   }, [session])
 
@@ -108,7 +112,8 @@ export default function App() {
         {tab === 'eta' && <EtaTab />}
         {tab === 'tides' && <TidesTab />}
         {tab === 'compass' && <CompassTab />}
-        {tab === 'convert' && <ConvertTab />}
+        {tab === 'chart' && <ChartTab />}
+          {tab === 'convert' && <ConvertTab />}
         {tab === 'waypoints' && <WaypointsTab />}
         {tab === 'team' && <TeamTab />}
         {tab === 'data' && <DataTab />}
