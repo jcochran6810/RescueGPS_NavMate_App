@@ -2,10 +2,23 @@
 
 Project-specific instructions for Claude Code when working on this repository.
 
-RescueGPS NavMate is a static single-page app (Vite + React 19 + TypeScript)
-backed by Supabase, served at `rescuegps.stationinsight.com`. It shares a
-parent domain with Station Insight and nothing else — separate repo, separate
-hosting project, separate database.
+NavMate is a static single-page app (Vite + React 19 + TypeScript) backed by
+Supabase, served at `navmate.stationinsight.com`.
+
+**Two apps, two addresses, one database.** `navmate.stationinsight.com` is this
+repo — the field PWA a crew installs on a phone. `rescuegps.stationinsight.com`
+is the RescueGPS command system (`jcochran6810/rescuegps-navigator-pro`,
+a separate repo and Vercel project). They share the Supabase project
+`ekhvfypxuxskjglwwoqh` and nothing else; that database is the only seam between
+them, and `supabase/migrations/README.md` explains how it is kept safe. Both
+are subdomains of `stationinsight.com`, which otherwise belongs to Station
+Insight on the `bunker-gear` project.
+
+NavMate hardcodes no hostname anywhere: the auth redirects use
+`window.location.origin` and the PWA manifest's `start_url`/`scope` are
+root-relative, so the app is portable across origins. What is NOT portable is
+an **install** — a PWA belongs to the origin it came from, along with its
+cached waypoints, queued writes and saved chart tiles.
 
 **NavMate is the field app, RescueGPS is the system it reports into.** NavMate's
 job is collecting data where the work happens — position, waypoints, notes,

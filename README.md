@@ -1,13 +1,32 @@
-# RescueGPS NavMate
+# NavMate
 
 Coordinate conversion, live GPS tracking, ETA and shared waypoints for search
-and rescue teams. Runs at **https://rescuegps.stationinsight.com**.
+and rescue teams. Runs at **https://navmate.stationinsight.com**.
 
 **NavMate is the field app.** It is what a crew carries: it collects position,
 waypoints, notes and photographs where the work happens, holds them when there
 is no signal, and sends them on to **RescueGPS**, the system that does the
 heavier work with them. Everything here is built around that job — capture
 first, sync second, and never lose a fix waiting for a network.
+
+The two run at separate addresses and are separate codebases:
+
+| | |
+|---|---|
+| **NavMate** — the field PWA crews install on a phone | `navmate.stationinsight.com` (this repo) |
+| **RescueGPS** — the command system that ties an incident together | `rescuegps.stationinsight.com` (`rescuegps-navigator-pro`) |
+
+They share one Supabase database (`ekhvfypxuxskjglwwoqh`), which is the seam
+between them — see `supabase/migrations/README.md`.
+
+> **Moving from the old address.** NavMate used to live at
+> `rescuegps.stationinsight.com`, which now serves the command system. A PWA
+> install is bound to the address it came from, so a copy installed from the
+> old one keeps its own cached waypoints, queued writes and saved chart tiles
+> and none of it follows. Uninstall it and install again from
+> `navmate.stationinsight.com`; anything stamped there and not yet synced does
+> not make the trip. The app shows a banner saying so, but only when it is
+> being served from the old address, so it retires itself.
 
 This is a standalone app with its own codebase and hosting project. Since
 September 2026 it **shares a Supabase database with the RescueGPS command

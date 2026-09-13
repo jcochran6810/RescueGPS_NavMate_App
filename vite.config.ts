@@ -14,7 +14,7 @@ export default defineConfig({
       // silently re-added the file the globIgnores below exists to keep out.
       includeAssets: ['icon-192.png', 'emblem-192.png', 'logo.png'],
       manifest: {
-        name: 'RescueGPS NavMate',
+        name: 'NavMate',
         short_name: 'NavMate',
         description:
           'Coordinate conversion, live GPS tracking, ETA and shared waypoints for search and rescue teams.',

@@ -43,12 +43,14 @@ export function Header({
           height={192}
           className="size-6 shrink-0 max-[379px]:hidden"
         />
-        {/* NavMate is the field app; RescueGPS is the system it reports into.
+        {/* NavMate is the field app and stands on its own name now that it has
+            its own address; RescueGPS is the command system it reports into,
+            at rescuegps.stationinsight.com. The emblem beside this is the
+            shared mark, which is what still ties the two together.
             `min-w-0 truncate` lets the name give way to the status badges and
             the corner buttons rather than pushing them off a narrow phone. */}
-        <span className="min-w-0 flex-1 truncate text-xs tracking-tight min-[360px]:text-sm sm:text-base">
-          <span className="font-semibold text-slate-50">RescueGPS</span>{' '}
-          <span className="font-medium text-sky-300">NavMate</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-slate-50 sm:text-base">
+          NavMate
         </span>
 
         <div className="flex shrink-0 items-center gap-1.5">

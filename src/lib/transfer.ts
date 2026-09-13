@@ -56,7 +56,7 @@ export function toGPX(waypoints: Waypoint[]): string {
 
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
-    `<gpx version="1.1" creator="RescueGPS NavMate" ` +
+    `<gpx version="1.1" creator="NavMate" ` +
     `xmlns="http://www.topografix.com/GPX/1/1">\n${pts}\n</gpx>\n`
   )
 }
@@ -78,7 +78,7 @@ export function trackToGPX(points: TrackPoint[], name = 'NavMate track'): string
 
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
-    `<gpx version="1.1" creator="RescueGPS NavMate" ` +
+    `<gpx version="1.1" creator="NavMate" ` +
     `xmlns="http://www.topografix.com/GPX/1/1">\n` +
     `  <trk>\n    <name>${escapeXml(name)}</name>\n    <trkseg>\n` +
     `${segment}${segment ? '\n' : ''}` +

@@ -1,6 +1,6 @@
 # Fix list
 
-Outstanding fixes, TODOs, and known issues for RescueGPS NavMate.
+Outstanding fixes, TODOs, and known issues for NavMate.
 
 Add new items at the top. Use the format:
 
@@ -8,26 +8,53 @@ Add new items at the top. Use the format:
 
 ## Open
 
-- [ ] 2026-09-13 — **Set the Supabase Auth URL configuration on the RescueGPS
-      project.** There is no MCP tool for this — dashboard or Management API
-      only. Until it is done, confirmation and password-reset emails link to
-      whatever the command system set. Site URL
-      `https://rescuegps.stationinsight.com`, and allow-list both the bare
-      origin and `/**`, because the app sends `window.location.origin` with no
-      trailing slash. Also check whether "Confirm email" is on, and that the
-      sender is custom SMTP rather than the rate-limited built-in.
-      Supersedes the two 2026-08-03 items that said the same thing about the
-      old project. **None of this affects PWA installability** — that depends
-      only on the origin serving the app (HTTPS + manifest + service worker),
-      and `start_url` is relative, so the app installs from any of the
-      project's domains. What the Site URL decides is which origin auth emails
-      send people to, and therefore which origin they install from. That
-      matters because an install from `rescuegps-navmate.vercel.app` is a
-      separate install from one at `rescuegps.stationinsight.com`, with its
-      own offline waypoint cache, its own queued writes and its own saved
-      chart tiles. Worth picking the custom domain and keeping crews on it.
-      Anyone who already installed from a `.vercel.app` address has to
-      uninstall and reinstall to move.
+- [ ] 2026-09-13 — **Move the two domains, then set the Supabase Auth URLs.**
+      Neither has an MCP tool — both are dashboards. Order matters, because a
+      domain can only be on one Vercel project at a time:
+      (1) add `navmate.stationinsight.com` to `rescuegps-navmate`
+      (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`) and confirm it serves NavMate;
+      (2) remove `rescuegps.stationinsight.com` from `rescuegps-navmate`;
+      (3) add `rescuegps.stationinsight.com` to `rescuegps-navigator-pro`
+      (`prj_KEOHsBii7KDFIGEYjBMrF0ACWmpu`), which currently has no custom
+      domain. Then Auth → URL Configuration: **Site URL
+      `https://rescuegps.stationinsight.com`** (the command system has no
+      explicit redirect and depends on the fallback; NavMate always sends its
+      own origin, so it does not care), and allow-list the bare origin *and*
+      `/**` for **both** hosts. Leaving `navmate.stationinsight.com` off that
+      list is the trap: an un-allow-listed redirect is silently replaced with
+      the Site URL, so a crew member resetting a password in NavMate would land
+      in the command dashboard. Also still worth checking: whether "Confirm
+      email" is on, and whether the sender is custom SMTP rather than the
+      rate-limited built-in. Full detail in `DEPLOYMENT.md`.
+- [ ] 2026-09-13 — **Retire the moved-address banner** once everyone has
+      reinstalled. `src/components/MovedNotice.tsx` renders only when the app
+      is served from `rescuegps.stationinsight.com`, so it retires itself for
+      each person the moment they reinstall — but once that address belongs to
+      the command system, NavMate is never served from it at all and the
+      component is dead code. Delete it and its two call sites in
+      `src/App.tsx` after the handover has settled.
+- [ ] 2026-09-13 — **The command system will not see NavMate's incidents.**
+      Its dashboard subscribes to the `incidents` table expecting field-app
+      rows — `frontend/src/services/supabase.js` comments
+      `subscribeToAllIncidents` as "detect new incidents from other users
+      (e.g. field app)". NavMate writes `navmate_incidents`, kept separate
+      deliberately (the two access models differ: theirs is scoped by
+      organisation and participant, NavMate's by team). Splitting the domains
+      does not change that, but it makes the gap more visible: "RescueGPS ties
+      everything together" is not true of incidents yet. The options are one
+      shared table, or a projection between them. A decision, not a bug.
+- [ ] 2026-09-13 — **Not NavMate's, but worth telling whoever owns the command
+      repo:** `frontend/src/config/config.js` defaults `SUPABASE_URL` to
+      `https://grcsrldrkryrfjsildej.supabase.co`, a project ref that is not in
+      the Supabase org at all. The client that matters
+      (`frontend/src/services/supabase.js`) reads `import.meta.env` with no
+      fallback and goes `null` — "running in local/demo mode" — when the
+      variable is missing, so the deployment must be setting
+      `VITE_SUPABASE_URL` to `ekhvfypxuxskjglwwoqh`. Worth confirming in the
+      Vercel env vars and deleting the stale default before it misleads
+      someone. Its `tiles.noaaCharts` also still points at
+      `tileservice.charts.noaa.gov`, the NOAA raster service that has been shut
+      down.
 - [ ] 2026-09-13 — **Every signed-in user can read every row of `profiles` on
       this project.** The command system's own policy, `"Authenticated users
       can view all profiles"`, predates NavMate and was verified still in force
@@ -241,10 +268,12 @@ Add new items at the top. Use the format:
 
 ## Done
 
-- [x] 2026-08-03 — Attach `rescuegps.stationinsight.com` to the
-      `rescuegps-navmate` Vercel project. Confirmed done on 2026-09-13: the
-      project's domains are `rescuegps-navmate.vercel.app`,
-      **`rescuegps.stationinsight.com`**, and the two generated aliases.
+- [x] 2026-08-03 — Attach a custom domain to the `rescuegps-navmate` Vercel
+      project. Confirmed done on 2026-09-13 — it held
+      `rescuegps.stationinsight.com`. **Superseded the same day:** that address
+      was handed to the RescueGPS command system and NavMate moved to
+      `navmate.stationinsight.com`. See the open item at the top for the
+      handover order.
 
 - [x] 2026-09-13 — **The NavMate database was gone.** The project the app
       compiled in (`puzwcsrtqtbutypzozvu`) had been repurposed into an
