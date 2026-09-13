@@ -83,11 +83,43 @@ export const useTeams = create<TeamState>((set, get) => ({
     const { data, error } = await retrying(() =>
       supabase
         .from('team_members')
-        .select('*, profile:profiles!team_members_user_id_profiles_fkey(*)')
+        .select('*')
         .eq('team_id', teamId)
         .order('joined_at', { ascending: true }),
     )
-    if (!error) set({ members: (data ?? []) as TeamMember[] })
+    if (error) return
+    const rows = (data ?? []) as TeamMember[]
+
+    // Names come from an RPC rather than a PostgREST embed on `profiles`.
+    // That table is shared with the RescueGPS command system and carries push
+    // tokens, emergency contacts and clearance levels; RLS is row-level, so a
+    // policy letting a crew read a teammate's name would hand over all of it.
+    // navmate_team_profiles() returns three columns and nothing else.
+    const { data: people } = await retrying(() =>
+      supabase.rpc('navmate_team_profiles', { p_team_id: teamId }),
+    )
+    const byId = new Map(
+      ((people ?? []) as { id: string; full_name: string; call_sign: string }[])
+        .map((p) => [p.id, p]),
+    )
+    set({
+      members: rows.map((m) => {
+        const p = byId.get(m.user_id)
+        return p
+          ? {
+              ...m,
+              profile: {
+                id: p.id,
+                email: null,
+                full_name: p.full_name,
+                call_sign: p.call_sign,
+                created_at: '',
+                updated_at: '',
+              },
+            }
+          : m
+      }),
+    })
   },
 
   setActiveTeam: (teamId) => {

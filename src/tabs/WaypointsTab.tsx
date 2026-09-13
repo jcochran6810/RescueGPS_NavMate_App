@@ -74,7 +74,7 @@ export function WaypointsTab() {
   function nameFor(w: Waypoint): string | null {
     if (w.user_id === userId) return null
     const m = members.find((x) => x.user_id === w.user_id)
-    return m?.profile?.callsign || m?.profile?.full_name || 'a teammate'
+    return m?.profile?.call_sign || m?.profile?.full_name || 'a teammate'
   }
 
   async function save() {

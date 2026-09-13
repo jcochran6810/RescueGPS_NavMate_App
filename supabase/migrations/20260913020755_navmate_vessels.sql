@@ -15,6 +15,11 @@
 -- (ENC `DRVAL1` is metres below chart datum). Feet are a display conversion in
 -- src/lib/vessel.ts; keeping a draft in two units is how the two disagree.
 --
+-- Applied to the RescueGPS database (ekhvfypxuxskjglwwoqh) on top of the three
+-- navmate_rehome_* migrations, hence the `navmate_`-prefixed helpers. It was
+-- written before the move and never applied to the old project, so no database
+-- anywhere saw an earlier version of it.
+--
 -- `client_id` is the offline-sync idempotency contract shared with waypoints,
 -- sar_records and incidents: the client generates it and upserts on conflict,
 -- so a retry after a dropped connection collapses instead of duplicating.
@@ -58,7 +63,7 @@ create index vessels_team_id_idx on public.vessels(team_id) where team_id is not
 create index vessels_created_by_idx on public.vessels(created_by);
 
 create trigger vessels_touch_updated_at before update on public.vessels
-  for each row execute function public.touch_updated_at();
+  for each row execute function public.navmate_touch_updated_at();
 
 alter table public.vessels enable row level security;
 
@@ -68,7 +73,7 @@ create policy "vessels: read own or shared with my team"
   to authenticated
   using (
     created_by = (select auth.uid())
-    or (team_id is not null and public.is_team_member(team_id))
+    or (team_id is not null and public.navmate_is_team_member(team_id))
   );
 
 -- Insert: your own. A team boat may only be added by someone on that team.
@@ -77,7 +82,7 @@ create policy "vessels: insert own"
   to authenticated
   with check (
     created_by = (select auth.uid())
-    and (team_id is null or public.is_team_member(team_id))
+    and (team_id is null or public.navmate_is_team_member(team_id))
   );
 
 -- Update: your own private boats, or a team boat if you administer the team.
@@ -88,11 +93,11 @@ create policy "vessels: update own or as team admin"
   to authenticated
   using (
     (team_id is null and created_by = (select auth.uid()))
-    or (team_id is not null and public.is_team_admin(team_id))
+    or (team_id is not null and public.navmate_is_team_admin(team_id))
   )
   with check (
     (team_id is null and created_by = (select auth.uid()))
-    or (team_id is not null and public.is_team_admin(team_id))
+    or (team_id is not null and public.navmate_is_team_admin(team_id))
   );
 
 create policy "vessels: delete own or as team admin"
@@ -100,5 +105,5 @@ create policy "vessels: delete own or as team admin"
   to authenticated
   using (
     (team_id is null and created_by = (select auth.uid()))
-    or (team_id is not null and public.is_team_admin(team_id))
+    or (team_id is not null and public.navmate_is_team_admin(team_id))
   );

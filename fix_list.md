@@ -8,38 +8,39 @@ Add new items at the top. Use the format:
 
 ## Open
 
-- [ ] 2026-09-13 — **BLOCKER: the NavMate database no longer exists.** The app
-      compiles in `https://puzwcsrtqtbutypzozvu.supabase.co`
-      (`src/lib/supabase.ts:8`), but that project is now named **"Where's my
-      note"** and holds `notes`, `note_versions`, `collaborators`, `comments`,
-      `calendar_events`, `attachments` — a different app. None of NavMate's
-      tables are there: no `teams`, `team_members`, `waypoints`, `sar_records`,
-      `incidents`, `platform_admins`, `support_requests`, `admin_actions`,
-      `app_errors`, and `profiles` is the notes app's own (0 rows, no
-      `callsign`). The other project in the org, `rescuegps-production`
-      (`ekhvfypxuxskjglwwoqh`), carries the RescueGPS **command** schema
-      (`lkp_history`, `field_events`, `asset_tracks`, `manu_*`), not NavMate's.
-      So the live app's sign-in, teams, waypoint sync, datum records and
-      incidents are all pointing at a database that cannot serve them, and the
-      accounts created in the 2026-08-31 session are gone with it.
-      Consequences and what has to happen:
-      - `supabase/migrations/20260913120000_navmate_vessels.sql` is written but
-        **not applied** — it fails with `relation "public.teams" does not
-        exist`, which is how this was found.
-      - Decide where NavMate's database should live: restore/re-create it in a
-        project of its own and re-run every migration in
-        `supabase/migrations/` in filename order, or move NavMate onto
-        `rescuegps-production` (which is the eventual merge the fix list
-        already tracks, and would need the NavMate tables added alongside the
-        command ones).
-      - Then update `DEFAULT_URL` / `DEFAULT_KEY` in `src/lib/supabase.ts`,
-        re-do the Auth URL configuration, and re-create the accounts.
-      - Everything that works offline still works: the chart plotter, the
-        vessel list, waypoints, datum records and incidents all plan and
-        capture against their local caches and queue their writes. The queues
-        will refuse against the wrong schema and set themselves aside after 3
-        attempts (visible with Retry/Discard in the Data tab), so nothing is
-        silently lost — but nothing syncs either.
+- [ ] 2026-09-13 — **Set the Supabase Auth URL configuration on the RescueGPS
+      project.** There is no MCP tool for this — dashboard or Management API
+      only. Until it is done, confirmation and password-reset emails link to
+      whatever the command system set. Site URL
+      `https://rescuegps.stationinsight.com`, and allow-list both the bare
+      origin and `/**`, because the app sends `window.location.origin` with no
+      trailing slash. Also check whether "Confirm email" is on, and that the
+      sender is custom SMTP rather than the rate-limited built-in.
+- [ ] 2026-09-13 — **Every signed-in user can read every row of `profiles` on
+      this project.** The command system's own policy, `"Authenticated users
+      can view all profiles"`, predates NavMate and was verified still in force
+      (a NavMate crew member read all 5 profile rows in the access checks).
+      That table carries `push_token_fcm`, `push_token_apns`,
+      `emergency_contact_name`, `emergency_contact_phone` and
+      `clearance_level`. Adding NavMate accounts to this project therefore
+      widens who can read them. NavMate itself does **not** rely on that policy
+      — teammate names come from `navmate_team_profiles()`, which returns
+      id/full_name/call_sign and nothing else — so the policy can be tightened
+      to the command system's real need without breaking NavMate. Worth doing
+      before crew accounts outnumber command accounts.
+- [ ] 2026-09-13 — Leaked-password protection is disabled on the RescueGPS
+      project (Supabase Auth can check new passwords against
+      HaveIBeenPwned). One toggle in the dashboard.
+- [ ] 2026-09-13 — `admin_metrics()` and `admin_list_users()` count and list
+      **both** applications' users, because `auth.users` is shared. Correct
+      while one person administers both; if that stops being true, they need an
+      "is a NavMate user" predicate (a row in `team_members`, probably).
+- [ ] 2026-09-13 — The NavMate accounts on the new project
+      (`cochranlawncare@gmail.com`, `jason.cochran@universalhazard.com`) are
+      the command system's existing logins — they already existed there, so
+      nothing was created and **their passwords were not touched**. If the
+      NavMate passwords from the old project were different, they are gone with
+      that project; use the command-system passwords or reset from the app.
 
 - [ ] 2026-09-13 — **Exercise the chart plotter's NOAA services in a real
       browser.** Same wall as the tides and the imagery: the build sandbox's
@@ -174,11 +175,12 @@ Add new items at the top. Use the format:
       but a crew opening the app cold at an incident should not be waiting on
       a cold start at all. Decide whether this project needs a plan that stays
       warm before anyone relies on it operationally.
-- [ ] 2026-08-05 — There is a second Supabase project in the org named
-      `rescuegps-production` (`ekhvfypxuxskjglwwoqh`, created 2025-12-28). The
-      app points at `puzwcsrtqtbutypzozvu` ("RescueGPS NavMate"), which is the
-      one carrying the schema and the live account. Confirm the other one is
-      not wanted and delete it, or the name will mislead someone later.
+- [x] 2026-08-05 — ~~There is a second Supabase project in the org named
+      `rescuegps-production`… Confirm the other one is not wanted and delete
+      it.~~ **RETRACTED 2026-09-13 — do not delete it.** That project is
+      `ekhvfypxuxskjglwwoqh`, now named "RescueGPS", and it is the one NavMate
+      and the command system both run on. The project this item told you to
+      keep (`puzwcsrtqtbutypzozvu`) is the one that is no longer NavMate's.
 - [ ] 2026-08-05 — Exercise the **NOAA tide calls in a real browser**. The build
       sandbox's proxy returns 403 for `api.tidesandcurrents.noaa.gov`, so the
       two live endpoints have never run: the station list and the hi/lo
@@ -236,6 +238,17 @@ Add new items at the top. Use the format:
 
 
 ## Done
+
+- [x] 2026-09-13 — **The NavMate database was gone.** The project the app
+      compiled in (`puzwcsrtqtbutypzozvu`) had been repurposed into an
+      unrelated notes app, taking every NavMate table and account with it;
+      found when the vessels migration failed with `relation "public.teams"
+      does not exist`. Resolved by re-homing NavMate onto
+      `ekhvfypxuxskjglwwoqh` ("RescueGPS"), alongside the command system:
+      three `navmate_rehome_*` migrations plus `navmate_vessels`, all applied
+      and verified (command side untouched — `incidents` still 4 rows,
+      `asset_tracks` 26, their `handle_new_user` intact). Note the project
+      rename alone did **not** carry the schema across; it had to be built.
 
 - [x] 2026-08-06 — No map view. Live tracking now draws on Esri World Imagery
       (`src/components/SatelliteMap.tsx`), with the north-up plot kept as the

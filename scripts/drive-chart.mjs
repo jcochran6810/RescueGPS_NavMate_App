@@ -125,7 +125,7 @@ page.on('pageerror', (e) => errors.push(String(e)))
 // Seed a signed-in session before the app boots.
 await page.addInitScript(() => {
   const now = Math.floor(Date.now() / 1000)
-  localStorage.setItem('sb-puzwcsrtqtbutypzozvu-auth-token', JSON.stringify({
+  localStorage.setItem('sb-ekhvfypxuxskjglwwoqh-auth-token', JSON.stringify({
     access_token: 'stub', token_type: 'bearer', expires_in: 3600,
     expires_at: now + 3600, refresh_token: 'stub',
     user: { id: '11111111-1111-4111-8111-111111111111', email: 'drive@test', aud: 'authenticated' },
@@ -175,8 +175,21 @@ const chartUrl = encHits.find((u) => u.includes('GetMap'))
 ok('chart requested as a WMS GetMap in EPSG:3857',
    !!chartUrl && chartUrl.includes('crs=EPSG:3857') && /bbox=-?\d+\.?\d*,/.test(chartUrl))
 
-// --- pick a destination by tapping the chart -------------------------------
-await page.getByRole('button', { name: 'Pick on chart' }).click()
+// --- start point, then destination ----------------------------------------
+ok('destination is gated until a start point is set',
+   (await page.getByText(/Waiting on a start point/i).count()) > 0
+   && (await page.getByRole('button', { name: 'Pick destination' }).isDisabled()))
+
+ok('start card offers both ways in',
+   (await page.getByRole('button', { name: 'Use current location' }).count()) > 0
+   && (await page.getByRole('button', { name: 'Select on map' }).count()) > 0)
+
+await page.getByRole('button', { name: 'Use current location' }).click()
+await page.waitForTimeout(700)
+ok('current location became the start point',
+   (await page.getByText('Current location').count()) > 0)
+
+await page.getByRole('button', { name: 'Pick destination' }).click()
 await page.waitForTimeout(200)
 ok('pick hint shown over the chart',
    (await page.getByText(/Tap the chart where you want to go/i).count()) > 0)
@@ -194,10 +207,14 @@ const tapMap = async () => {
 await tapMap()
 ok('tap set a destination', (await page.getByText('Picked on chart').count()) > 0)
 
-const destText = await page.locator('.tnum', { hasText: /^29\./ }).first().textContent()
-const pickedLat = destText ? parseFloat(destText) : NaN
+// Both the start and destination cards show a latitude now, so look for any
+// of them that is north of the mocked fix — that can only be the tapped one.
+const latTexts = await page.locator('.tnum').allTextContents()
+const lats = latTexts
+  .map((t) => parseFloat((t.match(/(\d{2}\.\d{4,})/) ?? [])[1] ?? 'NaN'))
+  .filter(Number.isFinite)
 ok('the tap unprojected to a position north of the fix',
-   Number.isFinite(pickedLat) && pickedLat > START.lat, destText ?? '')
+   lats.some((v) => v > START.lat), `latitudes on screen: ${lats.join(', ')}`)
 
 // Now set the real destination by typing it, which also exercises that path
 // and puts the bar between us and it.
@@ -258,6 +275,8 @@ await page.evaluate(() => localStorage.removeItem('navmate.chart.v1'))
 await page.reload({ waitUntil: 'networkidle' })
 await page.waitForTimeout(700)
 await openChart()
+await page.getByRole('button', { name: 'Use current location' }).click()
+await page.waitForTimeout(700)
 await page.getByLabel('Destination latitude').fill(String(DEST.lat))
 await page.getByLabel('Destination longitude').fill(String(DEST.lon))
 await page.getByRole('button', { name: 'Use typed coordinates' }).click()

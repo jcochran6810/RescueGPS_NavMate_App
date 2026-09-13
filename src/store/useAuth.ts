@@ -33,7 +33,7 @@ interface AuthState {
   /** Leave recovery mode without changing the password. */
   dismissRecovery: () => void
   loadProfile: () => Promise<void>
-  updateProfile: (patch: Partial<Pick<Profile, 'full_name' | 'callsign'>>) =>
+  updateProfile: (patch: Partial<Pick<Profile, 'full_name' | 'call_sign'>>) =>
     Promise<{ error?: string }>
 }
 
@@ -139,16 +139,33 @@ export const useAuth = create<AuthState>((set, get) => ({
       .select('*')
       .eq('id', uid)
       .maybeSingle()
-    if (!error && data) set({ profile: data as Profile })
+    if (error) {
+      // Previously swallowed. A schema mismatch then showed up as a blank name
+      // with nothing anywhere saying why, which is the worst way to find out.
+      console.warn('profile load failed', errorMessage(error))
+      return
+    }
+    if (!data) return
+    const profile = data as Profile
+    set({ profile })
+
+    // The profile row is created by the database's own signup trigger, which
+    // fills id/email/full_name from the signup metadata but knows nothing
+    // about a callsign. Carry it across the first time we see the row.
+    const wanted = (get().user?.user_metadata?.callsign ?? '') as string
+    if (wanted.trim() && !profile.call_sign?.trim()) {
+      void get().updateProfile({ call_sign: wanted.trim() })
+    }
   },
 
   updateProfile: async (patch) => {
     const uid = get().user?.id
     if (!uid) return { error: 'Not signed in' }
+    // Upsert rather than update: NavMate no longer owns the signup trigger on
+    // this database, so it cannot assume a profile row is already there.
     const { data, error } = await supabase
       .from('profiles')
-      .update(patch)
-      .eq('id', uid)
+      .upsert({ id: uid, ...patch }, { onConflict: 'id' })
       .select()
       .single()
     if (error) return { error: errorMessage(error) }

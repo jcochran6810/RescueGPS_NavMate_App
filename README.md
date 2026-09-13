@@ -9,8 +9,14 @@ is no signal, and sends them on to **RescueGPS**, the system that does the
 heavier work with them. Everything here is built around that job — capture
 first, sync second, and never lose a fix waiting for a network.
 
-This is a standalone app. It shares a subdomain with stationinsight.com and
-nothing else — separate codebase, separate hosting project, separate database.
+This is a standalone app with its own codebase and hosting project. Since
+September 2026 it **shares a Supabase database with the RescueGPS command
+system** (project `ekhvfypxuxskjglwwoqh`), which is what makes the eventual
+field-to-command tie-in a query rather than an export. See
+`supabase/migrations/README.md` for what that sharing costs and how it is kept
+safe — the short version is that `profiles` belongs to both applications, and
+NavMate's internal database functions are prefixed `navmate_` so the two
+cannot overwrite each other.
 
 ## Features
 
@@ -171,6 +177,7 @@ scripts/
 | `waypoints` | `team_id` null means private; otherwise visible to that team |
 | `sar_records` | LKP, clues, drift markers and conditions — the datum data. Carries `client_id` (RescueGPS's offline-sync idempotency contract) and `recorded_at` separate from `created_at`, so each kind projects onto the matching RescueGPS table (`lkp_history`, `field_events`, `field_drift_data`, `weather_snapshots`) when the databases merge |
 | `vessels` | the boats a team runs — draft, air draft, speeds, fuel burn, under-keel margin and hazard stand-off. Metric, because charted depths are; feet are a display conversion. Read by any team member, written by team admins: a draft is a safety figure |
+| `navmate_incidents` | the incident a field unit opens — deliberately separate from the command system's own 50-column `incidents` on the same database, which is scoped by organisation and participant rather than by team |
 | `platform_admins` | who may use the admin dashboard; seeded by email |
 | `support_requests` | user → platform-admin requests, with status and admin notes |
 | `admin_actions` | append-only audit of every admin mutation |
@@ -232,7 +239,19 @@ including sunrise, sunset and twilight — is computed on the device.
 ### Security
 
 Row level security is on for every table, and `anon` has no policy anywhere —
-an unauthenticated visitor holding the publishable key can read nothing. The
+an unauthenticated visitor holding the publishable key can read nothing. That
+was re-verified against the shared database on 2026-09-13 with three throwaway
+accounts: a team member sees the team's waypoints but not a teammate's private
+ones, a signed-in outsider sees nothing at all, `anon` reads zero rows from
+every NavMate table, and a plain member cannot change the team's vessel draft,
+grant themselves platform admin, or forge a row owned by someone else.
+
+`profiles` is the one table NavMate does not own. It is shared with the command
+system, so NavMate reuses it and never alters it: `callsign` is that table's
+`call_sign`, and teammate names come from `navmate_team_profiles()` — a
+function returning id, name and callsign — rather than a read policy, because
+RLS is row-level and a policy would also hand over the command system's push
+tokens and emergency contacts. The
 policies were verified against a live database with three test accounts
 covering read isolation, write refusal, cascade behaviour and role escalation.
 See `DEPLOYMENT.md` for the full list of what was checked.

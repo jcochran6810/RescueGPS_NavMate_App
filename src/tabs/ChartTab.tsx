@@ -51,11 +51,14 @@ import { Button, Card, EmptyState, Input, Label, Spinner, Stat } from '@/compone
  * says so where the coxswain is looking rather than in a settings page.
  */
 
-type Destination = {
+type Place = {
   lat: number
   lon: number
   label: string
 }
+
+/** Which end of the route a chart tap is filling in. */
+type Picking = 'start' | 'dest' | null
 
 export function ChartTab() {
   const tracker = useTracker()
@@ -75,8 +78,9 @@ export function ChartTab() {
 
   const [base, setBase] = useState<MapBase>('chart')
   const [seamarks, setSeamarks] = useState(true)
-  const [picking, setPicking] = useState(false)
-  const [dest, setDest] = useState<Destination | null>(null)
+  const [picking, setPicking] = useState<Picking>(null)
+  const [start, setStart] = useState<Place | null>(null)
+  const [dest, setDest] = useState<Place | null>(null)
   const [typed, setTyped] = useState({ lat: '', lon: '' })
   const [plan, setPlan] = useState<RoutePlan | null>(null)
   const [planning, setPlanning] = useState(false)
@@ -107,20 +111,37 @@ export function ChartTab() {
     if (shouldAdvance(plan, targetIdx, fix)) setTargetIdx(targetIdx + 1)
   }, [running, plan, targetIdx, fix])
 
-  /* A new destination invalidates the route that went to the old one. */
+  /* Moving either end invalidates the route that joined the old ones. */
   useEffect(() => {
     setPlan(null)
     setTargetIdx(null)
-  }, [dest?.lat, dest?.lon])
+  }, [start?.lat, start?.lon, dest?.lat, dest?.lon])
+
+  /** Take a one-shot GPS fix and use it as the start point. */
+  async function startHere() {
+    const got = fix ?? (await tracker.once())
+    if (!got) {
+      toast(useTracker.getState().error ?? 'No GPS fix yet', 'error')
+      return
+    }
+    setStart({ lat: got.lat, lon: got.lon, label: 'Current location' })
+  }
+
+  /**
+   * Is the chosen start still where the boat is? Steering always follows the
+   * live fix, so a route planned from somewhere else needs saying out loud.
+   */
+  const startIsHere =
+    !!start && !!fix && haversineNM(fix.lat, fix.lon, start.lat, start.lon) < 0.1
 
   async function plot() {
-    if (!fix || !dest || !boat || planning) return
+    if (!start || !dest || !boat || planning) return
     setPlanning(true)
     try {
-      const bounds = routeBounds(fix, dest)
+      const bounds = routeBounds(start, dest)
       const features = await chart.load(bounds)
       const next = planRoute({
-        from: { lat: fix.lat, lon: fix.lon },
+        from: { lat: start.lat, lon: start.lon },
         to: { lat: dest.lat, lon: dest.lon },
         safeDepthM: safeDepthM(boat),
         clearanceM: boat.clearance_m,
@@ -308,25 +329,42 @@ export function ChartTab() {
           base={base}
           seamarks={seamarks}
           route={plan?.points ?? []}
-          markers={dest ? [{ id: 'dest', name: dest.label, lat: dest.lat, lon: dest.lon }] : []}
+          markers={[
+            ...(start
+              ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]
+              : []),
+            ...(dest
+              ? [{ id: 'dest', name: dest.label, lat: dest.lat, lon: dest.lon }]
+              : []),
+          ]}
           onPick={
             picking
               ? (p) => {
-                  setDest({ ...p, label: 'Picked on chart' })
-                  setPicking(false)
+                  const place = {
+                    ...p,
+                    label: picking === 'start' ? 'Picked on chart' : 'Picked on chart',
+                  }
+                  if (picking === 'start') setStart(place)
+                  else setDest(place)
+                  setPicking(null)
                 }
               : undefined
           }
-          pickHint="Tap the chart where you want to go"
+          pickHint={
+            picking === 'start'
+              ? 'Tap the chart where you are starting from'
+              : 'Tap the chart where you want to go'
+          }
           height={320}
         />
 
         <div className="mt-2 grid grid-cols-2 gap-2">
           <Button
             variant={picking ? 'primary' : 'default'}
-            onClick={() => setPicking((v) => !v)}
+            onClick={() => setPicking(picking ? null : 'dest')}
+            disabled={!start && !picking}
           >
-            {picking ? 'Cancel pick' : 'Pick on chart'}
+            {picking ? 'Cancel pick' : 'Pick destination'}
           </Button>
           <Button variant="ghost" onClick={() => void takeFix()}>
             Take a fix
@@ -334,9 +372,58 @@ export function ChartTab() {
         </div>
       </Card>
 
+      {/* ----------------------------------------------------------- start */}
+      <Card>
+        <Label>Start point</Label>
+
+        {start ? (
+          <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/5 px-3 py-2.5">
+            <div className="text-sm font-semibold text-slate-50">{start.label}</div>
+            <div className="tnum mt-0.5 text-xs text-slate-300">
+              {start.lat.toFixed(5)}, {start.lon.toFixed(5)}
+              {!startIsHere && fix
+                ? ` · ${formatDistance(haversineNM(fix.lat, fix.lon, start.lat, start.lon), 'nm')} from you`
+                : ''}
+            </div>
+          </div>
+        ) : (
+          <EmptyState>
+            Where are you setting off from? Choose one before picking a
+            destination.
+          </EmptyState>
+        )}
+
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Button
+            variant={start ? 'default' : 'primary'}
+            onClick={() => void startHere()}
+          >
+            Use current location
+          </Button>
+          <Button
+            variant={picking === 'start' ? 'primary' : 'default'}
+            onClick={() => setPicking(picking === 'start' ? null : 'start')}
+          >
+            {picking === 'start' ? 'Cancel' : 'Select on map'}
+          </Button>
+        </div>
+        {start && !startIsHere && (
+          <p className="mt-1.5 text-xs text-amber-200">
+            This is not where you are now. The course is planned from here, but
+            steering still follows your live position.
+          </p>
+        )}
+      </Card>
+
       {/* ----------------------------------------------------- destination */}
       <Card>
         <Label>Destination</Label>
+
+        {!start && (
+          <p className="mb-2 text-xs text-slate-400">
+            Set a start point above first.
+          </p>
+        )}
 
         {dest ? (
           <div className="rounded-xl border border-sky-400/30 bg-sky-500/5 px-3 py-2.5">
@@ -350,11 +437,13 @@ export function ChartTab() {
           </div>
         ) : (
           <EmptyState>
-            Tap the chart, or choose a waypoint below.
+            {start
+              ? 'Tap the chart, or choose a waypoint below.'
+              : 'Waiting on a start point.'}
           </EmptyState>
         )}
 
-        {incident?.lkp_lat != null && incident.lkp_lng != null && (
+        {start && incident?.lkp_lat != null && incident.lkp_lng != null && (
           <button
             onClick={() =>
               setDest({
@@ -372,7 +461,7 @@ export function ChartTab() {
           </button>
         )}
 
-        {waypoints.length > 0 && (
+        {start && waypoints.length > 0 && (
           <div className="mt-2 max-h-48 space-y-1 overflow-y-auto">
             {waypoints.slice(0, 40).map((w) => (
               <button
@@ -396,6 +485,7 @@ export function ChartTab() {
             inputMode="decimal"
             placeholder="Latitude"
             value={typed.lat}
+            disabled={!start}
             onChange={(e) => setTyped({ ...typed, lat: e.target.value })}
             aria-label="Destination latitude"
           />
@@ -403,6 +493,7 @@ export function ChartTab() {
             inputMode="decimal"
             placeholder="Longitude"
             value={typed.lon}
+            disabled={!start}
             onChange={(e) => setTyped({ ...typed, lon: e.target.value })}
             aria-label="Destination longitude"
           />
@@ -410,6 +501,7 @@ export function ChartTab() {
         <Button
           className="mt-2 w-full"
           variant="ghost"
+          disabled={!start}
           onClick={() => {
             // coords.ts is deliberately strict and returns NaN rather than
             // guessing at an ambiguous position — a plausible-looking wrong
@@ -443,7 +535,7 @@ export function ChartTab() {
         <Button
           variant="primary"
           className="w-full"
-          disabled={!fix || !dest || !boat || planning}
+          disabled={!start || !dest || !boat || planning}
           onClick={() => void plot()}
         >
           {planning ? <Spinner /> : null}
@@ -455,9 +547,14 @@ export function ChartTab() {
             Add a boat above first — a course means nothing without a draft.
           </p>
         )}
-        {!fix && boat && (
+        {!start && boat && (
           <p className="mt-1.5 text-xs text-slate-400">
-            Take a fix above so the plotter knows where you are starting from.
+            Set a start point — your current location, or a spot on the chart.
+          </p>
+        )}
+        {start && !dest && boat && (
+          <p className="mt-1.5 text-xs text-slate-400">
+            Now pick where you are going.
           </p>
         )}
 
