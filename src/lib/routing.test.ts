@@ -7,6 +7,7 @@ import {
   chamferDistance,
   channelPenalty,
   chordOutsideChannel,
+  describeUnusable,
   fillRings,
   legChannelFraction,
   legMinDepth,
@@ -652,7 +653,12 @@ describe('planRoute', () => {
     }
     const plan = planRoute({ from, to, safeDepthM: 1.5, clearanceM: 0, speedKn: 20, features })
     expect(plan.source).toBe('straight')
-    expect(plan.warnings.join(' ')).toMatch(/on land or too shallow/i)
+    const said = plan.warnings.join(' ')
+    // Not just "unusable" — which of the reasons, and how far the usable
+    // water is, because those are what a crew acts on. The destination here
+    // is inside the land box, and there is deep water all round it.
+    expect(said).toMatch(/on land/i)
+    expect(said).toMatch(/nearest water this boat can use is [\d.]+ NM/i)
   })
 
   it('warns when the chart query was cut short', () => {
@@ -1063,5 +1069,74 @@ describe('planRoute with a marked channel', () => {
 
     expect(round.source).toBe('charted')
     expect(round.totalNM).toBeGreaterThan(straight.totalNM)
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * Why a position cannot be used
+ *
+ * "Not in water this boat can use" is true and nearly useless: land, shallow
+ * water and a stand-off that has closed a gap have three different answers,
+ * and a crew needs to know which before they can do anything about it.
+ * ---------------------------------------------------------------------- */
+
+describe('describeUnusable', () => {
+  const at = (g: RouteGrid, col: number, row: number) => toLatLon(g, col, row)
+
+  it('tells dry land apart from shallow water', () => {
+    const g = gridFromAscii([
+      '#####',
+      '#####',
+      '.....',
+      '.....',
+    ])
+    // Row 0-1 are '#': depth 0.5, which rasterise would call shallow. Land is
+    // what sets depth to exactly 0, so build that case directly.
+    g.depth[0] = 0
+    const p = passability(g, 0, 1.5)
+    expect(describeUnusable(g, at(g, 0, 0), p).why).toMatch(/on land/i)
+    expect(describeUnusable(g, at(g, 1, 0), p).why).toMatch(/charted water/i)
+  })
+
+  it('says when the water was never surveyed rather than calling it shallow', () => {
+    const g = gridFromAscii([
+      '?????',
+      '?????',
+      '.....',
+    ])
+    const p = passability(g, 0, 1.5)
+    expect(describeUnusable(g, at(g, 2, 0), p).why).toMatch(/never surveyed/i)
+  })
+
+  it('names the stand-off when the water itself is deep enough', () => {
+    // Open water hard against a blocked cell: deep enough, but inside the
+    // stand-off the coxswain asked for. That is a setting, not the sea.
+    const g = gridFromAscii([
+      '#....',
+      '.....',
+      '.....',
+    ])
+    const p = passability(g, CELL_M * 2, 1.5)
+    expect(describeUnusable(g, at(g, 1, 0), p).why).toMatch(/stand-off/i)
+  })
+
+  it('reports how far the nearest usable water is, so the pin can be moved', () => {
+    const g = gridFromAscii([
+      '##...',
+      '##...',
+      '.....',
+    ])
+    const p = passability(g, 0, 1.5)
+    const d = describeUnusable(g, at(g, 0, 0), p)
+    expect(d.nearestNM).not.toBeNull()
+    expect(d.nearestNM!).toBeGreaterThan(0)
+    // Two cells of 100 m is about 0.1 NM — the pin needs a nudge, not a rethink.
+    expect(d.nearestNM!).toBeLessThan(0.3)
+  })
+
+  it('returns no distance when there is no usable water anywhere near', () => {
+    const g = gridFromAscii(['###', '###', '###'])
+    const p = passability(g, 0, 1.5)
+    expect(describeUnusable(g, at(g, 1, 1), p).nearestNM).toBeNull()
   })
 })
