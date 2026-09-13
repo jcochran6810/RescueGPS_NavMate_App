@@ -255,6 +255,82 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-13 — claude/charming-rubin-rlz3ks (domain split, NavMate standalone)
+
+"Make NavMate.stationinsight.com the url for the app… RescueGPS.stationinsight.com
+the url for the command side. NavMate will be the PWA that users download to
+their phone… RescueGPS is the command side that communicates with each
+individual user and ties everything together."
+
+**This was a swap, not an addition.** `rescuegps.stationinsight.com` was on the
+NavMate Vercel project and the command system (`rescuegps-navigator-pro`) had
+no custom domain at all — only `.vercel.app`. A domain lives on one Vercel
+project at a time, so NavMate has to release the old address before the command
+side can take it, and there is a window in between where it is down. The order
+is written into `DEPLOYMENT.md` and `fix_list.md`. There is no Vercel MCP tool
+for project domains, so those three steps are the user's.
+
+**No app code was needed for the hostname.** Worth recording because it was the
+first thing checked and it shaped everything after: `emailRedirectTo` and the
+password-reset `redirectTo` are both `window.location.origin`
+(`useAuth.ts:79`, `:112`), the manifest's `start_url` and `scope` are `/`,
+`vercel.json` has no host conditions, and the service-worker rules pin only
+third-party hosts. Not one hostname is hardcoded in `src/`. Everything that
+changed was documentation, the product name, and two dashboards.
+
+**Renamed to plain "NavMate"** — title, meta description, manifest `name`,
+header, GPX `creator`. The sign-in screen swapped `/logo.png` for
+`/emblem-192.png`: that logo has `RESCUE GPS` baked into the raster, and
+leaving it above an `<h1>NavMate</h1>` puts two product names on one screen. A
+mark carries the family; a wordmark argues with the name. Deliberately **not**
+renamed: the export format ids `rescuegps-navmate/datum-report` and
+`…/incident-handoff` (a contract the command side reads, asserted in
+`sar.test.ts:199` and `incident.test.ts:100`), the handoff toast that genuinely
+refers to the command system, and `tides.ts`'s NOAA caller identity.
+
+**The moved-address banner** (`src/components/MovedNotice.tsx`). An installed
+PWA belongs to the origin it came from: the copies already on phones stay
+pointed at `rescuegps.stationinsight.com`, which will serve the command system,
+and their cached waypoints, queued writes and saved chart tiles do not follow.
+The banner renders **only** when the app is served from that old host, which
+makes it self-retiring — it disappears for each person the moment they
+reinstall, and never shows in development, on a preview, or on the new address.
+Note the ordering this implies: `main` has to deploy *before* the domain is
+pulled, or the notice never reaches the people it is for.
+
+The drive proves it **appears** on the old host, not just that it stays hidden
+elsewhere — it serves the same `dist/` under
+`https://rescuegps.stationinsight.com` through a Playwright route. A test that
+only asserted absence would have passed with the condition inverted.
+
+**Auth is now one config for two apps**, and Site URL is a single value. It
+goes to the **command system**, and that is evidence-based rather than a coin
+toss: its `auth.signUp` (`frontend/src/services/supabase.js`) passes no
+redirect and it has no password-reset path at all, so Site URL is its only
+fallback; NavMate always sends its own origin explicitly and is unaffected by
+the choice. The redirect allow-list must carry the bare origin *and* `/**` for
+both hosts — an un-allow-listed redirect is silently replaced by the Site URL,
+so missing the NavMate entries would drop a crew member resetting a password
+into the command dashboard.
+
+**Two findings in the command repo**, recorded in `fix_list.md` rather than
+acted on (different repo, read via the GitHub API): its
+`frontend/src/config/config.js` defaults `SUPABASE_URL` to
+`grcsrldrkryrfjsildej`, a ref that is not in the Supabase org — the client that
+matters reads `import.meta.env` with no fallback and goes `null` in "demo
+mode", so the deployment must be overriding it, which is worth confirming. And
+its dashboard subscribes to `incidents` with the comment "detect new incidents
+from other users (e.g. field app)", while NavMate writes `navmate_incidents` —
+so "ties everything together" is not yet true of incidents. A decision, not a
+bug, and now visible.
+
+**Verification.** 391 tests, typecheck, lint, build clean; the drive grew to 39
+checks (title, header name, banner present on the old host and absent
+everywhere else, plus the existing chart-plotter flow). Built
+`dist/manifest.webmanifest` confirmed as `"name":"NavMate"`,
+`"short_name":"NavMate"`, `"start_url":"/"`, `"scope":"/"` — still
+origin-portable.
+
 ### 2026-09-13 — claude/charming-rubin-rlz3ks (re-home to RescueGPS, start point)
 
 Same branch, later session. "The NavMate project was merged into
