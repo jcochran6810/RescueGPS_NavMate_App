@@ -310,6 +310,99 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-13 — claude/charming-rubin-rlz3ks (a failed query is not an empty sea)
+
+A screenshot did what four sessions of reasoning had not: it showed the course
+card saying **"No charted depths for this area"** with the NOAA chart drawn
+correctly underneath it, both ends of the passage in the middle of the Houston
+Ship Channel — 500 ft wide, 50 ft deep. That message is a claim about the
+water, and it was false.
+
+**`queryLayer` caught every failure and returned zero features.**
+
+    } catch {
+      return { features: [], complete: false }
+    }
+
+Zero depth areas short-circuits to `coverage: 'none'`, which the screen words
+as empty sea. This is the same bug fixed one level up last session — a
+swallowed failure passing for a successful empty result — still live one level
+down, and worse here, because the earlier one only failed to explain itself
+while this one asserts something about the sea that is not true.
+
+**And the reason the queries were failing is almost certainly the format.**
+`f=geojson` is not a given: ArcGIS serves it from MapServer only at 10.4+, and
+a server that does not support it does **not** fail — it answers HTTP 200 with
+an error object in the body. `res.ok` is true, `featuresOf` finds no `features`
+array, returns `[]`, and a working depth layer reads as nothing charted. That
+fits every symptom at once: layer discovery succeeded (it uses `f=json`), the
+WMS chart drew, and only the depth and hazard queries came back empty.
+
+Three changes, each closing one way of being silently wrong:
+
+- `arcgisError` detects an error body at HTTP 200, on the queries **and** on
+  layer discovery — where such a body had been reaching `matchLayers`, matching
+  nothing, and being reported as `no-layers`, blaming NavMate's own patterns
+  for a service fault.
+- Queries try `f=geojson`, then fall back to `f=json`. Esri's form is always
+  available and needed no new parsing: `ringsOf` and `featuresOf` already read
+  `rings` and `attributes`, which had been written for exactly this and never
+  had a caller.
+- `queryLayer` returns *why* it came back empty. When no depth-bearing layer
+  answered, `fetchChartFeatures` throws `unreachable` carrying the service's
+  own message. One quadrant that answered still counts as real data, so a
+  partial box is not condemned by its neighbours.
+
+**Stated plainly: this is a diagnosis, not a confirmed fix.** The relay is live
+and would have settled it, but the sandbox proxy denies
+`navmate.stationinsight.com` as flatly as it denies NOAA — tried, not assumed.
+If the format is the cause this fixes it; if it is not, the screen now prints
+the service's own error instead of asserting an empty sea, which is what
+produces the answer on the next plot. `fix_list.md`'s top item stands.
+
+**A third base layer: hybrid.** The chart blended over the imagery at half
+strength, so a shoal and the bank it belongs to are one glance. Not a new
+mechanism — `SatelliteMap` already drew layers with an opacity, so `base` now
+selects a *list* of base sources. The load-bearing part is the zoom clamp: the
+imagery publishes 0–19 and the chart 6–18, and the map clamped to whichever
+single source was selected, so hybrid at zoom 19 would have drawn imagery alone
+— a "50/50 mix" silently becoming 100 % satellite, which on the water reads as
+"the shoal is gone" rather than "the layer stopped". `sharedZoomRange` clamps
+to the levels every base layer publishes. Three choices no longer fit beside
+the Buoys toggle at 320 px, so the base layer took its own row.
+
+**The boat form was placeholders, not labels.** Once filled it was eight bare
+numbers with nothing saying which was the draft and which the stand-off — read
+back months after being typed. Every field now carries a real `<label>`
+(`Field` in `ui.tsx`); the placeholder keeps the suggested default, which is
+only useful while the box is empty. *Air draft* became **Height above water**
+with a hint naming the tallest point, on the same reasoning: the label has to
+be the question, not the jargon.
+
+**Both speeds in the course card.** A table of cruise and flat out, each with
+its own time to run and its own arrival clock — "how long if I push it" is the
+question one number cannot answer. Fuel stays on the cruise row alone, because
+`fuel_burn_gph` is burn *at cruise* and burn climbs steeply with speed;
+scaling it by time would under-report the fuel for the faster passage, which is
+the one where running out matters.
+
+**One premise of my own, corrected by the user's numbers.** I had suspected a
+wide stand-off was closing the channel from both banks. Their boat carries 5 ft
+— sub-cell against an 8 m grid — so it blocks nothing, and the hypothesis was
+dead. Worth recording because it is what sent the search to `queryLayer`.
+
+**Verification.** 589 tests, up from 581. The three new chart tests were each
+confirmed to **fail with their mechanism disabled**. The drive is 74 checks, up
+from 57: eight boat labels asserted as real `<label>` elements, hybrid asserted
+from the DOM rather than from network hits (the chart tiles are already cached
+by the time the base switches, so a request-counting check passed for the wrong
+reason and was rewritten), and the two paces compared on their minutes — the
+first version of that check compared the row count twice and would have passed
+with both speeds showing the same time.
+
+**Merge note.** `main` had moved three commits ahead with the compass work;
+merged in cleanly, no conflicts.
+
 ### 2026-09-13 — claude/navmate-compass-feature-hf4h6z (the compass, made an instrument)
 
 "Fix the compass feature. Make it rival other compass apps with graphics and

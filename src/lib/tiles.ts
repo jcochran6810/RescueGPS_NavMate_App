@@ -145,6 +145,42 @@ export const SEAMARKS: TileSource = {
 }
 
 /**
+ * How much of the chart shows through in the hybrid view.
+ *
+ * Half, which is what was asked for and is also the only value that works:
+ * the chart's land fill is opaque, so any more and the imagery disappears
+ * under it, any less and the depth contours stop being readable. It is a
+ * blend, not a switch — the point is to see a shoal on the chart and the bank
+ * in the photograph at the same time.
+ */
+export const HYBRID_BLEND = 0.5
+
+/**
+ * The zoom levels **every** one of these sources publishes.
+ *
+ * The hybrid view draws two base layers at once, and they do not cover the
+ * same range: the imagery goes to 19, the chart stops at 18 and does not
+ * start until 6. Clamping to either one alone would silently drop the other
+ * at the edges — zoom in one more step and the "50/50 mix" quietly becomes
+ * plain satellite, which is the kind of failure a crew reads as "the shoal
+ * is gone" rather than "the layer stopped".
+ *
+ * If the ranges do not overlap at all there is no honest answer, so the first
+ * source wins rather than returning an inverted range that would clamp to
+ * nonsense.
+ */
+export function sharedZoomRange(sources: TileSource[]): {
+  min: number
+  max: number
+} {
+  if (sources.length === 0) return { min: 0, max: 19 }
+  const min = Math.max(...sources.map((s) => s.minZoom))
+  const max = Math.min(...sources.map((s) => s.maxZoom))
+  if (min > max) return { min: sources[0].minZoom, max: sources[0].maxZoom }
+  return { min, max }
+}
+
+/**
  * Hosts the service worker is allowed to keep map data from.
  *
  * Documentation only — `vite.config.ts` repeats these literally, because

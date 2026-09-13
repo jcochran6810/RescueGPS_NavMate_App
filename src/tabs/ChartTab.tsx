@@ -34,7 +34,7 @@ import { formatTideClock, formatTideHeight, tideNow } from '@/lib/tides'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
-import { Button, Card, EmptyState, Input, Label, Segmented, Spinner, Stat } from '@/components/ui'
+import { Button, Card, EmptyState, Field, Label, Segmented, Spinner, Stat } from '@/components/ui'
 
 /**
  * Chart plotter — a nautical chart, a destination, and a course that stays in
@@ -120,7 +120,6 @@ export function ChartTab() {
   )
 
   const arrivalFt = tracker.arrivalFt
-  const speedKn = boat?.cruise_speed_kn ?? 0
   const running = targetIdx !== null && plan !== null
 
   /* Auto-advance down the route, exactly as the search pattern does. */
@@ -235,8 +234,36 @@ export function ChartTab() {
     [tides.extremes],
   )
 
-  const arrival = plan && Number.isFinite(plan.hours) ? formatEtaClock(plan.hours) : ''
-  const fuel = plan && boat ? fuelForHours(boat, plan.hours) : null
+  /**
+   * The passage at each speed the boat has.
+   *
+   * A coxswain's real question is not "how long" but "how long if I push it" —
+   * a survival clock running against a 20 kn cruise reads differently at 34.
+   * Both are worked from the same distance, so the pair is the decision.
+   *
+   * Fuel is shown on the cruise row only: `fuel_burn_gph` is burn **at
+   * cruise**, and burn climbs steeply with speed. Scaling it by time would
+   * quietly under-report the fuel for the faster passage, which is the one
+   * where running out matters.
+   */
+  const paces = useMemo(() => {
+    if (!plan || !boat) return []
+    const rows: {
+      id: string
+      label: string
+      kn: number
+      hours: number
+      fuel: number | null
+    }[] = []
+    const add = (id: string, label: string, kn: number, fuel: boolean) => {
+      if (!(kn > 0) || rows.some((r) => r.kn === kn)) return
+      const hours = plan.totalNM / kn
+      rows.push({ id, label, kn, hours, fuel: fuel ? fuelForHours(boat, hours) : null })
+    }
+    add('cruise', 'cruise', boat.cruise_speed_kn, true)
+    add('top', 'flat out', boat.max_speed_kn, false)
+    return rows
+  }, [plan, boat])
 
   return (
     <div className="space-y-3">
@@ -348,17 +375,24 @@ export function ChartTab() {
 
       {/* ----------------------------------------------------------- chart */}
       <Card className="p-3">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <Segmented
-            label="Base layer"
-            value={base}
-            onChange={setBase}
-            options={[
-              { id: 'chart' as MapBase, label: 'Chart' },
-              { id: 'satellite' as MapBase, label: 'Satellite' },
-            ]}
-            className="max-w-44"
-          />
+        {/* Three choices no longer fit beside the Buoys toggle at 320 px, so
+            the base layer takes its own row rather than truncating to "Sat…". */}
+        <Segmented
+          label="Base layer"
+          value={base}
+          onChange={setBase}
+          options={[
+            { id: 'chart' as MapBase, label: 'Chart' },
+            { id: 'satellite' as MapBase, label: 'Satellite' },
+            {
+              id: 'hybrid' as MapBase,
+              label: 'Hybrid',
+              hint: 'The chart blended over the satellite imagery, half and half',
+            },
+          ]}
+          className="mb-2"
+        />
+        <div className="mb-2 flex items-center justify-end gap-2">
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setSeamarks((v) => !v)}
@@ -412,6 +446,7 @@ export function ChartTab() {
           base={base}
           seamarks={seamarks}
           route={plan?.points ?? []}
+          routeUnverified={plan?.source === 'straight'}
           markers={[
             ...(start
               ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]
@@ -439,6 +474,16 @@ export function ChartTab() {
           }
           height={320}
         />
+
+        {/* Why it is not a course, immediately under the line it refers to.
+            This used to live only on the Course card below, which on a phone
+            is off the bottom of the screen — so the crew saw a plausible
+            dashed line through land and no explanation at all. */}
+        {plan?.source === 'straight' && plan.warnings.length > 0 ? (
+          <p className="mt-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+            {plan.warnings[0]}
+          </p>
+        ) : null}
 
         <div className="mt-2 grid grid-cols-2 gap-2">
           <Button
@@ -507,20 +552,49 @@ export function ChartTab() {
 
         {plan && (
           <>
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 space-y-2">
               <Stat label="Distance" value={formatDistance(plan.totalNM, 'nm')} />
-              <Stat
-                label="Time to run"
-                value={
-                  Number.isFinite(plan.hours) ? formatDuration(plan.hours) : '—'
-                }
-                hint={speedKn > 0 ? `at ${speedKn} kn` : 'set a cruise speed'}
-              />
-              <Stat
-                label="Arrive"
-                value={arrival || '—'}
-                hint={fuel !== null ? `${fuel.toFixed(0)} gal` : undefined}
-              />
+
+              {paces.length > 0 ? (
+                <div className="overflow-hidden rounded-xl border border-white/10">
+                  <div className="grid grid-cols-3 gap-px bg-white/10 text-[11px] font-semibold tracking-wide text-slate-300 uppercase">
+                    <div className="bg-navy-900/60 px-3 py-1.5">Speed</div>
+                    <div className="bg-navy-900/60 px-3 py-1.5">Time to run</div>
+                    <div className="bg-navy-900/60 px-3 py-1.5">Arrive</div>
+                  </div>
+                  {paces.map((p) => (
+                    <div key={p.id} className="grid grid-cols-3 gap-px bg-white/10">
+                      <div className="bg-navy-900/60 px-3 py-2">
+                        <div className="tnum text-sm font-semibold text-slate-50">
+                          {p.kn} kn
+                        </div>
+                        <div className="text-[11px] text-slate-400">{p.label}</div>
+                      </div>
+                      <div className="bg-navy-900/60 px-3 py-2">
+                        <div className="tnum text-sm font-semibold text-slate-50">
+                          {Number.isFinite(p.hours) ? formatDuration(p.hours) : '—'}
+                        </div>
+                        {p.fuel !== null ? (
+                          <div className="text-[11px] text-slate-400">
+                            {p.fuel.toFixed(0)} gal
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="bg-navy-900/60 px-3 py-2">
+                        <div className="tnum text-sm font-semibold text-slate-50">
+                          {formatEtaClock(p.hours) || '—'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Stat
+                  label="Time to run"
+                  value="—"
+                  hint="set a cruise speed on the boat"
+                />
+              )}
             </div>
 
             <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
@@ -906,63 +980,76 @@ function VesselForm({
   return (
     <div className="mt-3 space-y-2 border-t border-white/10 pt-3">
       <div className="grid grid-cols-2 gap-2">
-        <Input placeholder="Name" value={form.name} onChange={set('name')} aria-label="Boat name" />
-        <Input placeholder="Callsign" value={form.callsign} onChange={set('callsign')} aria-label="Boat callsign" />
+        <Field
+          label="Boat name"
+          placeholder="Fire boat 2"
+          value={form.name}
+          onChange={set('name')}
+        />
+        <Field
+          label="Callsign"
+          placeholder="FB2"
+          value={form.callsign}
+          onChange={set('callsign')}
+        />
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Input
+        <Field
+          label="Draft (ft)"
           inputMode="decimal"
-          placeholder={`Draft ft (${(VESSEL_DEFAULTS.draft_m * 3.280839895).toFixed(1)})`}
+          placeholder={(VESSEL_DEFAULTS.draft_m * 3.280839895).toFixed(1)}
           value={form.draftFt}
           onChange={set('draftFt')}
-          aria-label="Draft in feet"
         />
-        <Input
+        <Field
+          label="Under-keel margin (ft)"
           inputMode="decimal"
-          placeholder={`Under keel ft (${(VESSEL_DEFAULTS.under_keel_margin_m * 3.280839895).toFixed(1)})`}
+          placeholder={(
+            VESSEL_DEFAULTS.under_keel_margin_m * 3.280839895
+          ).toFixed(1)}
           value={form.marginFt}
           onChange={set('marginFt')}
-          aria-label="Under-keel margin in feet"
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Input
+        <Field
+          label="Cruise speed (kn)"
           inputMode="decimal"
-          placeholder="Cruise kn (20)"
+          placeholder="20"
           value={form.cruise}
           onChange={set('cruise')}
-          aria-label="Cruise speed in knots"
         />
-        <Input
+        <Field
+          label="Top speed (kn)"
           inputMode="decimal"
-          placeholder="Top kn (35)"
+          placeholder="35"
           value={form.max}
           onChange={set('max')}
-          aria-label="Top speed in knots"
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Input
+        <Field
+          label="Height above water (ft)"
+          hint="Tallest point — mast, antenna, light bar. For bridge clearance."
           inputMode="decimal"
-          placeholder="Air draft ft"
+          placeholder="0"
           value={form.airDraftFt}
           onChange={set('airDraftFt')}
-          aria-label="Air draft in feet"
         />
-        <Input
+        <Field
+          label="Stand-off from hazards (ft)"
           inputMode="decimal"
-          placeholder="Stand-off ft (100)"
+          placeholder="100"
           value={form.clearanceFt}
           onChange={set('clearanceFt')}
-          aria-label="Stand-off from hazards in feet"
         />
       </div>
-      <Input
+      <Field
+        label="Fuel burn at cruise (gal/h) — optional"
         inputMode="decimal"
-        placeholder="Fuel burn gal/h at cruise (optional)"
+        placeholder="Leave blank if you do not track it"
         value={form.burn}
         onChange={set('burn')}
-        aria-label="Fuel burn in gallons per hour"
       />
       <p className="text-xs text-slate-400">
         Draft plus the under-keel margin is the depth the plotter will not go

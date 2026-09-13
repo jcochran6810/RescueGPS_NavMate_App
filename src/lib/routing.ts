@@ -775,6 +775,67 @@ export function snapToWater(
   return null
 }
 
+/**
+ * Why a position cannot be used, and how far the nearest water that can be.
+ *
+ * "Your position is not in water this boat can use" is true and almost
+ * useless: it does not say whether the spot is dry land, too shallow, or fine
+ * water that the stand-off has closed off — and those have three different
+ * answers. Nor does it say whether usable water is a boat length away or a
+ * mile, which is the difference between nudging the pin and picking somewhere
+ * else entirely.
+ *
+ * The search here is deliberately much wider than `snapToWater`'s, because it
+ * only *reports* the distance. Nothing is moved on the strength of it; the
+ * crew decides.
+ */
+export function describeUnusable(
+  g: RouteGrid,
+  p: LatLon,
+  pass: Passability,
+): { why: string; nearestNM: number | null } {
+  const at = toGrid(g, p)
+  const col0 = Math.floor(at.col)
+  const row0 = Math.floor(at.row)
+  const inside = col0 >= 0 && row0 >= 0 && col0 < g.cols && row0 < g.rows
+
+  let why = 'outside the area the chart was loaded for'
+  if (inside) {
+    const i = row0 * g.cols + col0
+    const d = g.depth[i]
+    if (g.cells[i] === BLOCKED && d === 0) {
+      why = 'on land, or on a structure the chart draws as land'
+    } else if (g.cells[i] === UNKNOWN) {
+      why = 'in water this chart never surveyed'
+    } else if (g.cells[i] === BLOCKED) {
+      why = `in ${d.toFixed(1)} m of charted water at chart datum`
+    } else {
+      // OPEN but not passable: the only thing left is the stand-off.
+      why = 'too close to a hazard for the stand-off this boat is set to keep'
+    }
+  }
+
+  // Far enough to tell a crew whether to nudge the pin or move it properly.
+  const maxR = Math.ceil((5 * NM_TO_METERS) / g.cellM)
+  for (let r = 1; r <= maxR; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue
+        const col = col0 + dx
+        const row = row0 + dy
+        if (col < 0 || row < 0 || col >= g.cols || row >= g.rows) continue
+        if (!passable(g, row * g.cols + col, pass)) continue
+        const found = toLatLon(g, col, row)
+        return {
+          why,
+          nearestNM: haversineNM(p.lat, p.lon, found.lat, found.lon),
+        }
+      }
+    }
+  }
+  return { why, nearestNM: null }
+}
+
 /* -------------------------------------------------------------------------
  * A*
  * ---------------------------------------------------------------------- */
@@ -1136,15 +1197,23 @@ export function planRoute(req: RouteRequest): RoutePlan {
   const goal = snapToWater(grid, req.to, pass)
 
   if (!start) {
+    const d = describeUnusable(grid, req.from, pass)
     warnings.push(
-      'Your position is not in water this boat can use on the chart. ' +
-        'Showing a straight line — steer clear on your own eyes until you are in the channel.',
+      `The start is ${d.why}, so there is nothing to plot a course from. ` +
+        (d.nearestNM === null
+          ? 'No water this boat can use was found anywhere near it. '
+          : `The nearest water this boat can use is ${d.nearestNM.toFixed(2)} NM away. `) +
+        'Showing a straight line — move the start into navigable water to get a course.',
     )
     return straightPlan(req, warnings, features.coverage, grid)
   }
   if (!goal) {
+    const d = describeUnusable(grid, req.to, pass)
     warnings.push(
-      'The destination is on land or too shallow for this draft. ' +
+      `The destination is ${d.why}, so there is nothing to plot a course to. ` +
+        (d.nearestNM === null
+          ? 'No water this boat can use was found anywhere near it. '
+          : `The nearest water this boat can use is ${d.nearestNM.toFixed(2)} NM away. `) +
         'Showing a straight line — pick a point in navigable water to get a course.',
     )
     return straightPlan(req, warnings, features.coverage, grid)

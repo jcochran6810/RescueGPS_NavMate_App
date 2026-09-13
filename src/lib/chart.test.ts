@@ -454,6 +454,86 @@ describe('fetchChartFeatures', () => {
     expect(f.coverage).toBe('none')
   })
 
+  it('does not call a failed depth query an empty sea', async () => {
+    // The bug this pins: a query that failed returned zero features, which
+    // became `coverage: 'none'`, which the screen reported as "no charted
+    // depths for this area" — about the middle of the Houston Ship Channel,
+    // 500 ft wide and 50 ft deep, with the chart drawn underneath it.
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async (url) => {
+          if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+          throw new Error('Chart service returned 500')
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'unreachable',
+      message: expect.stringContaining('500'),
+    })
+  })
+
+  it('treats an ArcGIS error body at HTTP 200 as a failure, not as no data', async () => {
+    // ArcGIS answers an unsupported request with a 200 carrying an error
+    // object. `featuresOf` finds no `features` array and returns [], so the
+    // whole thing used to pass for "nothing charted here".
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async (url) =>
+          url.includes('/layers?f=json')
+            ? LAYER_PAYLOAD
+            : { error: { code: 400, message: 'Unable to complete operation.' } },
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'unreachable',
+      message: expect.stringContaining('Unable to complete operation'),
+    })
+  })
+
+  it('falls back to Esri JSON when the server will not serve GeoJSON', async () => {
+    // f=geojson is only supported on MapServer from ArcGIS 10.4. Where it is
+    // not, this is the difference between a working plotter and a straight
+    // line — and the failure is silent, so nothing would have said why.
+    const asked: string[] = []
+    const f = await fetchChartFeatures(BOX, {
+      fetcher: async (url) => {
+        asked.push(url)
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('f=geojson')) {
+          return { error: { code: 400, message: 'Invalid format.' } }
+        }
+        if (url.includes('/40/query')) {
+          // Esri's own form: `rings` and `attributes`, not `coordinates` and
+          // `properties`.
+          return {
+            features: [
+              {
+                geometry: {
+                  rings: [
+                    [
+                      [-94.85, 29.3],
+                      [-94.8, 29.3],
+                      [-94.8, 29.35],
+                      [-94.85, 29.35],
+                      [-94.85, 29.3],
+                    ],
+                  ],
+                },
+                attributes: { DRVAL1: 9.1 },
+              },
+            ],
+          }
+        }
+        return { features: [] }
+      },
+    })
+    expect(f.depthAreas).toHaveLength(1)
+    expect(f.depthAreas[0].minDepthM).toBe(9.1)
+    expect(asked.some((u) => u.includes('f=geojson'))).toBe(true)
+    expect(asked.some((u) => u.includes('f=json') && u.includes('/query'))).toBe(true)
+  })
+
   it('marks the area partial when any layer overflowed', async () => {
     const base = stubService()
     const f = await fetchChartFeatures(BOX, {

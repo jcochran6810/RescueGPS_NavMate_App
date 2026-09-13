@@ -195,11 +195,22 @@ ok('Chart plotter opens', await page.getByRole('heading', { name: 'Chart plotter
 ok('asks for a boat before it will plan anything',
    (await page.getByText(/Add your boat/i).count()) > 0)
 
+// Every field carries a *visible* label, not just a placeholder. A placeholder
+// vanishes the moment a number is typed, and these numbers are entered once a
+// season and read back months later — a filled form of bare numbers is how
+// somebody swaps the draft and the stand-off.
+for (const l of ['Boat name', 'Callsign', 'Draft (ft)', 'Under-keel margin (ft)',
+                 'Cruise speed (kn)', 'Top speed (kn)', 'Height above water (ft)',
+                 'Stand-off from hazards (ft)']) {
+  ok(`boat form labels "${l}" on screen`,
+     await page.locator('label', { hasText: new RegExp(`^${l.replace(/[()]/g, '\\$&')}$`) }).first().isVisible())
+}
+
 await page.getByLabel('Boat name').fill('Marine 2')
-await page.getByLabel('Draft in feet', { exact: true }).fill('3')
-await page.getByLabel('Under-keel margin in feet').fill('2')
-await page.getByLabel('Cruise speed in knots').fill('20')
-await page.getByLabel('Stand-off from hazards in feet').fill('0')
+await page.getByLabel('Draft (ft)', { exact: true }).fill('3')
+await page.getByLabel('Under-keel margin (ft)', { exact: true }).fill('2')
+await page.getByLabel('Cruise speed (kn)', { exact: true }).fill('20')
+await page.getByLabel('Stand-off from hazards (ft)', { exact: true }).fill('0')
 await page.getByRole('button', { name: 'Add boat' }).click()
 await page.waitForTimeout(600)
 
@@ -213,6 +224,46 @@ ok('seamark overlay requested', tileHits.seamark > 0, `${tileHits.seamark} tiles
 const chartUrl = encHits.find((u) => u.includes('GetMap'))
 ok('chart requested as a WMS GetMap in EPSG:3857',
    !!chartUrl && chartUrl.includes('crs=EPSG:3857') && /bbox=-?\d+\.?\d*,/.test(chartUrl))
+
+// --- hybrid base layer -----------------------------------------------------
+// The ask was a 50/50 mix, so both halves have to actually be fetched. A
+// hybrid that quietly drew one source would look like a working feature.
+{
+  // Counted from the DOM rather than from network hits: the chart tiles were
+  // already fetched in chart view, so switching to hybrid serves them from the
+  // browser's own cache and no second request arrives. What matters is that
+  // both layers are on screen at once.
+  const drawn = async () => await page.evaluate(() => {
+    const src = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src') ?? '')
+    return {
+      chart: src.filter((u) => u.includes('gis.charttools.noaa.gov')).length,
+      imagery: src.filter((u) => u.includes('server.arcgisonline.com')).length,
+    }
+  })
+
+  const before = await drawn()
+  ok('the plain chart view draws no imagery',
+     before.chart > 0 && before.imagery === 0,
+     `${before.chart} chart, ${before.imagery} imagery`)
+
+  await page.getByRole('radio', { name: 'Hybrid', exact: true }).click()
+  await page.waitForTimeout(900)
+  const both = await drawn()
+  ok('hybrid draws both the chart and the imagery',
+     both.chart > 0 && both.imagery > 0,
+     `${both.chart} chart, ${both.imagery} imagery`)
+  ok('the chart is blended over the imagery at half strength',
+     (await page.locator('div[style*="opacity: 0.5"]').count()) === 1)
+  ok('hybrid fetched the imagery it draws', tileHits.imagery > 0,
+     `${tileHits.imagery} imagery tiles`)
+
+  await page.getByRole('radio', { name: 'Chart', exact: true }).click()
+  await page.waitForTimeout(700)
+  const back = await drawn()
+  ok('switching back drops the imagery layer again',
+     back.chart > 0 && back.imagery === 0,
+     `${back.chart} chart, ${back.imagery} imagery`)
+}
 
 // --- the From/To controls sit ABOVE the chart ------------------------------
 // Measured, not assumed: this is the whole point of the layout change.
@@ -321,8 +372,38 @@ ok('layer ids were discovered, not hardcoded', encHits.some((u) => u.includes('/
 const distTile = await page.locator('div', { hasText: /^Distance$/ }).first()
 const distVal = await page.getByText(/NM$/).first().textContent()
 ok('distance shown in NM', !!distVal && /NM/.test(distVal), distVal ?? '')
-ok('time to run shown', (await page.getByText(/at 20 kn/).count()) > 0)
-ok('arrival clock shown', (await page.locator('div', { hasText: /^Arrive$/ }).count()) > 0)
+// Both speeds, each with its own time to run and its own arrival clock — the
+// coxswain's question is "how long if I push it", and one number cannot answer
+// it. The cruise row carries the fuel; the flat-out row deliberately does not,
+// because the burn figure is a burn *at cruise*.
+ok('the cruise speed is shown as a pace', (await page.getByText(/^20 kn$/).count()) > 0)
+ok('the top speed is shown as a pace', (await page.getByText(/^35 kn$/).count()) > 0)
+ok('both paces are labelled', (await page.getByText(/^cruise$/).count()) > 0
+   && (await page.getByText(/^flat out$/).count()) > 0)
+
+const paceRows = await page.evaluate(() => {
+  const cells = [...document.querySelectorAll('div.grid.grid-cols-3')]
+  return cells
+    .map((r) => [...r.children].map((c) => (c.textContent ?? '').trim()))
+    .filter((r) => r.length === 3 && /^\d+ kn/.test(r[0]))
+})
+ok('two paces, each with a time to run and an arrival clock',
+   paceRows.length === 2
+   && paceRows.every((r) => /\d/.test(r[1]) && /\d:\d\d/.test(r[2])),
+   JSON.stringify(paceRows))
+// Asserted on the numbers, not on the row count — the first version of this
+// check compared `paceRows.length === 2` twice and would have passed with both
+// paces showing the same time.
+const mins = paceRows.map((r) => {
+  const h = /(\d+)\s*h/.exec(r[1])
+  const m = /(\d+)\s*min/.exec(r[1])
+  return (h ? +h[1] * 60 : 0) + (m ? +m[1] : 0)
+})
+ok('the same distance takes less time at the higher speed',
+   mins.length === 2 && mins[1] > 0 && mins[1] < mins[0],
+   `${paceRows[0]?.[0]} ${mins[0]} min vs ${paceRows[1]?.[0]} ${mins[1]} min`)
+ok('fuel is shown against the cruise row only',
+   (await page.getByText(/ gal$/).count()) <= 1)
 ok('not-for-navigation banner shown with the route',
    (await page.getByText(/Not for navigation/i).count()) > 0)
 ok('least charted depth shown per leg', (await page.getByText(/least/).count()) > 0)
@@ -433,6 +514,13 @@ await page.getByRole('button', { name: 'Use this position' }).click()
 await page.waitForTimeout(3000)
 ok('a dead chart service degrades to a straight line with a warning',
    (await page.getByText(/No charted depths for this area/i).count()) > 0)
+
+// A fallback must not look like a plotted course. A crew reads the line on
+// the map, not a card below the fold.
+ok('the map says the line is not a course',
+   (await page.getByText(/Not a course — a straight line/i).count()) > 0)
+ok('and the reason sits with the line, not a card away',
+   (await page.locator('p', { hasText: /No charted depths for this area/i }).count()) > 1)
 
 // And says WHY, naming the host — this is the difference between a crew
 // reporting "it draws a straight line through land" and being able to say
