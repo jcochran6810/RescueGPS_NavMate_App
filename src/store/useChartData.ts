@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import {
   bandForSpan,
+  ChartUnavailableError,
   boundsSpanNM,
   containsBounds,
   fetchChartFeatures,
@@ -97,11 +98,20 @@ export const useChartData = create<ChartDataState>()(
         } catch (e) {
           // No chart is a planning limitation, not a crash: the planner still
           // draws a straight line and says it has nothing to check it against.
+          //
+          // `bounds` is deliberately left null so `covers()` stays false and
+          // the next plot tries again. A failure used to land here looking
+          // like a successful empty load, which meant one blocked request
+          // turned the plotter into a straight-line-only tool for the rest of
+          // the session, with nothing on screen to say why.
           set({
             features: EMPTY_FEATURES,
             bounds: null,
             status: 'error',
-            error: describeError(e),
+            error:
+              e instanceof ChartUnavailableError
+                ? `${e.message}. Tried ${e.service}`
+                : describeError(e),
           })
           return EMPTY_FEATURES
         }

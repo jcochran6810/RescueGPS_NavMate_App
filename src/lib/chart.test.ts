@@ -411,14 +411,39 @@ describe('fetchChartFeatures', () => {
     expect(wreck).toMatchObject({ lat: 29.32, lon: -94.82 })
   })
 
-  it('reports no coverage when the service cannot be reached at all', async () => {
-    const f = await fetchChartFeatures(BOX, {
-      fetcher: async () => {
-        throw new Error('blocked')
-      },
+  it('says the service is unreachable rather than calling it empty sea', async () => {
+    // These are different facts and the crew acts on them differently: one is
+    // "this app cannot see the chart", the other is "there is no chart here".
+    // Reporting the first as the second is how a straight line through land
+    // goes unexplained.
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async () => {
+          throw new Error('Failed to fetch')
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'unreachable',
+      service: expect.stringContaining('encdirect.noaa.gov'),
     })
-    expect(f.coverage).toBe('none')
-    expect(f.depthAreas).toEqual([])
+  })
+
+  it('says so when the service answers but nothing is named as expected', async () => {
+    // NOAA republishes weekly and renames; if the patterns stop matching, that
+    // is this app's problem to fix and it must not look like a coverage gap.
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async () => ({
+          layers: [
+            { id: 1, name: 'Harbor.Something_Else_area', geometryType: 'esriGeometryPolygon' },
+          ],
+        }),
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'no-layers',
+    })
   })
 
   it('reports no coverage when the area has no charted depths — outside US waters', async () => {

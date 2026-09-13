@@ -378,11 +378,33 @@ export function ChartTab() {
                 : chart.status === 'ready'
                   ? chart.features.coverage
                   : chart.status === 'error'
-                    ? 'no depths'
+                    ? 'chart failed'
                     : ''}
             </span>
           </div>
         </div>
+
+        {/* Why there is no course, in the place the crew is already looking.
+            A straight line through land with nothing to explain it is the
+            worst version of this screen: it reads as the router being wrong
+            when the real answer is that it never saw a chart at all. */}
+        {chart.status === 'error' && chart.error ? (
+          <p className="mb-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+            <strong className="font-semibold">
+              No chart, so no course — this is a straight line.
+            </strong>{' '}
+            {chart.error}. Nothing is being checked for depth, land or
+            obstructions; steer on your own eyes and your own chart.
+          </p>
+        ) : null}
+        {chart.status === 'ready' &&
+        chart.features.coverage === 'none' ? (
+          <p className="mb-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+            The chart service answered but has no charted depths for this area,
+            so any course here is a straight line. That is expected outside US
+            waters.
+          </p>
+        ) : null}
 
         <SatelliteMap
           trail={tracker.trail}

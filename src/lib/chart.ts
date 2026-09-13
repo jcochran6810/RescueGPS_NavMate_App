@@ -76,6 +76,41 @@ export function padBounds(b: ChartBounds, fraction = 0.25): ChartBounds {
 
 const ENC_ROOT = 'https://encdirect.noaa.gov/arcgis/rest/services/encdirect'
 
+/**
+ * The chart could not be consulted — as opposed to consulted and found empty.
+ *
+ * `unreachable` is the network or the browser refusing: no signal, the service
+ * moved, or — the one this app cannot fix by itself — the host not sending
+ * `Access-Control-Allow-Origin`, which blocks the queries even though the map
+ * tiles still draw. `no-layers` means the service answered but nothing in it
+ * is named the way `ROLE_PATTERNS` expects, which is a NavMate problem, not
+ * the crew's.
+ *
+ * The service URL travels with the error on purpose: it is the one thing that
+ * tells whoever is reading the screen which of those it is.
+ */
+export type ChartFailure = 'unreachable' | 'no-layers'
+
+export class ChartUnavailableError extends Error {
+  readonly kind: ChartFailure
+  readonly service: string
+  readonly band: string
+
+  constructor(kind: ChartFailure, band: EncBand, detail?: string) {
+    super(
+      kind === 'unreachable'
+        ? `Could not reach the chart service for the ${band.id} band` +
+          `${detail ? ` — ${detail}` : ''}`
+        : `The ${band.id} chart service answered, but none of its layers are ` +
+          'named the way this app expects',
+    )
+    this.name = 'ChartUnavailableError'
+    this.kind = kind
+    this.service = band.service
+    this.band = band.id
+  }
+}
+
 export interface EncBand {
   id: string
   service: string
@@ -418,14 +453,23 @@ export async function fetchChartFeatures(
   const fetcher = options.fetcher ?? defaultFetcher
   const band = options.band ?? bandForSpan(boundsSpanNM(bounds))
 
+  // These two used to return `coverage: 'none'`, which made "the chart service
+  // is unreachable", "its layers are not named what we expect" and "this patch
+  // of sea genuinely has no ENC coverage" indistinguishable — all three came
+  // out as a straight line with no way to tell which. On the water that is the
+  // difference between a bug and geography, so they throw now and say which.
   let layers: LayerRef[]
   try {
     layers = matchLayers(await fetcher(layersUrl(band.service)))
-  } catch {
-    return { depthAreas: [], channels: [], land: [], hazards: [], coverage: 'none' }
+  } catch (e) {
+    throw new ChartUnavailableError(
+      'unreachable',
+      band,
+      e instanceof Error ? e.message : String(e),
+    )
   }
   if (layers.length === 0) {
-    return { depthAreas: [], channels: [], land: [], hazards: [], coverage: 'none' }
+    throw new ChartUnavailableError('no-layers', band)
   }
 
   const results = await Promise.all(

@@ -409,6 +409,22 @@ await page.waitForTimeout(3000)
 ok('a dead chart service degrades to a straight line with a warning',
    (await page.getByText(/No charted depths for this area/i).count()) > 0)
 
+// And says WHY, naming the host — this is the difference between a crew
+// reporting "it draws a straight line through land" and being able to say
+// which service failed.
+ok('the screen says the chart could not be reached, not that the sea is empty',
+   (await page.getByText(/No chart, so no course/i).count()) > 0)
+ok('and it names the service it tried',
+   (await page.getByText(/encdirect\.noaa\.gov/i).count()) > 0)
+
+// A blocked request must not poison the session: the next plot has to try
+// again rather than serve a cached empty chart forever.
+ok('a failed load is not cached as a successful one',
+   await page.evaluate(() => {
+     const el = document.body.innerText
+     return /chart failed/i.test(el)
+   }))
+
 // --- the arrival setting, where a crew changes it ---------------------------
 // Escape first: a coordinate sheet may still be open over the page, and its
 // backdrop swallows the menu tap.
