@@ -238,6 +238,14 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   silently replace a same-named function of the command system's — which is
   exactly what `create or replace function handle_new_user()` would have
   done.
+- **`incidents` is shared with the command system**, as of migration
+  `20260913041316`. NavMate writes the same table the command dashboard
+  subscribes to. Two rules follow: never `select('*')` from it — it carries
+  ~50 columns including `incident_password_hash`, and NavMate's cache is
+  persisted to localStorage, so the column list is named explicitly in
+  `src/store/useIncidents.ts`; and NavMate filters on `client_id is not null`,
+  because a command-created incident is not something the field app has a UI
+  for.
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
@@ -254,6 +262,74 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
+
+### 2026-09-13 — claude/charming-rubin-rlz3ks (incidents merged into the command table)
+
+"Fix the incidents/navmate_incidents issue." Also asked whether the
+`grcsrldrkryrfjsildej` Supabase project needed adding to both Vercel
+workspaces — **no**, and worth recording why: that ref is a stale default
+baked into the command app's `frontend/src/config/config.js` and is not in the
+Supabase org at all. Adding it anywhere would point a live app at nothing.
+
+**The fix: one table.** The command dashboard subscribes to `incidents` in
+order to "detect new incidents from other users (e.g. field app)" — its own
+comment — while NavMate wrote `navmate_incidents`, so that subscription could
+never fire. Migration `20260913041316` folds NavMate onto their table.
+
+Done at the only cheap moment: `navmate_incidents` held **0 rows** and no
+`sar_records` referenced it, so nothing was migrated and nothing lost. Six
+months from now it would have been a data migration with live incidents in it.
+
+**What made it possible** is that NavMate's incident table was built to mirror
+theirs deliberately back in August — the 22 `incident_type` codes and 9
+`status` values are byte-identical, so not one value needed translating. The
+gaps were all additive: `client_id` (NavMate's offline idempotency key, and
+the discriminator that keeps command-created incidents out of the field app's
+list), `team_id`, and dropping NOT NULL on `lkp_lat`/`lkp_lng` because NavMate
+opens an incident before the LKP is known. Their
+`update_incident_location` trigger already tolerated nulls — `ST_MakePoint` of
+a null returns a null geometry rather than erroring — which was checked before
+relying on it, not after.
+
+**Their triggers turned out to do the tie-in for free.**
+`generate_incident_number` only fills a blank number, so NavMate's
+offline-generated one survives; `tf_incidents_add_creator_participant` adds the
+crew member to `incident_participants`; `tf_incidents_set_initial_ic` makes
+them the initial IC. Which is the right semantics anyway: the unit first on
+scene runs it until command arrives.
+
+**RLS changes are additive only**, so nothing the command system relies on
+moved. Two new policies: team members may update a NavMate-scoped incident
+(their own policy is IC/creator/commander only, and the unit closing a search
+is rarely the one that opened it), and a scoped DELETE (they had none at all,
+so nobody could delete anything; command rows have `team_id` null and stay
+undeletable).
+
+**Verified against the live database as real users**, not assumed. A throwaway
+crew member inserted a NavMate-shaped incident with no LKP: it landed, its
+incident number survived their trigger, the participant row appeared with role
+`ic`, `current_ic_id` was set, and `lkp_location` came back null without
+error. A second throwaway account — a plain team member who did *not* open it —
+could read and update it, and was blocked (0 rows) from touching or deleting
+the command system's own rows. Test data removed; row counts back to baseline
+(4 incidents, 26 asset_tracks, 6 field_events, 4 participants). Advisors
+unchanged.
+
+**One app-side detail that matters more than it looks.** The load now names its
+columns explicitly instead of `select('*')`. That table has ~50 columns
+including `incident_password_hash`, and NavMate's cache is persisted to
+localStorage on every crew phone — a star select would have put a password hash
+there. The column list sits next to `toRow` in `src/store/useIncidents.ts` so
+the two cannot drift.
+
+Still open, and now in `fix_list.md`: a NavMate incident is readable by every
+signed-in user, because the command system's `"Org-scoped incidents read
+(transitional)"` policy returns true whenever `organization_id` is null, which
+is how NavMate creates one. Same shape as the `profiles` finding and the same
+answer — their policy, their posture, NavMate does not depend on it. And the
+reverse direction (a crew joining an incident command opened) is deliberately
+not built: NavMate filters on `client_id is not null`, and their
+`join_requests` / `incident_participants` tables are where that would go.
 
 ### 2026-09-13 — claude/charming-rubin-rlz3ks (domain split, NavMate standalone)
 

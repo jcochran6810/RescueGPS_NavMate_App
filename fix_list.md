@@ -33,16 +33,23 @@ Add new items at the top. Use the format:
       the command system, NavMate is never served from it at all and the
       component is dead code. Delete it and its two call sites in
       `src/App.tsx` after the handover has settled.
-- [ ] 2026-09-13 — **The command system will not see NavMate's incidents.**
-      Its dashboard subscribes to the `incidents` table expecting field-app
-      rows — `frontend/src/services/supabase.js` comments
-      `subscribeToAllIncidents` as "detect new incidents from other users
-      (e.g. field app)". NavMate writes `navmate_incidents`, kept separate
-      deliberately (the two access models differ: theirs is scoped by
-      organisation and participant, NavMate's by team). Splitting the domains
-      does not change that, but it makes the gap more visible: "RescueGPS ties
-      everything together" is not true of incidents yet. The options are one
-      shared table, or a projection between them. A decision, not a bug.
+- [ ] 2026-09-13 — **A NavMate incident is readable by every signed-in user on
+      the project.** The command system's `"Org-scoped incidents read
+      (transitional)"` policy returns true whenever `organization_id is null`,
+      which is how NavMate creates one — so its team scoping is advisory on
+      read, not enforced. Same shape as the `profiles` item above and the same
+      answer: it is the command system's policy and its posture to change
+      (the name says "transitional"), NavMate does not rely on it, and
+      tightening it would not break anything here. Worth doing before more than
+      one department is on the database.
+- [ ] 2026-09-13 — **Command-created incidents are invisible to NavMate**, by
+      design for now: the load filters on `client_id is not null`
+      (`src/store/useIncidents.ts`) so the field app lists only incidents it
+      created and has a UI for. The reverse direction — a crew seeing an
+      incident command opened and joining it — needs a join flow NavMate does
+      not have, and the command system already has `join_requests` and
+      `incident_participants` for exactly that. The next piece of the tie-in,
+      when it is wanted.
 - [ ] 2026-09-13 — **Not NavMate's, but worth telling whoever owns the command
       repo:** `frontend/src/config/config.js` defaults `SUPABASE_URL` to
       `https://grcsrldrkryrfjsildej.supabase.co`, a project ref that is not in
@@ -267,6 +274,20 @@ Add new items at the top. Use the format:
 
 
 ## Done
+
+- [x] 2026-09-13 — **The command system could not see NavMate's incidents.**
+      Its dashboard subscribes to `incidents` to "detect new incidents from
+      other users (e.g. field app)" while NavMate wrote `navmate_incidents`, so
+      that subscription could never fire. Merged in migration
+      `20260913041316`: `lkp_lat`/`lkp_lng` lost NOT NULL (NavMate opens an
+      incident before the LKP is known), `client_id` and `team_id` were added,
+      two additive RLS policies give NavMate team-member update and scoped
+      delete, `sar_records.incident_id` was repointed and `navmate_incidents`
+      dropped. Done at the only cheap moment — it held 0 rows and nothing
+      referenced it. The command system's 4 incidents, its constraints, its
+      triggers and its own policies were untouched; opening an incident in the
+      field now also makes the crew member a participant and initial IC through
+      their existing trigger.
 
 - [x] 2026-08-03 — Attach a custom domain to the `rescuegps-navmate` Vercel
       project. Confirmed done on 2026-09-13 — it held

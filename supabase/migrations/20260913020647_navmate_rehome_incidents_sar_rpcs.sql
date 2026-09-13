@@ -1,7 +1,14 @@
 -- NavMate re-homed. Part 2 of 3: NavMate incidents, SAR datum records, and
 -- the team RPCs.
 --
--- `navmate_incidents` is deliberately NOT the command system's `incidents`.
+-- SUPERSEDED by 20260913041316_navmate_incidents_merge_into_incidents.sql,
+-- which drops this table and moves NavMate onto the command system's own
+-- `incidents`. Kept because it is the history of how the schema got here, and
+-- because the RLS and column choices below carried across the merge. On a
+-- fresh database both files still run in order: this one creates the table,
+-- the later one folds it away.
+--
+-- `navmate_incidents` was deliberately NOT the command system's `incidents`.
 -- That table is 50 columns with live rows, scoped by organisation and
 -- participant; this one is the small offline-first container a field unit
 -- opens, scoped by team, with the `client_id` idempotency key that makes

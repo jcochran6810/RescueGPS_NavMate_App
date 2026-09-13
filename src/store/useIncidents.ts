@@ -13,9 +13,23 @@ import type { Incident, IncidentStatus, NewIncident } from '@/lib/types'
  * refused op is set aside after bounded retries, and a queue is never
  * replayed under a different account.
  *
- * The table is `navmate_incidents`, not `incidents`: NavMate shares its
- * database with the RescueGPS command system, whose own `incidents` table is
- * a different, much larger thing scoped by organisation and participant.
+ * NavMate writes the RescueGPS command system's own `incidents` table, which
+ * it shares on this database. That is the point: the command dashboard
+ * subscribes to it in order to "detect new incidents from other users (e.g.
+ * field app)", and until this was merged that subscription could never fire.
+ * Opening an incident here now shows up there live, and their trigger makes
+ * the crew member a participant and initial IC on the way through.
+ *
+ * Two consequences worth knowing:
+ *
+ * 1. `client_id` is what separates the two systems' rows. NavMate sets it on
+ *    everything it creates; command-created incidents have it null. The load
+ *    below filters on it, so the field app lists only incidents it has a UI
+ *    for rather than adopting a command incident it cannot work.
+ * 2. The columns are named explicitly rather than `select('*')`. That table
+ *    has ~50 columns including `incident_password` and
+ *    `incident_password_hash`, and this cache is persisted to localStorage on
+ *    every crew phone. A star select would put a password hash there.
  */
 
 type PendingOp = (
@@ -113,6 +127,14 @@ function merge(
 
 let flushSeq = 0
 
+/**
+ * The columns NavMate reads back. Explicit, not `*`: the shared `incidents`
+ * table carries the command system's `incident_password_hash` among ~50
+ * columns, and this result is cached in localStorage.
+ */
+const INCIDENT_COLUMNS =
+  'id, client_id, team_id, incident_number, incident_type, incident_name, urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source, incident_time, summary, created_by, created_at, updated_at' as const
+
 /** The row columns sent to the server (never updated_at — a trigger owns it). */
 function toRow(r: Incident) {
   const {
@@ -167,8 +189,9 @@ export const useIncidents = create<IncidentState>()(
           for (let attempt = 0; attempt < 2; attempt++) {
             const seqBefore = flushSeq
             const { data, error } = await supabase
-              .from('navmate_incidents')
-              .select('*')
+              .from('incidents')
+              .select(INCIDENT_COLUMNS)
+              .not('client_id', 'is', null)
               .order('created_at', { ascending: false })
             if (error) throw error
             set({ cache: (data ?? []) as Incident[] })
@@ -204,12 +227,12 @@ export const useIncidents = create<IncidentState>()(
             try {
               if (op.kind === 'create') {
                 const { error } = await supabase
-                  .from('navmate_incidents')
+                  .from('incidents')
                   .upsert(toRow(op.incident), { onConflict: 'id' })
                 if (error) throw error
               } else {
                 const { error } = await supabase
-                  .from('navmate_incidents')
+                  .from('incidents')
                   .update(op.patch)
                   .eq('id', op.id)
                 if (error) throw error

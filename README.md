@@ -196,7 +196,7 @@ scripts/
 | `waypoints` | `team_id` null means private; otherwise visible to that team |
 | `sar_records` | LKP, clues, drift markers and conditions — the datum data. Carries `client_id` (RescueGPS's offline-sync idempotency contract) and `recorded_at` separate from `created_at`, so each kind projects onto the matching RescueGPS table (`lkp_history`, `field_events`, `field_drift_data`, `weather_snapshots`) when the databases merge |
 | `vessels` | the boats a team runs — draft, air draft, speeds, fuel burn, under-keel margin and hazard stand-off. Metric, because charted depths are; feet are a display conversion. Read by any team member, written by team admins: a draft is a safety figure |
-| `navmate_incidents` | the incident a field unit opens — deliberately separate from the command system's own 50-column `incidents` on the same database, which is scoped by organisation and participant rather than by team |
+| `incidents` | shared with the command system. NavMate writes the same table its dashboard watches, so opening an incident in the field appears there live and the crew member becomes a participant and initial IC automatically. `client_id` marks NavMate-created rows, `team_id` carries NavMate's team scope; both are null on command-created incidents |
 | `platform_admins` | who may use the admin dashboard; seeded by email |
 | `support_requests` | user → platform-admin requests, with status and admin notes |
 | `admin_actions` | append-only audit of every admin mutation |
