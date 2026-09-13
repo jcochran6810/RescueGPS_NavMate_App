@@ -8,6 +8,83 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-13 — **BLOCKER: the NavMate database no longer exists.** The app
+      compiles in `https://puzwcsrtqtbutypzozvu.supabase.co`
+      (`src/lib/supabase.ts:8`), but that project is now named **"Where's my
+      note"** and holds `notes`, `note_versions`, `collaborators`, `comments`,
+      `calendar_events`, `attachments` — a different app. None of NavMate's
+      tables are there: no `teams`, `team_members`, `waypoints`, `sar_records`,
+      `incidents`, `platform_admins`, `support_requests`, `admin_actions`,
+      `app_errors`, and `profiles` is the notes app's own (0 rows, no
+      `callsign`). The other project in the org, `rescuegps-production`
+      (`ekhvfypxuxskjglwwoqh`), carries the RescueGPS **command** schema
+      (`lkp_history`, `field_events`, `asset_tracks`, `manu_*`), not NavMate's.
+      So the live app's sign-in, teams, waypoint sync, datum records and
+      incidents are all pointing at a database that cannot serve them, and the
+      accounts created in the 2026-08-31 session are gone with it.
+      Consequences and what has to happen:
+      - `supabase/migrations/20260913120000_navmate_vessels.sql` is written but
+        **not applied** — it fails with `relation "public.teams" does not
+        exist`, which is how this was found.
+      - Decide where NavMate's database should live: restore/re-create it in a
+        project of its own and re-run every migration in
+        `supabase/migrations/` in filename order, or move NavMate onto
+        `rescuegps-production` (which is the eventual merge the fix list
+        already tracks, and would need the NavMate tables added alongside the
+        command ones).
+      - Then update `DEFAULT_URL` / `DEFAULT_KEY` in `src/lib/supabase.ts`,
+        re-do the Auth URL configuration, and re-create the accounts.
+      - Everything that works offline still works: the chart plotter, the
+        vessel list, waypoints, datum records and incidents all plan and
+        capture against their local caches and queue their writes. The queues
+        will refuse against the wrong schema and set themselves aside after 3
+        attempts (visible with Retry/Discard in the Data tab), so nothing is
+        silently lost — but nothing syncs either.
+
+- [ ] 2026-09-13 — **Exercise the chart plotter's NOAA services in a real
+      browser.** Same wall as the tides and the imagery: the build sandbox's
+      proxy 403s `gis.charttools.noaa.gov`, `encdirect.noaa.gov` and
+      `tiles.openseamap.org`, so every one of them was stubbed. What is
+      confirmed: the EPSG:3857 tile bbox against independently computed
+      Mercator metres, the GetMap parameter shape, layer matching against a
+      captured `MapServer/layers?f=json` payload, `exceededTransferLimit`
+      quadrant splitting, GeoJSON *and* Esri JSON geometry parsing, and a
+      31-check headless drive of the production build (tap-to-pick, a route
+      round a stubbed bar at 2.94 NM against 2.40 NM direct, legs, ETA,
+      steering, save-as-waypoints, and a dead ENC service degrading to a
+      warned straight line). What is **not** confirmed:
+      - that the NCDS WMS answers those exact GetMap parameters, and which
+        `layers=` list is right (currently `0,1,2,3,4,5,6,7` — if the chart
+        comes back blank or wrong, `GetCapabilities` is the thing to read);
+      - that ENC Direct's layer names match the patterns in
+        `ROLE_PATTERNS` (`src/lib/chart.ts`) for every usage band, and that
+        `enc_approach` exists under that name;
+      - that `DRVAL1` is the field name in every band;
+      - whether any of the three hosts send `Access-Control-Allow-Origin`.
+        All three are set `crossOrigin: false` and the SW rule accepts opaque
+        responses (`statuses: [0, 200]`), so tiles should draw either way —
+        but the ENC **queries** are `fetch`, and those genuinely need CORS. If
+        the plotter says "no charted depths" everywhere with CORS errors in the
+        console, that is the cause, and it needs a proxy this app does not
+        have.
+- [ ] 2026-09-13 — Measure the route plot on a real phone. A 114 000-cell grid
+      (rasterise + chamfer + A* + string-pull) runs in ~60 ms in the test
+      suite on this machine, which is why `src/lib/routing.ts` runs inline
+      rather than in a Web Worker. If a mid-range phone hitches noticeably on
+      **Plot course**, moving `planRoute` into a worker is a contained change.
+- [ ] 2026-09-13 — The chart plotter's offline story is **untested**, because
+      Playwright route stubs do not intercept service-worker fetches and the
+      drive blocks SWs entirely. The `navmate-charts` CacheFirst rule
+      (`vite.config.ts`) is what is supposed to make a saved area work with no
+      signal; confirm in a real browser that re-plotting a route in an area
+      already visited works with the network off. Related: there are now two
+      tile caches sharing one device budget — see the storage item below.
+- [ ] 2026-09-13 — Bridges are read for air draft but do not yet block a
+      route. `src/lib/chart.ts` matches the bridge layers and
+      `clearsHeight()` in `src/lib/vessel.ts` does the comparison, but nothing
+      wires a low span into the router as an obstruction. A boat with a real
+      air draft can currently be routed under a bridge it does not fit under.
+
 - [ ] 2026-08-06 — **Incident handoff to RescueGPS is export-only for now.**
       NavMate's `incidents` table mirrors rescuegps-navigator-pro's column
       names and CHECK lists (see the migration comment in
@@ -37,7 +114,9 @@ Add new items at the top. Use the format:
       if imagery is blank in the field with CORS errors in the console, drop
       `crossOrigin` on `SATELLITE`/`LABELS` and accept opaque, quota-hungry
       cache entries), and that zoom 19 has coverage everywhere the crews work.
-- [ ] 2026-08-06 — Decide how much imagery a device may keep. The service
+- [ ] 2026-08-06 — Decide how much imagery a device may keep. (Now two
+      datasets: `navmate-imagery` at 2000 entries / 90 days and
+      `navmate-charts` at 1500 / 30 days.) The service
       worker caches tiles for 90 days, capped at 2000 entries
       (`vite.config.ts`), which is roughly 40–60 MB at Esri's tile sizes;
       `purgeOnQuotaError` clears the lot if the device pushes back. There is

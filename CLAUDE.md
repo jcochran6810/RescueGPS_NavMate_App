@@ -231,6 +231,108 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-13 — claude/charming-rubin-rlz3ks (chart plotter)
+
+"How can I add an automatic chart plotting feature… free API access… charts
+with depths… plots a course and provides distance, time until destination."
+Decisions taken with the user first: US waters only, team-shared vessel list,
+route at chart datum, build the whole feature.
+
+**A correction to the premise, surfaced before building.** The request said
+"boat draft, top speed and other information is already set". It was not —
+there was no vessel profile anywhere: `profiles` is `id/email/full_name/
+callsign` and had never been extended, the only persisted preferences in the
+app were the tracker's `intervalS`/`gateM`, and every speed on every screen
+was a transient `useState` (`SearchTab` defaulted to a hardcoded `'6'`). So
+the vessel profile is part of this work, not a prerequisite.
+
+**And a blocker found on the way, now at the top of `fix_list.md`:** the
+Supabase project the app compiles in (`puzwcsrtqtbutypzozvu`) **is no longer
+NavMate's database.** It is now named "Where's my note" and holds `notes`,
+`comments`, `calendar_events`, `attachments`. None of NavMate's tables exist
+there; `rescuegps-production` carries the *command* schema, not this one. Found
+because the vessels migration failed with `relation "public.teams" does not
+exist`. The migration is written and committed but **unapplied**, and the live
+app's sync is pointing at a database that cannot serve it. Everything in this
+session works offline against local caches regardless, which is the only reason
+the feature is still usable.
+
+**The route planner** (`src/lib/routing.ts`, 36 tests). Rasterise the charted
+depth areas, land and point hazards into a grid keeping the shoalest depth per
+cell; mark a cell usable when that depth clears draft + under-keel margin *at
+chart datum*; grow the blocked cells by the crew's stand-off with a 3-4 chamfer
+distance transform (which doubles as the mid-channel preference); A* with an
+octile heuristic and no corner-cutting; then a supercover line-of-sight
+string-pull that turns a 400-step staircase into the three or four legs a
+coxswain actually steers. Two refusals are deliberate and documented in the
+file header: **unsurveyed water is not usable** (not shallow, but not known to
+be deep — the same refusal `coords.ts` makes about an ambiguous coordinate),
+and **no tide is ever added to a charted depth** (tide is shown beside the
+route; `tidalOpportunity()` surfaces the shortcut as a decision rather than
+taking it). Every failure mode returns a straight line with a warning rather
+than a blank screen. Runs inline, not in a worker: 114 000 cells end-to-end in
+~60 ms.
+
+**The chart data** (`src/lib/chart.ts`, 40 tests). NOAA Chart Display Service
+for the raster — a WMS, so tiles are `GetMap` over each tile's EPSG:3857 bbox
+in **metres** (`tileBbox3857`, asserted against independently computed Mercator
+values; the retired `tileservice.charts.noaa.gov` XYZ service is deliberately
+not used). ENC Direct to GIS for the depths and hazards, by usage band chosen
+from the passage length. **Layer ids are discovered at runtime and matched by
+name, never hardcoded** — NOAA republishes weekly and renumbers, and a
+hardcoded id coming back as something else routes a boat through a shoal.
+`exceededTransferLimit` splits the box into quadrants and retries; still
+overflowing reports the area `partial`, which becomes a warning on the route
+rather than being swallowed. Geometry parsing accepts GeoJSON *and* Esri JSON,
+because `f=geojson` is not guaranteed on every ArcGIS version and none of this
+can be checked from a sandbox the proxy blocks.
+
+**The boat** (`src/lib/vessel.ts` + `supabase/migrations/…_navmate_vessels.sql`
++ `src/store/useVessels.ts`, 18 tests). Team-shared, because a department's
+Marine 2 has one draft and a member retyping it from memory is how a boat ends
+up on a bar. Metric in the record, feet in the form — charted depths are metres
+and a draft kept in two units is a draft that disagrees with itself. Store
+copied from `useIncidents` with all three queue safeguards intact.
+
+**The screen** (`src/tabs/ChartTab.tsx`). Boat → chart → destination → course →
+steering. Tap-to-pick needed an `unproject` on the map, which already existed
+inline inside `zoomAround` and is now factored out and used by both; tap-vs-drag
+has to be discriminated by hand because the container takes pointer capture and
+is `touch-none`, so no click event ever arrives. `SatelliteMap` gained a `base`
+prop (chart/satellite), a seamarks overlay, a **per-source zoom clamp** (it had
+been clamping everything to `SATELLITE`'s range, which would have requested
+levels the chart does not publish), and `saveArea` now pulls whatever layers are
+actually on screen. Destinations come from a tap, a saved waypoint, typed
+coordinates (through the strict parser), or **the active incident's LKP** —
+getting to the datum is the first move of every search this app exists for, and
+until now it was a straight line.
+
+**A real refactor rather than a copy:** `SteerCard` moved out of `SearchTab`
+into `src/components/SteerCard.tsx` with its rule in `src/lib/steer.ts`, and
+`buildLegs` is now exported from `search.ts`. A route leg and a pattern leg are
+the same object, so there is one definition of what to steer and no way for the
+two screens to drift apart.
+
+**Verification.** 391 tests, up from 284. The routing tests assert against
+hand-drawn ASCII charts with the answer read off the page — a hole in a
+polygon left unfilled, a wall with one gap, a corner two rocks touch at that a
+boat cannot use and neither may the route, a dead end, a bar that a 1.5 m boat
+must go round and a 0.8 m boat may cross. Plus a 31-check headless-Chromium
+drive of the production build against a stubbed NOAA (`scripts/drive-chart.mjs`,
+committed this time rather than discarded): tap-to-pick unprojects to the right
+place, the course goes **round** the stubbed bar (2.94 NM against 2.40 NM
+direct) with no leg shallower than the boat needs, legs/ETA/arrival/least-depth
+all render, steering advances, turn points save as waypoints, and a dead ENC
+service degrades to a warned straight line. No sideways scroll at 320/360/390.
+
+**Not verified, and in `fix_list.md`:** every NOAA endpoint here (the proxy
+403s all three hosts, exactly as it does for tides and imagery) — specifically
+the WMS `layers=` list, the ENC layer names per band, and whether any host
+sends `Access-Control-Allow-Origin`, which the **queries** genuinely need even
+though the tiles do not. Also: the service-worker offline path (Playwright
+cannot stub SW fetches), plot timing on a real phone, and that bridges are read
+for air draft but do not yet block a route.
+
 ### 2026-08-31 — claude/reset-cochranlawncare-password-8kty0x (account admin)
 
 "Reset my password for user cochranlawncare@gmail.com to station10." All

@@ -70,8 +70,93 @@ export const LABELS: TileSource = {
   overlay: true,
 }
 
-/** Hosts the service worker is allowed to keep imagery from. */
-export const TILE_HOSTS = ['server.arcgisonline.com']
+/* -------------------------------------------------------------------------
+ * Nautical charts
+ * ---------------------------------------------------------------------- */
+
+/** Half the Web Mercator world, metres — the edge of the EPSG:3857 square. */
+export const MERCATOR_HALF = 20037508.342789244
+
+/**
+ * The EPSG:3857 bounding box of a tile, in **metres**, as `minX,minY,maxX,maxY`.
+ *
+ * Needed because NOAA publishes its chart as a WMS rather than an XYZ tile
+ * service: there is no `{z}/{x}/{y}` to ask for, so each tile is requested as
+ * a GetMap over the ground the tile covers. Metres, not degrees — a bbox in
+ * degrees returns a picture of the right place at the wrong shape, which looks
+ * plausible and is wrong, so this has its own test.
+ */
+export function tileBbox3857(
+  z: number,
+  x: number,
+  y: number,
+): [number, number, number, number] {
+  const span = (2 * MERCATOR_HALF) / 2 ** z
+  const minX = -MERCATOR_HALF + x * span
+  const maxY = MERCATOR_HALF - y * span
+  return [minX, maxY - span, minX + span, maxY]
+}
+
+const NCDS =
+  'https://gis.charttools.noaa.gov/arcgis/rest/services/MCS/NOAAChartDisplay/MapServer/exts/MaritimeChartService/WMSServer'
+
+/**
+ * NOAA ENC rendered with the symbology of a paper chart — depths, contours,
+ * buoys, the lot. Free and keyless, like the imagery, for the same reason: a
+ * key compiled into a static bundle is a key given away.
+ *
+ * NOT a certified navigation product. NOAA publishes this for display, and the
+ * feature that draws it says so on screen next to every route.
+ *
+ * `crossOrigin` is false because the host is not known to send
+ * `Access-Control-Allow-Origin` and this has never been exercised against the
+ * live service from a build sandbox that can reach it. An opaque tile still
+ * draws and still caches; it only costs quota accounting. If CORS turns out to
+ * be there, flipping this to true is the whole change.
+ */
+export const NOAA_CHART: TileSource = {
+  id: 'chart',
+  label: 'Chart',
+  url: (z, x, y) =>
+    `${NCDS}?service=WMS&version=1.3.0&request=GetMap` +
+    `&layers=0,1,2,3,4,5,6,7&styles=&crs=EPSG:3857` +
+    `&bbox=${tileBbox3857(z, x, y).join(',')}` +
+    `&width=${TILE_SIZE}&height=${TILE_SIZE}&format=image/png&transparent=true`,
+  minZoom: 6,
+  maxZoom: 18,
+  attribution: 'Chart: NOAA ENC — not for navigation',
+  crossOrigin: false,
+}
+
+/**
+ * OpenSeaMap seamarks — buoys, beacons, lights and their characteristics,
+ * drawn transparent over whatever is underneath. Community data, worldwide,
+ * and the only useful aid-to-navigation layer that is free outside US waters.
+ */
+export const SEAMARKS: TileSource = {
+  id: 'seamarks',
+  label: 'Buoys',
+  url: (z, x, y) => `https://tiles.openseamap.org/seamark/${z}/${x}/${y}.png`,
+  minZoom: 9,
+  maxZoom: 18,
+  attribution: 'Seamarks: OpenSeaMap (CC BY-SA)',
+  crossOrigin: false,
+  overlay: true,
+}
+
+/**
+ * Hosts the service worker is allowed to keep map data from.
+ *
+ * Documentation only — `vite.config.ts` repeats these literally, because
+ * workbox stringifies its `urlPattern` into the service worker and anything
+ * closed over would arrive there undefined. Add a host in both places.
+ */
+export const TILE_HOSTS = [
+  'server.arcgisonline.com',
+  'gis.charttools.noaa.gov',
+  'tiles.openseamap.org',
+  'encdirect.noaa.gov',
+]
 
 export function clampLat(lat: number): number {
   return Math.min(MAX_LAT, Math.max(-MAX_LAT, lat))
