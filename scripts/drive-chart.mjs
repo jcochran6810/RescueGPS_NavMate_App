@@ -434,6 +434,13 @@ await page.waitForTimeout(3000)
 ok('a dead chart service degrades to a straight line with a warning',
    (await page.getByText(/No charted depths for this area/i).count()) > 0)
 
+// A fallback must not look like a plotted course. A crew reads the line on
+// the map, not a card below the fold.
+ok('the map says the line is not a course',
+   (await page.getByText(/Not a course — a straight line/i).count()) > 0)
+ok('and the reason sits with the line, not a card away',
+   (await page.locator('p', { hasText: /No charted depths for this area/i }).count()) > 1)
+
 // And says WHY, naming the host — this is the difference between a crew
 // reporting "it draws a straight line through land" and being able to say
 // which service failed.

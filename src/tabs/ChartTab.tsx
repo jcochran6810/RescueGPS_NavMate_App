@@ -412,6 +412,7 @@ export function ChartTab() {
           base={base}
           seamarks={seamarks}
           route={plan?.points ?? []}
+          routeUnverified={plan?.source === 'straight'}
           markers={[
             ...(start
               ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]
@@ -439,6 +440,16 @@ export function ChartTab() {
           }
           height={320}
         />
+
+        {/* Why it is not a course, immediately under the line it refers to.
+            This used to live only on the Course card below, which on a phone
+            is off the bottom of the screen — so the crew saw a plausible
+            dashed line through land and no explanation at all. */}
+        {plan?.source === 'straight' && plan.warnings.length > 0 ? (
+          <p className="mt-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+            {plan.warnings[0]}
+          </p>
+        ) : null}
 
         <div className="mt-2 grid grid-cols-2 gap-2">
           <Button

@@ -45,6 +45,7 @@ export function SatelliteMap({
   fix,
   markers = [],
   route = [],
+  routeUnverified = false,
   labels = false,
   base = 'satellite',
   seamarks = false,
@@ -60,6 +61,13 @@ export function SatelliteMap({
    *  track, with a square at each turn point. Drawn from the coordinates
    *  like everything else, so it is exact even when imagery is not. */
   route?: { lat: number; lon: number }[]
+  /**
+   * The line is a fallback, not a plotted course — nothing about it has been
+   * checked against the chart. Drawn so it cannot be mistaken for one: a
+   * straight line through land in the same amber dash as a real route is the
+   * most dangerous thing this screen can show.
+   */
+  routeUnverified?: boolean
   /** Draw place names and boundaries over the imagery. */
   labels?: boolean
   /** Which base layer to draw: aerial imagery, or the NOAA chart. */
@@ -537,6 +545,15 @@ export function SatelliteMap({
           </div>
         ) : null}
 
+        {/* On the map, not only on a card below it. Whoever is looking at this
+            line is looking here. */}
+        {placed && routeUnverified && route.length > 0 ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-red-950/80 px-3 py-1.5 text-center text-xs font-semibold text-red-100">
+            Not a course — a straight line to the destination. Nothing on it has
+            been checked for depth, land or obstructions.
+          </div>
+        ) : null}
+
         {!placed && (
           <div className="absolute inset-0 grid place-items-center px-6 text-center text-sm text-slate-300">
             No position yet. Start tracking, or take a fix, and the map will
@@ -593,9 +610,11 @@ export function SatelliteMap({
               <path
                 d={routePath}
                 fill="none"
-                className="stroke-amber-300"
-                strokeWidth="1.5"
-                strokeDasharray="6 4"
+                className={
+                  routeUnverified ? 'stroke-red-400' : 'stroke-amber-300'
+                }
+                strokeWidth={routeUnverified ? 2.5 : 1.5}
+                strokeDasharray={routeUnverified ? '2 5' : '6 4'}
                 strokeLinejoin="round"
               />
               {route.map((p, i) => {
