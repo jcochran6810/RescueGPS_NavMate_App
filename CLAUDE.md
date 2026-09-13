@@ -310,6 +310,54 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-13 — claude/navmate-compass-feature-hf4h6z (the deploy had been failing for two sessions)
+
+Reported from the Vercel dashboard: `Build Failed — The 'vercel.json' schema
+validation failed with the following message: should NOT have additional
+property '//'`.
+
+**One character of good intention, two sessions of work not shipped.** A
+`"//": "…"` key was added to `vercel.json` as a comment when the ENC relay went
+in (`8b0050d`). JSON has no comments, and Vercel validates that file against a
+schema that rejects any property it does not know. It does not warn and it does
+not fall back: **the deployment fails outright and the live site stays on the
+last good commit.** So production sat on `fb0ece7` while `main` collected the
+relay, the chart fixes and the entire compass, all of it looking shipped.
+Twelve consecutive deployments failed, every one of them for this.
+
+The repository was green the whole time — typecheck, lint, 593 tests, two
+browser drives — because **nothing in the repository was looking at that
+file.** That is the actual lesson, and it is more general than the one key: the
+checks covered everything except the one artefact that decides whether any of
+it reaches a phone.
+
+So `src/lib/vercel-config.test.ts`, which runs in `npm test` rather than on
+Vercel's builders: the file parses, carries no comment key anywhere (recursing
+into arrays), uses only top-level properties the schema knows, and — the thing
+the comment was trying to explain — its SPA catch-all still excludes `/api/`,
+asserted by running the rewrite's own regex against `/waypoints` and
+`/api/enc`. Asserting the behaviour is strictly better than describing it: the
+description is what broke the build. Confirmed by putting the offending key
+back, which fails two of the four checks.
+
+The prose that was in the JSON now lives in `DEPLOYMENT.md`, where someone
+changing the deployment is already reading, and where it cannot fail anything.
+
+**Verified on the real deployment rather than assumed.** The branch build of
+the fix came back READY — the first successful build since `8b0050d` — and
+production `4722000` is READY and aliased to `navmate.stationinsight.com`. The
+bundle it serves is `index-CVkhMCVU.js`, the same content hash as the local
+build, and that bundle contains `WMM2025`, `Take a bearing` and the
+figure-of-eight prompt. `lambdaRuntimeStats: {"nodejs":1}` says `api/enc.js` is
+deployed as a function, and `/api/enc` answers with something other than the
+SPA shell, so the catch-all is not swallowing it in production either.
+
+Note for whoever merges next: `main` had moved while this was in flight —
+another session merged `claude/charming-rubin-rlz3ks` again as `ed727cc` (the
+hybrid chart/satellite view, labelled boat fields, a failed chart query no
+longer passing for empty sea). Both sets of work are on `main` and intact; the
+chart drive is 74 checks now, up from 55.
+
 ### 2026-09-13 — claude/charming-rubin-rlz3ks (a failed query is not an empty sea)
 
 A screenshot did what four sessions of reasoning had not: it showed the course

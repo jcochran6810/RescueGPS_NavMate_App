@@ -8,6 +8,19 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-13 — **Nothing tells this repository whether a deploy actually
+      succeeded.** The `vercel.json` schema failure was caught only because the
+      user happened to look at the Vercel dashboard; twelve deployments had
+      failed by then and `main` looked perfectly healthy from inside the repo.
+      `src/lib/vercel-config.test.ts` closes that specific hole, but the
+      general one is open: any Vercel-side build failure (a dependency that
+      installs differently there, a function that will not bundle, a limit hit)
+      is still invisible here. The cheap version is a habit rather than code —
+      **after any merge to `main`, check the deployment state** (the Vercel MCP
+      `list_deployments` shows it in one call, and the end-session protocol is
+      the natural place for it). The thorough version is a GitHub check that
+      fails the merge on a failed production deploy.
+
 - [ ] 2026-09-13 — **The compass has never run against a real magnetometer.**
       Everything in this session was driven with synthetic
       `DeviceOrientationEvent`s in headless Chromium, which exercises the real
