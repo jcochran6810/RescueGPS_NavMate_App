@@ -200,7 +200,7 @@ ok('asks for a boat before it will plan anything',
 // season and read back months later — a filled form of bare numbers is how
 // somebody swaps the draft and the stand-off.
 for (const l of ['Boat name', 'Callsign', 'Draft (ft)', 'Under-keel margin (ft)',
-                 'Cruise speed (kn)', 'Top speed (kn)', 'Air draft (ft)',
+                 'Cruise speed (kn)', 'Top speed (kn)', 'Height above water (ft)',
                  'Stand-off from hazards (ft)']) {
   ok(`boat form labels "${l}" on screen`,
      await page.locator('label', { hasText: new RegExp(`^${l.replace(/[()]/g, '\\$&')}$`) }).first().isVisible())
@@ -372,8 +372,38 @@ ok('layer ids were discovered, not hardcoded', encHits.some((u) => u.includes('/
 const distTile = await page.locator('div', { hasText: /^Distance$/ }).first()
 const distVal = await page.getByText(/NM$/).first().textContent()
 ok('distance shown in NM', !!distVal && /NM/.test(distVal), distVal ?? '')
-ok('time to run shown', (await page.getByText(/at 20 kn/).count()) > 0)
-ok('arrival clock shown', (await page.locator('div', { hasText: /^Arrive$/ }).count()) > 0)
+// Both speeds, each with its own time to run and its own arrival clock — the
+// coxswain's question is "how long if I push it", and one number cannot answer
+// it. The cruise row carries the fuel; the flat-out row deliberately does not,
+// because the burn figure is a burn *at cruise*.
+ok('the cruise speed is shown as a pace', (await page.getByText(/^20 kn$/).count()) > 0)
+ok('the top speed is shown as a pace', (await page.getByText(/^35 kn$/).count()) > 0)
+ok('both paces are labelled', (await page.getByText(/^cruise$/).count()) > 0
+   && (await page.getByText(/^flat out$/).count()) > 0)
+
+const paceRows = await page.evaluate(() => {
+  const cells = [...document.querySelectorAll('div.grid.grid-cols-3')]
+  return cells
+    .map((r) => [...r.children].map((c) => (c.textContent ?? '').trim()))
+    .filter((r) => r.length === 3 && /^\d+ kn/.test(r[0]))
+})
+ok('two paces, each with a time to run and an arrival clock',
+   paceRows.length === 2
+   && paceRows.every((r) => /\d/.test(r[1]) && /\d:\d\d/.test(r[2])),
+   JSON.stringify(paceRows))
+// Asserted on the numbers, not on the row count — the first version of this
+// check compared `paceRows.length === 2` twice and would have passed with both
+// paces showing the same time.
+const mins = paceRows.map((r) => {
+  const h = /(\d+)\s*h/.exec(r[1])
+  const m = /(\d+)\s*min/.exec(r[1])
+  return (h ? +h[1] * 60 : 0) + (m ? +m[1] : 0)
+})
+ok('the same distance takes less time at the higher speed',
+   mins.length === 2 && mins[1] > 0 && mins[1] < mins[0],
+   `${paceRows[0]?.[0]} ${mins[0]} min vs ${paceRows[1]?.[0]} ${mins[1]} min`)
+ok('fuel is shown against the cruise row only',
+   (await page.getByText(/ gal$/).count()) <= 1)
 ok('not-for-navigation banner shown with the route',
    (await page.getByText(/Not for navigation/i).count()) > 0)
 ok('least charted depth shown per leg', (await page.getByText(/least/).count()) > 0)

@@ -120,7 +120,6 @@ export function ChartTab() {
   )
 
   const arrivalFt = tracker.arrivalFt
-  const speedKn = boat?.cruise_speed_kn ?? 0
   const running = targetIdx !== null && plan !== null
 
   /* Auto-advance down the route, exactly as the search pattern does. */
@@ -235,8 +234,36 @@ export function ChartTab() {
     [tides.extremes],
   )
 
-  const arrival = plan && Number.isFinite(plan.hours) ? formatEtaClock(plan.hours) : ''
-  const fuel = plan && boat ? fuelForHours(boat, plan.hours) : null
+  /**
+   * The passage at each speed the boat has.
+   *
+   * A coxswain's real question is not "how long" but "how long if I push it" —
+   * a survival clock running against a 20 kn cruise reads differently at 34.
+   * Both are worked from the same distance, so the pair is the decision.
+   *
+   * Fuel is shown on the cruise row only: `fuel_burn_gph` is burn **at
+   * cruise**, and burn climbs steeply with speed. Scaling it by time would
+   * quietly under-report the fuel for the faster passage, which is the one
+   * where running out matters.
+   */
+  const paces = useMemo(() => {
+    if (!plan || !boat) return []
+    const rows: {
+      id: string
+      label: string
+      kn: number
+      hours: number
+      fuel: number | null
+    }[] = []
+    const add = (id: string, label: string, kn: number, fuel: boolean) => {
+      if (!(kn > 0) || rows.some((r) => r.kn === kn)) return
+      const hours = plan.totalNM / kn
+      rows.push({ id, label, kn, hours, fuel: fuel ? fuelForHours(boat, hours) : null })
+    }
+    add('cruise', 'cruise', boat.cruise_speed_kn, true)
+    add('top', 'flat out', boat.max_speed_kn, false)
+    return rows
+  }, [plan, boat])
 
   return (
     <div className="space-y-3">
@@ -525,20 +552,49 @@ export function ChartTab() {
 
         {plan && (
           <>
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 space-y-2">
               <Stat label="Distance" value={formatDistance(plan.totalNM, 'nm')} />
-              <Stat
-                label="Time to run"
-                value={
-                  Number.isFinite(plan.hours) ? formatDuration(plan.hours) : '—'
-                }
-                hint={speedKn > 0 ? `at ${speedKn} kn` : 'set a cruise speed'}
-              />
-              <Stat
-                label="Arrive"
-                value={arrival || '—'}
-                hint={fuel !== null ? `${fuel.toFixed(0)} gal` : undefined}
-              />
+
+              {paces.length > 0 ? (
+                <div className="overflow-hidden rounded-xl border border-white/10">
+                  <div className="grid grid-cols-3 gap-px bg-white/10 text-[11px] font-semibold tracking-wide text-slate-300 uppercase">
+                    <div className="bg-navy-900/60 px-3 py-1.5">Speed</div>
+                    <div className="bg-navy-900/60 px-3 py-1.5">Time to run</div>
+                    <div className="bg-navy-900/60 px-3 py-1.5">Arrive</div>
+                  </div>
+                  {paces.map((p) => (
+                    <div key={p.id} className="grid grid-cols-3 gap-px bg-white/10">
+                      <div className="bg-navy-900/60 px-3 py-2">
+                        <div className="tnum text-sm font-semibold text-slate-50">
+                          {p.kn} kn
+                        </div>
+                        <div className="text-[11px] text-slate-400">{p.label}</div>
+                      </div>
+                      <div className="bg-navy-900/60 px-3 py-2">
+                        <div className="tnum text-sm font-semibold text-slate-50">
+                          {Number.isFinite(p.hours) ? formatDuration(p.hours) : '—'}
+                        </div>
+                        {p.fuel !== null ? (
+                          <div className="text-[11px] text-slate-400">
+                            {p.fuel.toFixed(0)} gal
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="bg-navy-900/60 px-3 py-2">
+                        <div className="tnum text-sm font-semibold text-slate-50">
+                          {formatEtaClock(p.hours) || '—'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Stat
+                  label="Time to run"
+                  value="—"
+                  hint="set a cruise speed on the boat"
+                />
+              )}
             </div>
 
             <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
@@ -973,7 +1029,8 @@ function VesselForm({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <Field
-          label="Air draft (ft)"
+          label="Height above water (ft)"
+          hint="Tallest point — mast, antenna, light bar. For bridge clearance."
           inputMode="decimal"
           placeholder="0"
           value={form.airDraftFt}

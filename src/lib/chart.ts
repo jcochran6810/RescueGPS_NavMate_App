@@ -323,6 +323,22 @@ export function featuresOf(payload: unknown): RawFeature[] {
   })
 }
 
+/**
+ * An ArcGIS error, which arrives as **HTTP 200** with an error object in the
+ * body rather than as a status a fetch would reject.
+ *
+ * This is the trap that made a working chart service look like empty sea: the
+ * status was fine, `featuresOf` found no `features` array and returned `[]`,
+ * and the planner reported "no charted depths for this area" about the Houston
+ * Ship Channel. Nothing anywhere said a request had failed.
+ */
+export function arcgisError(payload: unknown): string | null {
+  const e = (payload as { error?: { message?: string; code?: number } })?.error
+  if (!e || typeof e !== 'object') return null
+  const code = typeof e.code === 'number' ? ` (${e.code})` : ''
+  return `${e.message ?? 'the service reported an error'}${code}`
+}
+
 export function exceededLimit(payload: unknown): boolean {
   return (payload as { exceededTransferLimit?: unknown })?.exceededTransferLimit === true
 }
@@ -355,10 +371,28 @@ export const PILE_RADIUS_M = 10
  * Querying
  * ---------------------------------------------------------------------- */
 
-export function queryUrl(service: string, layerId: number, b: ChartBounds): string {
+/**
+ * The response formats tried, in order.
+ *
+ * `geojson` first because it needs no translation, but it is **not** a given:
+ * ArcGIS only added it for MapServer layers in 10.4, and a server that does
+ * not support it does not fail — it answers HTTP 200 with an error object in
+ * the body. That is how a perfectly good depth layer comes back as zero
+ * features. `json` is Esri's own form, always available, and `ringsOf` and
+ * `featuresOf` already read it.
+ */
+export const QUERY_FORMATS = ['geojson', 'json'] as const
+export type QueryFormat = (typeof QUERY_FORMATS)[number]
+
+export function queryUrl(
+  service: string,
+  layerId: number,
+  b: ChartBounds,
+  format: QueryFormat = 'geojson',
+): string {
   const geometry = `${b.minLon},${b.minLat},${b.maxLon},${b.maxLat}`
   const params = new URLSearchParams({
-    f: 'geojson',
+    f: format,
     where: '1=1',
     geometry,
     geometryType: 'esriGeometryEnvelope',
@@ -429,24 +463,61 @@ const defaultFetcher: Fetcher = async (url) => {
  * response. Returns `complete: false` when a quadrant still overflowed at the
  * split limit — that is the signal that a hazard may be missing.
  */
+export interface LayerResult {
+  features: RawFeature[]
+  complete: boolean
+  /** Why this layer returned nothing, when the reason was a failure. */
+  failed: string | null
+}
+
+/**
+ * One query, trying each response format until one answers with data.
+ *
+ * A format the server does not support comes back as HTTP 200 carrying an
+ * error, so "it answered" is not the same as "it worked" and both have to be
+ * checked. The last failure is kept and reported rather than collapsed into an
+ * empty result.
+ */
+async function runQuery(
+  service: string,
+  layerId: number,
+  b: ChartBounds,
+  fetcher: Fetcher,
+): Promise<{ payload: unknown } | { failed: string }> {
+  let last = 'the chart service did not answer'
+  for (const format of QUERY_FORMATS) {
+    try {
+      const payload = await fetcher(queryUrl(service, layerId, b, format))
+      const err = arcgisError(payload)
+      if (!err) return { payload }
+      last = `${format}: ${err}`
+    } catch (e) {
+      last = `${format}: ${e instanceof Error ? e.message : String(e)}`
+    }
+  }
+  return { failed: last }
+}
+
 export async function queryLayer(
   service: string,
   layerId: number,
   b: ChartBounds,
   fetcher: Fetcher = defaultFetcher,
   depth = 0,
-): Promise<{ features: RawFeature[]; complete: boolean }> {
-  let payload: unknown
-  try {
-    payload = await fetcher(queryUrl(service, layerId, b))
-  } catch {
-    return { features: [], complete: false }
-  }
+): Promise<LayerResult> {
+  const got = await runQuery(service, layerId, b, fetcher)
+  // A failure used to return zero features and nothing else, which is
+  // indistinguishable from water with nothing charted in it. It is not the
+  // same thing, and on the water the difference is a straight line through a
+  // bank versus an honest empty sea.
+  if ('failed' in got) return { features: [], complete: false, failed: got.failed }
+
+  const { payload } = got
   if (!exceededLimit(payload)) {
-    return { features: featuresOf(payload), complete: true }
+    return { features: featuresOf(payload), complete: true, failed: null }
   }
   if (depth >= MAX_SPLIT_DEPTH) {
-    return { features: featuresOf(payload), complete: false }
+    return { features: featuresOf(payload), complete: false, failed: null }
   }
   const parts = await Promise.all(
     quadrants(b).map((q) => queryLayer(service, layerId, q, fetcher, depth + 1)),
@@ -454,6 +525,9 @@ export async function queryLayer(
   return {
     features: parts.flatMap((p) => p.features),
     complete: parts.every((p) => p.complete),
+    // Only a total failure of every quadrant is a failure of the box: one
+    // quadrant that answered is still real data about real water.
+    failed: parts.every((p) => p.failed) ? (parts[0].failed ?? null) : null,
   }
 }
 
@@ -485,7 +559,13 @@ export async function fetchChartFeatures(
   // difference between a bug and geography, so they throw now and say which.
   let layers: LayerRef[]
   try {
-    layers = matchLayers(await fetcher(layersUrl(band.service)))
+    const payload = await fetcher(layersUrl(band.service))
+    // An error body at HTTP 200 would otherwise reach `matchLayers`, match
+    // nothing, and be reported as "its layers are not named what we expect" —
+    // blaming the naming for what is actually a service fault.
+    const err = arcgisError(payload)
+    if (err) throw new Error(err)
+    layers = matchLayers(payload)
   } catch (e) {
     throw new ChartUnavailableError(
       'unreachable',
@@ -572,6 +652,17 @@ export async function fetchChartFeatures(
   }
 
   if (depthAreas.length === 0) {
+    // Zero depths because every depth query failed is NOT an empty sea, and
+    // saying so sent a crew a straight line through a bank with "no charted
+    // depths for this area" beside it — about the Houston Ship Channel. If
+    // nothing that could carry a depth came back and the reason was a
+    // failure, that is the failure being reported, not geography.
+    const failure = results.find(
+      (r) => r.failed && (r.layer.role === 'depth' || r.layer.role === 'dredged'),
+    )
+    if (failure) {
+      throw new ChartUnavailableError('unreachable', band, failure.failed ?? undefined)
+    }
     // Channels deliberately do not rescue coverage: marked water over water
     // nobody surveyed is not a route.
     return { depthAreas: [], channels, land, hazards, coverage: 'none' }
