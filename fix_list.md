@@ -16,6 +16,18 @@ Add new items at the top. Use the format:
       origin and `/**`, because the app sends `window.location.origin` with no
       trailing slash. Also check whether "Confirm email" is on, and that the
       sender is custom SMTP rather than the rate-limited built-in.
+      Supersedes the two 2026-08-03 items that said the same thing about the
+      old project. **None of this affects PWA installability** — that depends
+      only on the origin serving the app (HTTPS + manifest + service worker),
+      and `start_url` is relative, so the app installs from any of the
+      project's domains. What the Site URL decides is which origin auth emails
+      send people to, and therefore which origin they install from. That
+      matters because an install from `rescuegps-navmate.vercel.app` is a
+      separate install from one at `rescuegps.stationinsight.com`, with its
+      own offline waypoint cache, its own queued writes and its own saved
+      chart tiles. Worth picking the custom domain and keeping crews on it.
+      Anyone who already installed from a `.vercel.app` address has to
+      uninstall and reinstall to move.
 - [ ] 2026-09-13 — **Every signed-in user can read every row of `profiles` on
       this project.** The command system's own policy, `"Authenticated users
       can view all profiles"`, predates NavMate and was verified still in force
@@ -213,16 +225,6 @@ Add new items at the top. Use the format:
       as unsigned and Unverified on GitHub (author email correct, signature
       missing), but see the item above — that may not be true. Retrofitting
       means rewriting history, so it gets more expensive the longer it waits.
-- [ ] 2026-08-03 — Attach `rescuegps.stationinsight.com` to the
-      `rescuegps-navmate` Vercel project (Settings → Domains). The domain is
-      already in the team on the `bunker-gear` project, so DNS should
-      configure automatically. Do NOT add it to `bunker-gear`.
-- [ ] 2026-08-03 — Set Supabase Auth Site URL / Redirect URLs to the subdomain,
-      or confirmation and password-reset emails will link to the wrong host.
-      Site URL `https://rescuegps.stationinsight.com`; allow-list both the
-      bare origin and `/**`, because the app sends
-      `window.location.origin` (no trailing slash) as its redirect. There is
-      no MCP tool for this — dashboard or Management API only.
 - [ ] 2026-08-03 — Decide whether "Confirm email" stays on in Supabase Auth,
       and set up custom SMTP if it does (the built-in sender is rate-limited
       and not for production).
@@ -238,6 +240,11 @@ Add new items at the top. Use the format:
 
 
 ## Done
+
+- [x] 2026-08-03 — Attach `rescuegps.stationinsight.com` to the
+      `rescuegps-navmate` Vercel project. Confirmed done on 2026-09-13: the
+      project's domains are `rescuegps-navmate.vercel.app`,
+      **`rescuegps.stationinsight.com`**, and the two generated aliases.
 
 - [x] 2026-09-13 — **The NavMate database was gone.** The project the app
       compiled in (`puzwcsrtqtbutypzozvu`) had been repurposed into an
