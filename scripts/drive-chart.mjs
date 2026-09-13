@@ -135,6 +135,17 @@ await page.addInitScript(() => {
 await page.goto(BASE, { waitUntil: 'networkidle' })
 ok('app boots signed in', await page.getByLabel('Open the menu').count() > 0)
 
+// --- naming -----------------------------------------------------------------
+ok('page title is NavMate', (await page.title()) === 'NavMate', await page.title())
+const headerName = (await page.locator('header').first().innerText()).trim()
+ok('header names the app NavMate, not RescueGPS NavMate',
+   /NavMate/.test(headerName) && !/RescueGPS/.test(headerName),
+   headerName.split('\n')[0])
+// The moved-address banner is scoped to the old host, so it must be absent
+// everywhere else — including here, on 127.0.0.1.
+ok('moved-address banner stays off every host but the old one',
+   (await page.getByText(/NavMate has moved/i).count()) === 0)
+
 // --- open the Chart plotter section ---------------------------------------
 const openChart = async () => {
   await page.getByLabel('Open the menu').click()
@@ -285,6 +296,37 @@ await page.getByRole('button', { name: 'Plot course' }).click()
 await page.waitForTimeout(2500)
 ok('a dead chart service degrades to a straight line with a warning',
    (await page.getByText(/No charted depths for this area/i).count()) > 0)
+
+// --- the moved-address banner, on the address it exists for ----------------
+// Serve the same build under the OLD hostname so the one condition that gates
+// the notice is actually exercised. Checking only that it stays hidden would
+// pass just as well if the condition were inverted.
+await context.route('https://rescuegps.stationinsight.com/**', async (r) => {
+  const u = new URL(r.request().url())
+  const rel = u.pathname === '/' ? 'index.html' : u.pathname.replace(/^\//, '')
+  try {
+    const body = await readFile(join(DIST, rel))
+    await r.fulfill({
+      status: 200,
+      contentType: TYPES[extname(rel)] ?? 'application/octet-stream',
+      body,
+    })
+  } catch {
+    await r.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: await readFile(join(DIST, 'index.html')),
+    })
+  }
+})
+const oldPage = await context.newPage()
+await oldPage.goto('https://rescuegps.stationinsight.com/', { waitUntil: 'domcontentloaded' })
+await oldPage.waitForTimeout(800)
+ok('moved-address banner shows on the address that is moving',
+   (await oldPage.getByText(/NavMate has moved/i).count()) > 0)
+ok('and it points at the new address',
+   (await oldPage.locator('a[href="https://navmate.stationinsight.com"]').count()) > 0)
+await oldPage.close()
 
 // --- no sideways scroll ----------------------------------------------------
 for (const w of [320, 360, 390]) {

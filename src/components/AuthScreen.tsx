@@ -53,15 +53,17 @@ export function AuthScreen() {
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
-          {/* The full logo, wordmark included — the sign-in screen is the one
-              place with the width to carry it. Its navy field is knocked out,
-              so it sits straight on the page background. */}
+          {/* The emblem rather than the full logo: that artwork has
+              `RESCUE GPS` baked into the raster, and putting a wordmark above
+              an <h1> reading NavMate would show two product names on one
+              screen. A mark carries the family without arguing with the name.
+              Decorative — the heading below does the naming. */}
           <img
-            src="/logo.png"
-            alt="RescueGPS"
-            width={480}
-            height={468}
-            className="mx-auto w-44 max-w-full"
+            src="/emblem-192.png"
+            alt=""
+            width={192}
+            height={192}
+            className="mx-auto w-24 max-w-full"
           />
           <h1 className="mt-3 text-xl font-semibold text-slate-50">NavMate</h1>
           <p className="mt-1 text-sm text-slate-300">

@@ -15,6 +15,7 @@ import { Header } from '@/components/Header'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
 import { Toast } from '@/components/Toast'
+import { MovedNotice } from '@/components/MovedNotice'
 import { Spinner } from '@/components/ui'
 import { HomeTab } from '@/tabs/HomeTab'
 import { DatumTab } from '@/tabs/DatumTab'
@@ -84,6 +85,7 @@ export default function App() {
   if (!session) {
     return (
       <>
+        <MovedNotice />
         <AuthScreen />
         <Toast />
       </>
@@ -101,6 +103,7 @@ export default function App() {
 
   return (
     <div className="min-h-full">
+      <MovedNotice />
       <Header active={tab} onChange={setTab} />
       {/* Clears the footer, which now carries only the stamp button — the
           section menu lives in the header's top corner. */}
@@ -113,7 +116,7 @@ export default function App() {
         {tab === 'tides' && <TidesTab />}
         {tab === 'compass' && <CompassTab />}
         {tab === 'chart' && <ChartTab />}
-          {tab === 'convert' && <ConvertTab />}
+        {tab === 'convert' && <ConvertTab />}
         {tab === 'waypoints' && <WaypointsTab />}
         {tab === 'team' && <TeamTab />}
         {tab === 'data' && <DataTab />}

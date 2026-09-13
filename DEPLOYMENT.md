@@ -1,6 +1,11 @@
-# Deploying RescueGPS NavMate
+# Deploying NavMate
 
-Target: **https://rescuegps.stationinsight.com**
+Target: **https://navmate.stationinsight.com**
+
+`rescuegps.stationinsight.com` is **not** this app — it belongs to the RescueGPS
+command system (`rescuegps-navigator-pro`). NavMate served that address until
+September 2026; see "Moving between the two" below if you are looking at an
+older deployment.
 
 ## What is already done
 
@@ -59,8 +64,9 @@ A subdomain can live on a different project than the apex domain, which is
 exactly what you want here: NavMate gets its own project, its own build and its
 own database, and only shares the parent domain name.
 
-1. Open the new **rescuegps-navmate** project → **Settings → Domains**
-2. Add `rescuegps.stationinsight.com`
+1. Open the **rescuegps-navmate** project (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`)
+   → **Settings → Domains**
+2. Add `navmate.stationinsight.com`
 3. Because the domain is already in this team, Vercel configures DNS itself and
    issues the certificate — usually under a minute, no records to copy.
 
@@ -70,7 +76,29 @@ what keeps the two apps isolated.
 If Vercel does show a DNS record to add instead (which happens when the domain
 uses external nameservers rather than Vercel's), add exactly the record it
 displays at whatever manages `stationinsight.com`'s DNS — typically
-`CNAME rescuegps → cname.vercel-dns.com`.
+`CNAME navmate → cname.vercel-dns.com`.
+
+### Moving between the two
+
+NavMate served `rescuegps.stationinsight.com` until September 2026, when that
+address was handed to the command system. A domain can only be on one Vercel
+project at a time, so the handover has an order, and a short window where the
+old address is down:
+
+1. Add `navmate.stationinsight.com` to **rescuegps-navmate** and confirm it
+   serves NavMate.
+2. Remove `rescuegps.stationinsight.com` from **rescuegps-navmate**.
+3. Add `rescuegps.stationinsight.com` to **rescuegps-navigator-pro**
+   (`prj_KEOHsBii7KDFIGEYjBMrF0ACWmpu`).
+
+There is no Vercel MCP tool for project domains — this is the dashboard.
+
+**Tell anyone with NavMate installed to reinstall before step 2.** An installed
+PWA is bound to its origin: their icon keeps pointing at the old address, which
+after step 3 opens the command system, and their cached waypoints, queued
+writes and saved chart tiles stay behind on that origin. The app renders a
+banner saying this (`src/components/MovedNotice.tsx`), but only when served
+from the old address, so it disappears by itself once they have moved.
 
 ### 3. Point Supabase Auth at the subdomain
 
@@ -79,17 +107,29 @@ configured here, so this must be set or those links will land on the wrong host.
 
 **Supabase → Authentication → URL Configuration**
 
+This project's Auth settings are shared with the RescueGPS command system, and
+**Site URL is a single value** for both apps. It goes to the command system:
+
 | Setting | Value |
 |---|---|
 | Site URL | `https://rescuegps.stationinsight.com` |
-| Redirect URLs | `https://rescuegps.stationinsight.com`, `https://rescuegps.stationinsight.com/**`, `https://rescuegps-navmate.vercel.app/**` |
+| Redirect URLs | `https://navmate.stationinsight.com`, `https://navmate.stationinsight.com/**`, `https://rescuegps.stationinsight.com`, `https://rescuegps.stationinsight.com/**`, `https://rescuegps-navmate.vercel.app/**` |
 
-List the **bare origin as well as** the `/**` glob. The app passes
-`window.location.origin` as its redirect (`src/store/useAuth.ts`), which has no
-trailing slash, so a `/**` pattern alone may not match it. Supabase implicitly
-allows the Site URL, so it would probably work anyway — but the failure mode is
-horrible to diagnose, because the email sends fine and only the click is
-rejected.
+Why the command system gets Site URL rather than NavMate: NavMate always passes
+`window.location.origin` explicitly on both signup confirmation and password
+reset (`src/store/useAuth.ts:79`, `:112`), so it lands back on whichever address
+it was being used from regardless of this setting. The command system's
+`auth.signUp` (`frontend/src/services/supabase.js`) passes no redirect at all
+and has no password-reset path, so Site URL is its only fallback. Giving it to
+the app that cannot state its own is the robust way round.
+
+List the **bare origin as well as** the `/**` glob for each host. The redirect
+NavMate sends has no trailing slash, so a `/**` pattern alone may not match it.
+Supabase implicitly allows the Site URL, which is exactly the trap: leave
+`navmate.stationinsight.com` off this list and an un-allow-listed redirect is
+**silently replaced** by the Site URL — so a crew member resetting a password
+in NavMate lands in the command dashboard. The email sends fine; only the click
+goes wrong.
 
 The `vercel.app` entry lets you test signup before DNS is attached; remove it
 once the subdomain is live if you would rather not leave that host working.
@@ -119,7 +159,7 @@ project, so: **Supabase → Project Settings → General → Project name** →
 
 Once the domain resolves, on a phone:
 
-1. Open `https://rescuegps.stationinsight.com` — the sign-in screen should load.
+1. Open `https://navmate.stationinsight.com` — the sign-in screen should load.
 2. Create an account.
 3. **Track → Start tracking** — the browser must prompt for location. That
    prompt appearing confirms HTTPS and geolocation are both working. (No prompt
@@ -134,7 +174,7 @@ Once the domain resolves, on a phone:
 | | Station Insight | NavMate |
 |---|---|---|
 | Vercel project | `bunker-gear` | `rescuegps-navmate` |
-| Domain | `stationinsight.com`, `www.` | `rescuegps.stationinsight.com` |
+| Domain | `stationinsight.com`, `www.` | `navmate.stationinsight.com` |
 | Repo | separate | `RescueGPS_NavMate_App` |
 | Database | shared with the command system | Supabase `ekhvfypxuxskjglwwoqh` |
 
