@@ -12,8 +12,8 @@
  *      margin the coxswain set — at **chart datum**, never with tide added.
  *   3. Grow the blocked cells by the lateral stand-off asked for, and measure
  *      how far every cell sits from the nearest hazard.
- *   4. A* across the usable cells, with a mild preference for the middle of
- *      the channel over shaving a bank.
+ *   4. A* across the usable cells, preferring the middle of navigable water
+ *      over shaving a bank, and preferring a marked channel over open water.
  *   5. Pull the resulting staircase straight into the handful of legs a
  *      coxswain actually steers.
  *
@@ -59,11 +59,36 @@ export interface PointHazard {
   lon: number
   /** Metres. Wrecks and obstructions get a footprint, not a pinprick. */
   radiusM: number
+  /**
+   * What it is. A pile is a fixed structure in a well-known position; a wreck
+   * is a hull somewhere near a reported one. They deserve different footprints
+   * and read differently on a leg card, so the kind is carried rather than
+   * being stringified into the label and lost.
+   */
+  kind: 'wreck' | 'obstruction' | 'rock' | 'pile'
   label: string
+}
+
+/**
+ * Water a boat is meant to be in — a dredged area or a fairway.
+ *
+ * Geometry only, deliberately carrying no depth. A DRGARE does have a
+ * `DRVAL1` and is recorded as a depth polygon too; a FAIRWY has none at all,
+ * and inventing one for it would be exactly the guess this engine refuses to
+ * make everywhere else. The consequence is worth knowing before it is filed as
+ * a bug: **a fairway over water no depth area covers is unusable**, because
+ * unknown water is not usable and a fairway is not a survey. Being marked
+ * makes water preferable, never passable.
+ */
+export interface ChannelPolygon {
+  kind: 'dredged' | 'fairway'
+  rings: Ring[]
 }
 
 export interface ChartFeatures {
   depthAreas: DepthPolygon[]
+  /** Dredged areas and fairways — the water traffic is meant to use. */
+  channels: ChannelPolygon[]
   land: LandPolygon[]
   hazards: PointHazard[]
   /**
@@ -76,6 +101,7 @@ export interface ChartFeatures {
 
 export const EMPTY_FEATURES: ChartFeatures = {
   depthAreas: [],
+  channels: [],
   land: [],
   hazards: [],
   coverage: 'none',
@@ -102,6 +128,13 @@ export interface RouteLeg extends PatternLeg {
   etaHours: number
   /** Shoalest charted depth anywhere along the leg, or null where unsurveyed. */
   minChartedDepthM: number | null
+  /**
+   * How much of the leg runs inside a marked channel, 0–1. **Null where no
+   * channel is charted in this area at all** — "there is nothing marked here"
+   * and "this leg is outside the marked channel" are different facts, and a
+   * crew must never read the first as the second.
+   */
+  channelFraction: number | null
 }
 
 export type RouteSource = 'charted' | 'straight'
@@ -120,6 +153,8 @@ export interface RoutePlan {
   /** Set when the endpoints had to be moved to reach usable water. */
   movedStart: LatLon | null
   movedEnd: LatLon | null
+  /** Distance run outside marked water, NM. Null where none is charted. */
+  outsideChannelNM: number | null
 }
 
 /* -------------------------------------------------------------------------
@@ -136,13 +171,81 @@ const MIN_MARGIN_M = NM_TO_METERS
 const MAX_MARGIN_M = 20 * NM_TO_METERS
 /** How far an endpoint may be nudged to find usable water. */
 const SNAP_RADIUS_M = 400
-/** Cost multiplier right against the stand-off, fading to none by PREFER×. */
-const CHANNEL_WEIGHT = 0.6
-const PREFER_MULTIPLE = 3
+/**
+ * Cost multiplier right against the stand-off, fading to none by EDGE_FADE×.
+ *
+ * This is about the *edge of navigable water* — shaving a bank — and has
+ * nothing to do with a charted channel, which is a separate preference below.
+ * It used to be called CHANNEL_WEIGHT, which made the two impossible to tell
+ * apart once marked channels arrived.
+ */
+const EDGE_WEIGHT = 0.6
+const EDGE_FADE_MULTIPLE = 3
+
+/**
+ * How much deeper than the boat needs before open water counts as
+ * "confidently deep enough", and the course may leave marked water for it.
+ *
+ * Two metres, and the number comes from how depth areas actually arrive: ENC
+ * bands them (0–2, 2–5, 5–10, 10–20 m), so two metres means "a whole band
+ * clear of what this boat needs" rather than a value sitting inside the band's
+ * own rounding. Absolute rather than a fraction of the draft because what it
+ * covers is absolute — the trough of a short steep chop in a bay entrance, and
+ * a survey that may be decades old. `safeDepthM` already carries the
+ * coxswain's under-keel margin; this is the margin on top of it that buys
+ * leaving the channel.
+ */
+const AMPLE_MARGIN_M = 2
+
+/**
+ * Cost added to a cell outside a marked channel — cheap where the water is
+ * amply deep, dear where it only just clears the boat.
+ *
+ * The ordering that matters is OUTSIDE_THIN_WEIGHT > EDGE_WEIGHT. It makes the
+ * *worst* cell inside a channel (1.6, hard against the stand-off) cheaper than
+ * the *best* cell outside one in water that merely clears the draft (2.5).
+ * Without it the router would slide out of a narrow channel purely to stop
+ * shaving its bank, which is the opposite of seamanship.
+ *
+ * What they buy, as a detour a course will accept to stay in the channel:
+ * 2.5× where the open water merely clears the draft, 1.25× where it is amply
+ * deep. In the narrowest channel, where every cell carries the full bank-edge
+ * cost, those become 1.56× and 0.78× — and that second figure losing is the
+ * requirement's own escape clause working.
+ */
+const OUTSIDE_AMPLE_WEIGHT = 0.25
+const OUTSIDE_THIN_WEIGHT = 1.5
+
+/**
+ * Distance over which leaving a channel ramps up to its full cost, metres.
+ *
+ * Not a claim that closer is safer. Its job is to keep the cost field
+ * continuous so A* does not thrash at a channel-polygon boundary, and so a
+ * short gap between a dredged cut and the fairway continuing it costs in
+ * proportion to its length rather than standing up like a wall. It also
+ * saturates there, which is what stops the penalty swamping the heuristic.
+ */
+const CHANNEL_FADE_M = 200
+
+/**
+ * How far a course may run outside marked water before it is worth saying so.
+ *
+ * A quarter of a mile is about the run from a channel to a ramp, a dock or an
+ * anchorage — which is what a course is *doing* when it leaves one. Warning on
+ * that would fire on nearly every harbour route and teach a crew to stop
+ * reading the warnings, which is worse than not having them. Absolute rather
+ * than a fraction of the passage, because the hazard is absolute: half a mile
+ * outside marked water is half a mile outside marked water whether the trip is
+ * one mile or twenty.
+ */
+const CHANNEL_WARN_NM = 0.25
 
 const UNKNOWN = 0
 const OPEN = 1
 const BLOCKED = 2
+
+/** The length of a diagonal step, in cells. */
+const DIAG = Math.SQRT2
 
 /* -------------------------------------------------------------------------
  * The grid
@@ -164,6 +267,24 @@ export interface RouteGrid {
   depth: Float32Array
   /** Chamfer distance to the nearest blocked cell, in cells. */
   clearCells: Float32Array
+  /**
+   * 1 where a charted channel covers the cell.
+   *
+   * Geometry only. A channel never makes a cell usable — a dredged cut that
+   * has shoaled is still a shoal — it only makes a usable cell preferable.
+   */
+  channel: Uint8Array
+  /**
+   * Chamfer distance to the nearest channel cell, in cells. 0 inside one, and
+   * Infinity everywhere when nothing is charted.
+   */
+  channelDist: Float32Array
+  /**
+   * Does any charted channel actually touch this box? The single switch that
+   * makes the whole preference inert on the great majority of the coast that
+   * has no dredged area or fairway on it.
+   */
+  hasChannels: boolean
 }
 
 export function gridIndex(g: RouteGrid, col: number, row: number): number {
@@ -234,6 +355,12 @@ export function makeGrid(from: LatLon, to: LatLon): RouteGrid {
     cells: new Uint8Array(n),
     depth: new Float32Array(n).fill(NaN),
     clearCells: new Float32Array(n),
+    channel: new Uint8Array(n),
+    // Infinity, not 0. A zero fill would read as "every cell is in a channel"
+    // if a guard were ever missed, and the safe direction to fail is
+    // "everything is outside one".
+    channelDist: new Float32Array(n).fill(Infinity),
+    hasChannels: false,
   }
 }
 
@@ -247,7 +374,7 @@ export function makeGrid(from: LatLon, to: LatLon): RouteGrid {
  * All rings are crossed in one pass rather than filled one at a time, which is
  * what makes a hole a hole: an island inside a depth area alternates the
  * parity back to "outside" and is left alone. Filling ring by ring would paint
- * the island as deep water — a rock drawn as a channel.
+ * the island as deep water — a rock drawn as navigable.
  */
 export function fillRings(
   g: RouteGrid,
@@ -352,26 +479,52 @@ export function rasterise(
       }
     }
   }
+
+  // The channel plane, painted last and touching nothing else — a channel is
+  // a preference, never a permission. It has to come after the classification
+  // sweep above, which rewrites every cell; and it lives inside rasterise so
+  // no call site can forget it.
+  //
+  // `painted` comes from the callback rather than from channels.length, so a
+  // channel polygon lying entirely outside the box correctly leaves this
+  // false. A channel somewhere else is not a channel in this grid.
+  let painted = false
+  for (const ch of features.channels) {
+    fillRings(g, ch.rings, (i) => {
+      g.channel[i] = 1
+      painted = true
+    })
+  }
+  g.hasChannels = painted
 }
 
 /**
- * Distance from every cell to the nearest blocked or unknown cell, in cells.
+ * Distance from every cell to the nearest source cell, in cells.
  *
  * Two-pass 3-4 chamfer — an integer approximation to Euclidean distance that
  * is within about 8 % and costs two linear sweeps rather than a full BFS per
- * cell. Used for two things at once: growing the hazards by the crew's
- * stand-off, and giving A* its preference for the middle of the channel.
+ * cell.
  *
- * The grid edge counts as blocked. A route that leaves the box is a route
- * through water nobody looked at.
+ * `outside` is what lies beyond the grid, and the two callers want opposite
+ * answers. The clearance transform wants 0, making the edge a source: a route
+ * that leaves the box is a route through water nobody looked at. The channel
+ * transform wants Infinity: nothing outside the box is known to be marked
+ * water, and treating the edge as a channel would cheapen every cell near it.
  */
-export function chamferClearance(g: RouteGrid): void {
-  const { cols, rows, cells, clearCells: d } = g
+export function chamferDistance(
+  cols: number,
+  rows: number,
+  isSource: (i: number) => boolean,
+  outside: number,
+  d: Float32Array,
+): void {
   const INF = 1e9
-  for (let i = 0; i < cells.length; i++) d[i] = cells[i] === OPEN ? INF : 0
+  for (let i = 0; i < d.length; i++) d[i] = isSource(i) ? 0 : INF
 
   const at = (col: number, row: number): number =>
-    col < 0 || row < 0 || col >= cols || row >= rows ? 0 : d[row * cols + col]
+    col < 0 || row < 0 || col >= cols || row >= rows
+      ? outside
+      : d[row * cols + col]
 
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
@@ -403,6 +556,37 @@ export function chamferClearance(g: RouteGrid): void {
   for (let i = 0; i < d.length; i++) d[i] = d[i] === 0 ? 0 : d[i] / 3
 }
 
+/**
+ * Distance to the nearest blocked or unknown cell, in cells.
+ *
+ * Grows the hazards by the crew's stand-off and gives A* its preference for
+ * the middle of navigable water. The grid edge counts as blocked.
+ */
+export function chamferClearance(g: RouteGrid): void {
+  chamferDistance(g.cols, g.rows, (i) => g.cells[i] !== OPEN, 0, g.clearCells)
+}
+
+/**
+ * Distance to the nearest charted channel, in cells.
+ *
+ * Skipped entirely — and left at Infinity — where nothing is marked, which is
+ * most of the coast. That short-circuit is what makes the channel preference
+ * cost nothing where it has nothing to say.
+ */
+export function chamferChannel(g: RouteGrid): void {
+  if (!g.hasChannels) {
+    g.channelDist.fill(Infinity)
+    return
+  }
+  chamferDistance(
+    g.cols,
+    g.rows,
+    (i) => g.channel[i] === 1,
+    Infinity,
+    g.channelDist,
+  )
+}
+
 /* -------------------------------------------------------------------------
  * Passability and visibility
  * ---------------------------------------------------------------------- */
@@ -410,13 +594,56 @@ export function chamferClearance(g: RouteGrid): void {
 export interface Passability {
   /** Cells of stand-off required from the nearest hazard. */
   dilateCells: number
-  /** Beyond this many cells of clearance there is no channel preference. */
-  preferCells: number
+  /** Beyond this many cells of clearance there is no bank-edge cost. */
+  edgeFadeCells: number
+  /** Depth at which water outside a channel is confidently deep enough, m. */
+  ampleDepthM: number
+  /** Cells over which leaving a channel ramps up to its full cost. */
+  channelFadeCells: number
 }
 
-export function passability(g: RouteGrid, clearanceM: number): Passability {
+export function passability(
+  g: RouteGrid,
+  clearanceM: number,
+  safeDepthM: number,
+): Passability {
   const dilateCells = Math.max(0, clearanceM / g.cellM)
-  return { dilateCells, preferCells: dilateCells * PREFER_MULTIPLE + 1 }
+  return {
+    dilateCells,
+    edgeFadeCells: dilateCells * EDGE_FADE_MULTIPLE + 1,
+    ampleDepthM: safeDepthM + AMPLE_MARGIN_M,
+    // In metres, not cells: a cell is 8 m in a harbour and 250 m on a coastal
+    // passage, so a fade measured in cells would mean a different thing on
+    // every chart. Floored at one cell — below that the grid cannot express a
+    // ramp, and a step is the honest representation.
+    channelFadeCells: Math.max(1, CHANNEL_FADE_M / g.cellM),
+  }
+}
+
+/**
+ * Extra cost for a cell outside a marked channel.
+ *
+ * Zero inside a channel, and zero everywhere when none is charted — so a route
+ * is never charged for being where it belongs, and nothing changes at all on
+ * the great majority of the coast with no dredged area or fairway on it.
+ *
+ * Two levels, which is the whole of "stay in the channel until there is a
+ * clear, deep enough unobstructed path": water clearing the boat by a full
+ * depth band is cheap to cross, water that merely clears its draft is dear.
+ */
+export function channelPenalty(
+  g: RouteGrid,
+  i: number,
+  p: Passability,
+): number {
+  if (!g.hasChannels) return 0
+  if (g.channel[i] === 1) return 0
+  const ramp = Math.min(1, g.channelDist[i] / p.channelFadeCells)
+  // An unsurveyed cell has a NaN depth, fails this comparison and lands in the
+  // dear branch, which is where it belongs. `passable` should never let one
+  // through to here — this is belt and braces, not a live branch.
+  const ample = g.depth[i] >= p.ampleDepthM
+  return ramp * (ample ? OUTSIDE_AMPLE_WEIGHT : OUTSIDE_THIN_WEIGHT)
 }
 
 export function passable(g: RouteGrid, i: number, p: Passability): boolean {
@@ -424,18 +651,29 @@ export function passable(g: RouteGrid, i: number, p: Passability): boolean {
 }
 
 /**
- * Is there clear water on the straight line between two cells?
+ * Walk the straight line between two cells, and say how much of it runs
+ * outside a marked channel — in cell lengths — or null if it is not clear
+ * water at all.
  *
- * A supercover walk — when the line crosses a corner both neighbouring cells
- * are tested — so the route cannot be squeezed diagonally between two rocks
+ * A supercover walk: when the line crosses a corner both neighbouring cells
+ * are tested, so the route cannot be squeezed diagonally between two rocks
  * that touch at a corner. A plain Bresenham line would call that gap open.
+ * Shoulder cells are tested for water but never counted — they are not on the
+ * line.
+ *
+ * One walk answering both questions is deliberate. `lineOfSight` below is
+ * defined in terms of it, so the visibility test and the string-pull cannot
+ * drift apart about what a line crosses. A number-or-null rather than a result
+ * object because string-pulling is O(n²) in this walk, and a 400-step path
+ * would otherwise allocate a six-figure number of short-lived objects on a
+ * phone. The starting cell is not counted; it belongs to the leg before.
  */
-export function lineOfSight(
+export function chordOutsideChannel(
   g: RouteGrid,
   a: { col: number; row: number },
   b: { col: number; row: number },
   p: Passability,
-): boolean {
+): number | null {
   let x0 = Math.floor(a.col)
   let y0 = Math.floor(a.row)
   const x1 = Math.floor(b.col)
@@ -445,18 +683,20 @@ export function lineOfSight(
   const sx = x0 < x1 ? 1 : -1
   const sy = y0 < y1 ? 1 : -1
   let err = dx - dy
+  let outside = 0
 
   for (;;) {
-    if (x0 < 0 || y0 < 0 || x0 >= g.cols || y0 >= g.rows) return false
-    if (!passable(g, y0 * g.cols + x0, p)) return false
-    if (x0 === x1 && y0 === y1) return true
+    if (x0 < 0 || y0 < 0 || x0 >= g.cols || y0 >= g.rows) return null
+    if (!passable(g, y0 * g.cols + x0, p)) return null
+    if (x0 === x1 && y0 === y1) return outside
     const e2 = 2 * err
-    if (e2 > -dy && e2 < dx) {
+    const diagonal = e2 > -dy && e2 < dx
+    if (diagonal) {
       // Diagonal step: both shoulders must be clear.
       const sideA = y0 * g.cols + (x0 + sx)
       const sideB = (y0 + sy) * g.cols + x0
-      if (x0 + sx < 0 || x0 + sx >= g.cols || !passable(g, sideA, p)) return false
-      if (y0 + sy < 0 || y0 + sy >= g.rows || !passable(g, sideB, p)) return false
+      if (x0 + sx < 0 || x0 + sx >= g.cols || !passable(g, sideA, p)) return null
+      if (y0 + sy < 0 || y0 + sy >= g.rows || !passable(g, sideB, p)) return null
     }
     if (e2 > -dy) {
       err -= dy
@@ -466,7 +706,20 @@ export function lineOfSight(
       err += dx
       y0 += sy
     }
+    if (x0 >= 0 && y0 >= 0 && x0 < g.cols && y0 < g.rows) {
+      if (g.channel[y0 * g.cols + x0] !== 1) outside += diagonal ? DIAG : 1
+    }
   }
+}
+
+/** Is there clear water on the straight line between two cells? */
+export function lineOfSight(
+  g: RouteGrid,
+  a: { col: number; row: number },
+  b: { col: number; row: number },
+  p: Passability,
+): boolean {
+  return chordOutsideChannel(g, a, b, p) !== null
 }
 
 /**
@@ -552,16 +805,14 @@ class Heap {
   }
 }
 
-const DIAG = Math.SQRT2
 
 /**
  * Shortest usable path across the grid, in cells.
  *
- * Eight-neighbour with an octile heuristic, so the heuristic is admissible for
- * the step costs actually used and the first path popped is optimal. The
- * channel preference is a multiplier on step cost rather than a separate term,
- * which keeps it proportional: it can bend a route around a bank but it can
- * never justify a detour longer than about 1.6×.
+ * Eight-neighbour with an octile heuristic. Every step cost is at least 1, so
+ * the heuristic is both admissible and consistent — which matters twice: the
+ * first path popped is optimal, and the closed-set pruning below is sound.
+ * A preference that made a cell cheaper than 1 would quietly break both.
  */
 export function astar(
   g: RouteGrid,
@@ -585,12 +836,18 @@ export function astar(
     return Math.max(dx, dy) + (DIAG - 1) * Math.min(dx, dy)
   }
 
-  // Cells right against the stand-off cost more, fading to nothing by
-  // preferCells. This is what keeps a boat off the edge of a channel.
+  // Two costs over a base of one: cells right against the stand-off, and cells
+  // outside a marked channel. Both are added, never subtracted, so every step
+  // costs at least 1 and the octile heuristic above stays admissible AND
+  // consistent. A preference that made a cell cheaper than 1 would break the
+  // closed-set pruning below and quietly return a path that is not the best.
   const weight = (i: number): number => {
     const clear = g.clearCells[i] - p.dilateCells
-    if (clear >= p.preferCells) return 1
-    return 1 + CHANNEL_WEIGHT * (1 - Math.max(0, clear) / p.preferCells)
+    const edge =
+      clear >= p.edgeFadeCells
+        ? 0
+        : EDGE_WEIGHT * (1 - Math.max(0, clear) / p.edgeFadeCells)
+    return 1 + edge + channelPenalty(g, i, p)
   }
 
   gScore[si] = 0
@@ -648,6 +905,25 @@ export function astar(
  * held, then start again from there. A 400-step A* path through a harbour
  * comes out as three or four legs, which is what goes on a chart and what fits
  * on a phone.
+ *
+ * With a marked channel in play the smoother is also bound by a budget: **a
+ * chord may not spend more distance outside a channel than the piece of path
+ * it replaces.** Without it the string-pull would cheerfully straighten a
+ * channel transit into a chord over the bank — the shortest line between two
+ * points in a channel is very often not in the channel — and every bit of
+ * seamanship A* just paid for would be undone in the last pass.
+ *
+ * Note the budget is compared against the replaced sub-path rather than
+ * against the endpoints' own channel membership. A channel that dog-legs is
+ * usually entered and left mid-path, so a rule keyed on the endpoints would be
+ * inert in exactly the case that matters.
+ *
+ * It needs no "is a channel charted?" guard, because it is inert without one:
+ * with `channel` all zero, every arriving cell contributes its own step
+ * length, so the budget is the sub-path's octile length and the chord's is the
+ * octile distance between the same endpoints — which is never longer. The
+ * guard can therefore never fire, and the function is bit-identical to what it
+ * was before channels existed.
  */
 export function stringPull(
   g: RouteGrid,
@@ -655,15 +931,27 @@ export function stringPull(
   p: Passability,
 ): { col: number; row: number }[] {
   if (path.length <= 2) return path.slice()
+
+  // Running total of how much of the path so far ran outside a channel.
+  const outAt = new Float64Array(path.length)
+  for (let i = 1; i < path.length; i++) {
+    const c = path[i]
+    const diagonal = c.col !== path[i - 1].col && c.row !== path[i - 1].row
+    const step = diagonal ? DIAG : 1
+    outAt[i] =
+      outAt[i - 1] + (g.channel[c.row * g.cols + c.col] === 1 ? 0 : step)
+  }
+
   const out = [path[0]]
   let anchor = 0
   while (anchor < path.length - 1) {
     let best = anchor + 1
     for (let j = path.length - 1; j > anchor + 1; j--) {
-      if (lineOfSight(g, path[anchor], path[j], p)) {
-        best = j
-        break
-      }
+      const chordOut = chordOutsideChannel(g, path[anchor], path[j], p)
+      if (chordOut === null) continue
+      if (chordOut > outAt[j] - outAt[anchor]) continue
+      best = j
+      break
     }
     out.push(path[best])
     anchor = best
@@ -703,6 +991,40 @@ export function legMinDepth(g: RouteGrid, from: LatLon, to: LatLon): number | nu
   return min
 }
 
+/**
+ * How much of a leg runs inside a marked channel, 0–1, or null where no
+ * channel is charted in this area at all.
+ *
+ * Sampled off the same grid the routing used, on the same walk as
+ * `legMinDepth`, so the two numbers on a leg card always describe the same
+ * line. A sibling rather than a combined sampler, so `legMinDepth` keeps its
+ * own tests and its own meaning.
+ */
+export function legChannelFraction(
+  g: RouteGrid,
+  from: LatLon,
+  to: LatLon,
+): number | null {
+  if (!g.hasChannels) return null
+  const a = toGrid(g, from)
+  const b = toGrid(g, to)
+  const steps = Math.max(
+    1,
+    Math.ceil(Math.max(Math.abs(b.col - a.col), Math.abs(b.row - a.row))),
+  )
+  let seen = 0
+  let inside = 0
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps
+    const col = Math.floor(a.col + (b.col - a.col) * t)
+    const row = Math.floor(a.row + (b.row - a.row) * t)
+    if (col < 0 || row < 0 || col >= g.cols || row >= g.rows) continue
+    seen++
+    if (g.channel[row * g.cols + col] === 1) inside++
+  }
+  return seen === 0 ? null : inside / seen
+}
+
 /* -------------------------------------------------------------------------
  * The plan
  * ---------------------------------------------------------------------- */
@@ -722,6 +1044,7 @@ function legsFrom(
       kind: 'search',
       etaHours: usableSpeed > 0 ? run / usableSpeed : NaN,
       minChartedDepthM: grid ? legMinDepth(grid, leg.from, leg.to) : null,
+      channelFraction: grid ? legChannelFraction(grid, leg.from, leg.to) : null,
     }
   })
   return {
@@ -749,6 +1072,7 @@ function straightPlan(
     warnings,
     movedStart: null,
     movedEnd: null,
+    outsideChannelNM: null,
   }
 }
 
@@ -781,7 +1105,8 @@ export function planRoute(req: RouteRequest): RoutePlan {
   const grid = makeGrid(req.from, req.to)
   rasterise(grid, features, req.safeDepthM)
   chamferClearance(grid)
-  const pass = passability(grid, req.clearanceM)
+  chamferChannel(grid)
+  const pass = passability(grid, req.clearanceM, req.safeDepthM)
 
   const start = snapToWater(grid, req.from, pass)
   const goal = snapToWater(grid, req.to, pass)
@@ -832,6 +1157,18 @@ export function planRoute(req: RouteRequest): RoutePlan {
   }
 
   const { legs, totalNM, hours } = legsFrom(points, req.speedKn, grid)
+
+  const outsideChannelNM = grid.hasChannels
+    ? legs.reduce((a, l) => a + l.lengthNM * (1 - (l.channelFraction ?? 0)), 0)
+    : null
+  if (outsideChannelNM !== null && outsideChannelNM > CHANNEL_WARN_NM) {
+    warnings.push(
+      `${outsideChannelNM.toFixed(1)} NM of this course runs outside the marked channel. ` +
+        'The chart shows enough water there, but it is not dredged, not swept and not buoyed — ' +
+        'watch your set and check the least depth on each leg.',
+    )
+  }
+
   return {
     points,
     legs,
@@ -842,6 +1179,7 @@ export function planRoute(req: RouteRequest): RoutePlan {
     warnings,
     movedStart,
     movedEnd,
+    outsideChannelNM,
   }
 }
 

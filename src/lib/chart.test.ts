@@ -140,12 +140,15 @@ const LAYER_PAYLOAD = {
     { id: 40, name: 'Harbor.Depth_Area_area', geometryType: 'esriGeometryPolygon' },
     { id: 41, name: 'Harbor.Depth_Contour_line', geometryType: 'esriGeometryPolyline' },
     { id: 52, name: 'Harbor.Dredged_Area_area', geometryType: 'esriGeometryPolygon' },
+    { id: 55, name: 'Harbor.Fairway_area', geometryType: 'esriGeometryPolygon' },
+    { id: 56, name: 'Harbor.Fairway_line', geometryType: 'esriGeometryPolyline' },
     { id: 60, name: 'Harbor.Land_Area_area', geometryType: 'esriGeometryPolygon' },
     { id: 85, name: 'Harbor.Shoreline_Construction_line', geometryType: 'esriGeometryPolyline' },
     { id: 86, name: 'Harbor.Shoreline_Construction_area', geometryType: 'esriGeometryPolygon' },
     { id: 90, name: 'Harbor.Wrecks_point', geometryType: 'esriGeometryPoint' },
     { id: 91, name: 'Harbor.Obstructions_point', geometryType: 'esriGeometryPoint' },
     { id: 92, name: 'Harbor.Underwater_Rock_point', geometryType: 'esriGeometryPoint' },
+    { id: 93, name: 'Harbor_Piles_point', geometryType: 'esriGeometryPoint' },
     { id: 99, name: 'Harbor.Bridge_area', geometryType: 'esriGeometryPolygon' },
     { id: 179, name: 'Harbor.Harbour_Facility_area', geometryType: 'esriGeometryPolygon' },
   ],
@@ -353,6 +356,28 @@ function stubService(): Fetcher {
         ],
       }
     }
+    if (url.includes('/52/query')) {
+      return {
+        features: [
+          { geometry: { type: 'Polygon', coordinates: [ring] }, properties: { DRVAL1: 6.5 } },
+        ],
+      }
+    }
+    if (url.includes('/55/query')) {
+      // A fairway as ENC actually publishes one: no DRVAL1 anywhere on it.
+      return {
+        features: [
+          { geometry: { type: 'Polygon', coordinates: [ring] }, properties: { ORIENT: 31 } },
+        ],
+      }
+    }
+    if (url.includes('/93/query')) {
+      return {
+        features: [
+          { geometry: { type: 'Point', coordinates: [-94.83, 29.31] }, properties: {} },
+        ],
+      }
+    }
     if (url.includes('/60/query')) {
       return {
         features: [{ geometry: { type: 'Polygon', coordinates: [ring] }, properties: {} }],
@@ -376,12 +401,14 @@ describe('fetchChartFeatures', () => {
   it('turns the services into the shapes the router rasterises', async () => {
     const f = await fetchChartFeatures(BOX, { fetcher: stubService() })
     expect(f.coverage).toBe('full')
-    expect(f.depthAreas).toHaveLength(1)
-    expect(f.depthAreas[0].minDepthM).toBeCloseTo(4.2, 6)
+    // Two depth areas: the plain one, and the dredged area, which carries a
+    // DRVAL1 of its own as well as being a channel.
+    expect(f.depthAreas).toHaveLength(2)
+    expect(f.depthAreas.map((d) => d.minDepthM).sort()).toEqual([4.2, 6.5])
     expect(f.land).toHaveLength(1)
-    expect(f.hazards).toHaveLength(1)
-    expect(f.hazards[0].radiusM).toBe(HAZARD_RADIUS_M)
-    expect(f.hazards[0]).toMatchObject({ lat: 29.32, lon: -94.82 })
+    const wreck = f.hazards.find((h) => h.kind === 'wreck')
+    expect(wreck?.radiusM).toBe(HAZARD_RADIUS_M)
+    expect(wreck).toMatchObject({ lat: 29.32, lon: -94.82 })
   })
 
   it('reports no coverage when the service cannot be reached at all', async () => {
@@ -464,5 +491,81 @@ describe('padBounds', () => {
     const p = padBounds(BOX)
     expect((p.minLat + p.maxLat) / 2).toBeCloseTo((BOX.minLat + BOX.maxLat) / 2, 12)
     expect((p.minLon + p.maxLon) / 2).toBeCloseTo((BOX.minLon + BOX.maxLon) / 2, 12)
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * Marked channels and piles
+ * ---------------------------------------------------------------------- */
+
+describe('marked channels', () => {
+  it('finds the fairway and pile layers by name', () => {
+    // NOAA republishes weekly and renumbers, so a hardcoded id coming back as
+    // something else is how a boat ends up outside the channel it thinks it
+    // is in. The pile pattern also has to survive an underscore separator —
+    // `\b` would not, because an underscore is a word character.
+    const roles = matchLayers(LAYER_PAYLOAD)
+    expect(roles.find((l) => l.role === 'fairway')?.id).toBe(55)
+    expect(roles.find((l) => l.role === 'pile')?.id).toBe(93)
+  })
+
+  it('still refuses a fairway drawn as a line', () => {
+    // A line has no inside to rasterise. The new roles must not breach the
+    // rule that keeps depth contours from being painted as depth bands.
+    const found = matchLayers(LAYER_PAYLOAD)
+    expect(found.some((l) => l.id === 56)).toBe(false)
+  })
+
+  it('records a dredged area as both a depth and a channel', async () => {
+    // Two facts at once — this much water, and water you are meant to be in.
+    // Flattening it into a depth loses the one the coxswain steers by.
+    const f = await fetchChartFeatures(BOX, { fetcher: stubService() })
+    expect(f.depthAreas.some((d) => d.minDepthM === 6.5)).toBe(true)
+    expect(f.channels.some((c) => c.kind === 'dredged')).toBe(true)
+  })
+
+  it('records a fairway as a channel and never as a depth', async () => {
+    // A fairway carries no depth of its own, and inventing one for it is the
+    // guess this app refuses everywhere else.
+    const f = await fetchChartFeatures(BOX, { fetcher: stubService() })
+    expect(f.channels.some((c) => c.kind === 'fairway')).toBe(true)
+    expect(f.depthAreas).toHaveLength(2)
+  })
+
+  it('gives a pile its own kind and a smaller footprint than a wreck', async () => {
+    // A wreck's 40 m would close every dredged cut with piles down both
+    // banks, which is most of them.
+    const f = await fetchChartFeatures(BOX, { fetcher: stubService() })
+    const pile = f.hazards.find((h) => h.kind === 'pile')
+    const wreck = f.hazards.find((h) => h.kind === 'wreck')
+    expect(pile).toBeDefined()
+    expect(wreck).toBeDefined()
+    expect(pile!.radiusM).toBeLessThan(wreck!.radiusM)
+  })
+
+  it('reports no channels rather than guessing when none is published', async () => {
+    // Most of the coast has neither a dredged area nor a fairway, and the
+    // router has to be able to tell that apart from "outside the channel".
+    const f = await fetchChartFeatures(BOX, {
+      fetcher: async (url: string) => {
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('/40/query')) {
+          return {
+            features: [
+              {
+                geometry: {
+                  type: 'Polygon',
+                  coordinates: [[[-94.85, 29.3], [-94.8, 29.3], [-94.8, 29.35], [-94.85, 29.3]]],
+                },
+                properties: { DRVAL1: 9 },
+              },
+            ],
+          }
+        }
+        return { features: [] }
+      },
+    })
+    expect(f.channels).toEqual([])
+    expect(f.coverage).toBe('full')
   })
 })

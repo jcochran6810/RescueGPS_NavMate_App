@@ -2,8 +2,13 @@ import { describe, it, expect } from 'vitest'
 import { haversineNM, metersPerDegree, NM_TO_METERS } from './geo'
 import {
   astar,
+  chamferChannel,
   chamferClearance,
+  chamferDistance,
+  channelPenalty,
+  chordOutsideChannel,
   fillRings,
+  legChannelFraction,
   legMinDepth,
   lineOfSight,
   makeGrid,
@@ -29,7 +34,15 @@ const CELL_M = 100
 const BASE_LAT = 29.3
 const BASE_LON = -94.8
 
-/** '.' navigable, '#' blocked, '?' unsurveyed. Row 0 is the north edge. */
+/**
+ * '.' navigable, '#' blocked, '?' unsurveyed, '=' navigable and inside a
+ * marked channel, ':' navigable with only just enough water for a 1.5 m boat.
+ * Row 0 is the north edge.
+ *
+ * The depth each character carries is what the two-level channel penalty reads:
+ * '.' and '=' are 10 m, which is amply clear of any boat in these tests, and
+ * ':' is 1.7 m, which clears a 1.5 m boat and nothing more.
+ */
 function gridFromAscii(rows: string[], cellM = CELL_M): RouteGrid {
   const r = rows.length
   const c = rows[0].length
@@ -49,16 +62,25 @@ function gridFromAscii(rows: string[], cellM = CELL_M): RouteGrid {
     cells: new Uint8Array(r * c),
     depth: new Float32Array(r * c).fill(NaN),
     clearCells: new Float32Array(r * c),
+    channel: new Uint8Array(r * c),
+    channelDist: new Float32Array(r * c).fill(Infinity),
+    hasChannels: false,
   }
   for (let row = 0; row < r; row++) {
     for (let col = 0; col < c; col++) {
       const ch = rows[row][col]
       const i = row * c + col
-      g.cells[i] = ch === '.' ? 1 : ch === '#' ? 2 : 0
-      g.depth[i] = ch === '.' ? 10 : ch === '#' ? 0.5 : NaN
+      const water = ch === '.' || ch === '=' || ch === ':'
+      g.cells[i] = water ? 1 : ch === '#' ? 2 : 0
+      g.depth[i] = water ? (ch === ':' ? 1.7 : 10) : ch === '#' ? 0.5 : NaN
+      if (ch === '=') {
+        g.channel[i] = 1
+        g.hasChannels = true
+      }
     }
   }
   chamferClearance(g)
+  chamferChannel(g)
   return g
 }
 
@@ -132,7 +154,7 @@ describe('rasterise', () => {
     const whole: Ring = boxRing(g.minLat, g.minLon, g.maxLat, g.maxLon)
     rasterise(
       g,
-      { depthAreas: [{ minDepthM: 1.2, rings: [whole] }], land: [], hazards: [], coverage: 'full' },
+      { depthAreas: [{ minDepthM: 1.2, rings: [whole] }], channels: [], land: [], hazards: [], coverage: 'full' },
       1.5,
     )
     expect(g.cells[0]).toBe(2)
@@ -140,7 +162,7 @@ describe('rasterise', () => {
     const g2 = makeGrid(from, to)
     rasterise(
       g2,
-      { depthAreas: [{ minDepthM: 2.0, rings: [whole] }], land: [], hazards: [], coverage: 'full' },
+      { depthAreas: [{ minDepthM: 2.0, rings: [whole] }], channels: [], land: [], hazards: [], coverage: 'full' },
       1.5,
     )
     expect(g2.cells[0]).toBe(1)
@@ -158,6 +180,7 @@ describe('rasterise', () => {
           { minDepthM: 9, rings: [whole] },
           { minDepthM: 0.6, rings: [whole] },
         ],
+        channels: [],
         land: [],
         hazards: [],
         coverage: 'full',
@@ -178,8 +201,9 @@ describe('rasterise', () => {
       g,
       {
         depthAreas: [{ minDepthM: 20, rings: [whole] }],
+        channels: [],
         land: [],
-        hazards: [{ ...mid, radiusM: g.cellM * 2, label: 'wreck' }],
+        hazards: [{ ...mid, kind: 'wreck' as const, radiusM: g.cellM * 2, label: 'wreck' }],
         coverage: 'full',
       },
       1.5,
@@ -224,8 +248,8 @@ describe('passable', () => {
       '.....',
       '.....',
     ])
-    const none = passability(g, 0)
-    const oneCell = passability(g, CELL_M)
+    const none = passability(g, 0, 1.5)
+    const oneCell = passability(g, CELL_M, 1.5)
     const next = 2 * 5 + 3
     expect(passable(g, next, none)).toBe(true)
     expect(passable(g, next, oneCell)).toBe(false)
@@ -237,7 +261,7 @@ describe('passable', () => {
       '..?..',
       '.....',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(passable(g, 1 * 5 + 2, p)).toBe(false)
   })
 })
@@ -249,7 +273,7 @@ describe('passable', () => {
 describe('lineOfSight', () => {
   it('sees straight across open water', () => {
     const g = gridFromAscii(Array(10).fill('..........'))
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(lineOfSight(g, { col: 0, row: 0 }, { col: 9, row: 9 }, p)).toBe(true)
   })
 
@@ -261,7 +285,7 @@ describe('lineOfSight', () => {
       '.....',
       '.....',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(lineOfSight(g, { col: 2, row: 0 }, { col: 2, row: 4 }, p)).toBe(false)
   })
 
@@ -271,7 +295,7 @@ describe('lineOfSight', () => {
       '#..',
       '...',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     // (0,0) to (1,1) would slip through the corner gap on a plain Bresenham.
     expect(lineOfSight(g, { col: 0, row: 0 }, { col: 1, row: 1 }, p)).toBe(false)
   })
@@ -284,7 +308,7 @@ describe('lineOfSight', () => {
 describe('astar', () => {
   it('crosses open water in the fewest possible steps', () => {
     const g = gridFromAscii(Array(5).fill('.....'))
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const path = astar(g, { col: 0, row: 0 }, { col: 4, row: 4 }, p)
     // Corner to corner of a 5×5 is four diagonal steps: five points.
     expect(path).not.toBeNull()
@@ -301,7 +325,7 @@ describe('astar', () => {
       '...#...',
       '...#...',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const path = astar(g, { col: 0, row: 2 }, { col: 6, row: 2 }, p)
     expect(path).not.toBeNull()
     expect(path?.some((c) => c.col === 3 && c.row === 2)).toBe(true)
@@ -315,7 +339,7 @@ describe('astar', () => {
       '..#..',
       '..#..',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(astar(g, { col: 0, row: 2 }, { col: 4, row: 2 }, p)).toBeNull()
   })
 
@@ -330,7 +354,7 @@ describe('astar', () => {
       '.....',
       '.....',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(astar(g, { col: 0, row: 0 }, { col: 4, row: 4 }, p)).toBeNull()
   })
 
@@ -342,7 +366,7 @@ describe('astar', () => {
       '.....',
       '.....',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const path = astar(g, { col: 0, row: 0 }, { col: 4, row: 4 }, p)
     expect(path).not.toBeNull()
     for (const c of path ?? []) {
@@ -358,7 +382,7 @@ describe('astar', () => {
       '.###.',
       '.....',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(astar(g, { col: 0, row: 0 }, { col: 2, row: 2 }, p)).toBeNull()
   })
 })
@@ -370,7 +394,7 @@ describe('astar', () => {
 describe('stringPull', () => {
   it('reduces a staircase across open water to a single leg', () => {
     const g = gridFromAscii(Array(10).fill('..........'))
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const staircase = [
       { col: 0, row: 0 },
       { col: 1, row: 0 },
@@ -394,7 +418,7 @@ describe('stringPull', () => {
       '.......',
       '.......',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const raw = astar(g, { col: 0, row: 0 }, { col: 0, row: 4 }, p)
     expect(raw).not.toBeNull()
     const pulled = stringPull(g, raw as { col: number; row: number }[], p)
@@ -414,7 +438,7 @@ describe('stringPull', () => {
 describe('snapToWater', () => {
   it('leaves a position already in usable water alone', () => {
     const g = gridFromAscii(Array(5).fill('.....'))
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const here = toLatLon(g, 2, 2)
     expect(snapToWater(g, here, p)).toEqual({ col: 2, row: 2, moved: false })
   })
@@ -427,7 +451,7 @@ describe('snapToWater', () => {
       '.....',
       '.....',
     ])
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     const onLand = toLatLon(g, 2, 2)
     const snapped = snapToWater(g, onLand, p)
     expect(snapped?.moved).toBe(true)
@@ -436,7 +460,7 @@ describe('snapToWater', () => {
 
   it('gives up rather than teleporting when there is no water within reach', () => {
     const g = gridFromAscii(Array(9).fill('#########'), 200)
-    const p = passability(g, 0)
+    const p = passability(g, 0, 1.5)
     expect(snapToWater(g, toLatLon(g, 4, 4), p)).toBeNull()
   })
 })
@@ -505,6 +529,7 @@ function barChart(
         rings: [boxRing(BAR_SOUTH, g.minLon, BAR_NORTH, channelWest(g))],
       },
     ],
+    channels: [],
     land: [],
     hazards: [],
     coverage: 'full',
@@ -553,6 +578,7 @@ describe('planRoute', () => {
       depthAreas: [
         { minDepthM: 12, rings: [boxRing(b.minLat, b.minLon, b.maxLat, b.maxLon)] },
       ],
+      channels: [],
       land: [],
       hazards: [],
       coverage: 'full',
@@ -589,6 +615,7 @@ describe('planRoute', () => {
         { minDepthM: 12, rings: [boxRing(b.minLat, b.minLon, 29.315, b.maxLon)] },
         { minDepthM: 12, rings: [boxRing(29.325, b.minLon, b.maxLat, b.maxLon)] },
       ],
+      channels: [],
       land: [],
       hazards: [],
       coverage: 'full',
@@ -605,7 +632,7 @@ describe('planRoute', () => {
       safeDepthM: 1.5,
       clearanceM: 0,
       speedKn: 20,
-      features: { depthAreas: [], land: [], hazards: [], coverage: 'none' },
+      features: { depthAreas: [], channels: [], land: [], hazards: [], coverage: 'none' },
     })
     expect(plan.source).toBe('straight')
     expect(plan.points).toEqual([from, to])
@@ -618,6 +645,7 @@ describe('planRoute', () => {
       depthAreas: [
         { minDepthM: 12, rings: [boxRing(b.minLat, b.minLon, b.maxLat, b.maxLon)] },
       ],
+      channels: [],
       land: [boxRing(29.33, -94.83, 29.35, -94.81)].map((r) => ({ rings: [r] })),
       hazards: [],
       coverage: 'full',
@@ -633,6 +661,7 @@ describe('planRoute', () => {
       depthAreas: [
         { minDepthM: 12, rings: [boxRing(b.minLat, b.minLon, b.maxLat, b.maxLon)] },
       ],
+      channels: [],
       land: [],
       hazards: [],
       coverage: 'partial',
@@ -659,5 +688,356 @@ describe('planRoute', () => {
     const wide = planRoute({ from, to, safeDepthM: 1.5, clearanceM: 200, speedKn: 20, features })
     const tight = planRoute({ from, to, safeDepthM: 1.5, clearanceM: 0, speedKn: 20, features })
     expect(wide.totalNM).toBeGreaterThan(tight.totalNM)
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * Marked channels
+ *
+ * A marked channel is a dredged area or a fairway: water that has been
+ * surveyed to a depth and is maintained, swept and buoyed to it. Open water
+ * that merely charts deep enough is none of those things, which is why a
+ * course prefers the channel even when it is longer.
+ * ---------------------------------------------------------------------- */
+
+describe('chamferDistance', () => {
+  it('treats what lies beyond the grid as the caller says', () => {
+    // The clearance transform wants the edge to be a source — a route that
+    // leaves the box is a route through water nobody looked at. The channel
+    // transform wants the opposite: nothing outside the box is known to be
+    // marked water, and counting the edge as a channel would cheapen every
+    // cell near it.
+    const g = gridFromAscii(['...', '...', '...'])
+    const edgeIsSource = new Float32Array(9)
+    const edgeIsNothing = new Float32Array(9)
+    const centreOnly = (i: number) => i === 4
+
+    chamferDistance(3, 3, centreOnly, 0, edgeIsSource)
+    chamferDistance(3, 3, centreOnly, Infinity, edgeIsNothing)
+
+    expect(edgeIsSource[0]).toBeLessThan(edgeIsNothing[0])
+    expect(edgeIsSource[4]).toBe(0)
+    expect(edgeIsNothing[4]).toBe(0)
+    expect(g.cols).toBe(3)
+  })
+})
+
+describe('channelPenalty', () => {
+  it('charges nothing inside a channel, and nothing at all where none is charted', () => {
+    // A route must never be charged for being exactly where it belongs, and
+    // nothing may change on the great majority of the coast that has no
+    // dredged area or fairway charted on it.
+    const marked = gridFromAscii(['==.', '==.', '==.'])
+    const p = passability(marked, 0, 1.5)
+    expect(channelPenalty(marked, 0, p)).toBe(0)
+    expect(channelPenalty(marked, 2, p)).toBeGreaterThan(0)
+
+    const bare = gridFromAscii(['...', '...', '...'])
+    const bp = passability(bare, 0, 1.5)
+    expect(bare.hasChannels).toBe(false)
+    for (let i = 0; i < 9; i++) expect(channelPenalty(bare, i, bp)).toBe(0)
+  })
+
+  it('saturates rather than growing without limit', () => {
+    // An unbounded cost far from the channel would swamp the octile heuristic
+    // and turn a 60 ms plot into a Dijkstra sweep of a quarter-million cells.
+    const g = gridFromAscii([
+      '=..........',
+      '=..........',
+      '=..........',
+    ])
+    const p = passability(g, 0, 1.5)
+    // Five cells out and ten cells out are both well past the fade distance,
+    // so they must cost exactly the same rather than the further one costing
+    // twice as much.
+    const near = channelPenalty(g, 5, p)
+    const far = channelPenalty(g, 10, p)
+    expect(near).toBeGreaterThan(0)
+    expect(far).toBeCloseTo(near, 10)
+  })
+
+  it('costs less over water that is amply deep than over water that only just clears', () => {
+    // This is the whole of "stay in the channel until there is a clear, deep
+    // enough unobstructed path". ':' charts 1.7 m, which clears a 1.5 m boat
+    // and nothing more; '.' charts 10 m.
+    const g = gridFromAscii(['=.:', '=.:', '=.:'])
+    const p = passability(g, 0, 1.5)
+    const ample = channelPenalty(g, 1, p)
+    const thin = channelPenalty(g, 2, p)
+    expect(ample).toBeGreaterThan(0)
+    expect(thin).toBeGreaterThan(ample)
+  })
+})
+
+describe('astar with a marked channel', () => {
+  it('rides a channel rather than the shorter open-water line', () => {
+    // The channel runs down column 1 and dog-legs across row 4 to column 5.
+    // Straight down column 5 is shorter, and charts deep enough for the boat
+    // — but it is not dredged, not swept and not buoyed.
+    const g = gridFromAscii([
+      '=:::::',
+      '=:::::',
+      '=:::::',
+      '=:::::',
+      '======',
+    ])
+    const p = passability(g, 0, 1.5)
+    const path = astar(g, { col: 0, row: 0 }, { col: 5, row: 4 }, p)
+    expect(path).not.toBeNull()
+    for (const c of path ?? []) {
+      expect(g.channel[c.row * g.cols + c.col]).toBe(1)
+    }
+  })
+
+  it('takes the open-water line when that water is amply deep', () => {
+    // Same shape, but the water off the channel is 10 m rather than 1.7 m.
+    // A preference that ignored genuinely good water would be a nuisance a
+    // crew learns to route around by hand, so this is the escape clause.
+    const g = gridFromAscii([
+      '=.....',
+      '=.....',
+      '=.....',
+      '=.....',
+      '======',
+    ])
+    const p = passability(g, 0, 1.5)
+    const path = astar(g, { col: 0, row: 0 }, { col: 5, row: 4 }, p)
+    expect(path).not.toBeNull()
+    const outside = (path ?? []).filter(
+      (c) => g.channel[c.row * g.cols + c.col] !== 1,
+    )
+    expect(outside.length).toBeGreaterThan(0)
+  })
+
+  it('leaves the channel to reach a destination outside it', () => {
+    // A strong preference is not a prison. A course that could not reach a
+    // dock because the dock is not dredged would be useless.
+    const g = gridFromAscii([
+      '===..',
+      '===..',
+      '===..',
+    ])
+    const p = passability(g, 0, 1.5)
+    const path = astar(g, { col: 0, row: 1 }, { col: 4, row: 1 }, p)
+    expect(path).not.toBeNull()
+    expect(path?.[path.length - 1]).toEqual({ col: 4, row: 1 })
+  })
+
+  it('will not leave a narrow channel merely to stop shaving its bank', () => {
+    // The invariant that makes "stay in the channel" true rather than
+    // approximately true: the worst cell inside a channel must stay cheaper
+    // than the best cell outside one in water that only just clears the boat.
+    // Here the channel is one cell wide, so every cell in it carries the full
+    // bank-edge cost, and there is wide thin water alongside.
+    // The channel is one cell wide against a wall, so every cell in it pays
+    // the full bank-edge cost, and its dog-leg is LONGER than cutting the
+    // corner through the thin water alongside. It must still be chosen.
+    const g = gridFromAscii([
+      '#=::::',
+      '#=::::',
+      '#=::::',
+      '#=====',
+    ])
+    const p = passability(g, 0, 1.5)
+    const path = astar(g, { col: 1, row: 0 }, { col: 5, row: 3 }, p)
+    expect(path).not.toBeNull()
+    for (const c of path ?? []) {
+      expect(g.channel[c.row * g.cols + c.col]).toBe(1)
+    }
+  })
+})
+
+describe('stringPull with a marked channel', () => {
+  it('keeps the dog-leg of a channel whose chord is open water', () => {
+    // The shortest line between two points in a channel is very often not in
+    // the channel. Without the budget the smoother would undo, in its last
+    // pass, every bit of seamanship A* had just paid for.
+    const g = gridFromAscii([
+      '=:::::',
+      '=:::::',
+      '=:::::',
+      '=:::::',
+      '======',
+    ])
+    const p = passability(g, 0, 1.5)
+    const path = astar(g, { col: 0, row: 0 }, { col: 5, row: 4 }, p)
+    expect(path).not.toBeNull()
+    const pulled = stringPull(g, path ?? [], p)
+    for (let i = 1; i < pulled.length; i++) {
+      expect(chordOutsideChannel(g, pulled[i - 1], pulled[i], p)).toBe(0)
+    }
+  })
+
+  it('still collapses a staircase that stays inside the channel', () => {
+    // The constraint must not cost a coxswain turn points they do not need.
+    const g = gridFromAscii([
+      '=====',
+      '=====',
+      '=====',
+    ])
+    const p = passability(g, 0, 1.5)
+    const staircase = [
+      { col: 0, row: 0 },
+      { col: 1, row: 0 },
+      { col: 2, row: 1 },
+      { col: 3, row: 1 },
+      { col: 4, row: 2 },
+    ]
+    expect(stringPull(g, staircase, p).length).toBe(2)
+  })
+})
+
+describe('chordOutsideChannel', () => {
+  it('agrees with lineOfSight about what is clear, and counts what is outside', () => {
+    // One walk, two answers. The visibility test and the smoother must never
+    // be able to disagree about what a line crosses.
+    const g = gridFromAscii([
+      '==..',
+      '==..',
+      '##..',
+    ])
+    const p = passability(g, 0, 1.5)
+    const a = { col: 0, row: 0 }
+    const clear = { col: 3, row: 0 }
+    const blocked = { col: 0, row: 2 }
+
+    expect(chordOutsideChannel(g, a, clear, p)).toBe(2)
+    expect(lineOfSight(g, a, clear, p)).toBe(true)
+    expect(chordOutsideChannel(g, a, blocked, p)).toBeNull()
+    expect(lineOfSight(g, a, blocked, p)).toBe(false)
+  })
+})
+
+describe('legChannelFraction', () => {
+  it('is null where nothing is marked, and a fraction where something is', () => {
+    // "There is no channel here" and "this leg is outside the channel" are
+    // different facts, and a crew must not read the first as the second.
+    const bare = gridFromAscii(['...', '...', '...'])
+    expect(
+      legChannelFraction(bare, toLatLon(bare, 0, 1), toLatLon(bare, 2, 1)),
+    ).toBeNull()
+
+    const marked = gridFromAscii(['===', '===', '==='])
+    expect(
+      legChannelFraction(marked, toLatLon(marked, 0, 1), toLatLon(marked, 2, 1)),
+    ).toBe(1)
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * planRoute with a marked channel
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Water everywhere at `surroundDepthM`, with a dredged channel that runs north
+ * up the west side and then dog-legs east. Staying in it is about half again
+ * as far as the direct line — which is the point: a marked channel is dredged,
+ * swept and buoyed, and open water that merely charts deep enough is none of
+ * those.
+ */
+function channelChart(
+  g: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  surroundDepthM: number,
+): ChartFeatures {
+  const legWest = -94.83
+  const legEast = -94.81
+  const dogLegSouth = 29.335
+  const dogLegNorth = 29.345
+  const rings = [
+    boxRing(29.295, legWest, dogLegNorth, -94.825),
+    boxRing(dogLegSouth, legWest, dogLegNorth, legEast),
+  ]
+  return {
+    depthAreas: [
+      {
+        minDepthM: surroundDepthM,
+        rings: [boxRing(g.minLat, g.minLon, g.maxLat, g.maxLon)],
+      },
+    ],
+    channels: rings.map((r) => ({ kind: 'dredged' as const, rings: [r] })),
+    land: [],
+    hazards: [],
+    coverage: 'full',
+  }
+}
+
+describe('planRoute with a marked channel', () => {
+  const from = { lat: 29.30, lon: -94.82 }
+  const to = { lat: 29.34, lon: -94.82 }
+  const boat = { safeDepthM: 1.5, clearanceM: 0, speedKn: 20 }
+
+  it('rides the channel when the water around it only just clears the boat', () => {
+    const b = routeBounds(from, to)
+    const plan = planRoute({ from, to, ...boat, features: channelChart(b, 1.7) })
+
+    expect(plan.source).toBe('charted')
+    const directNM = haversineNM(from.lat, from.lon, to.lat, to.lon)
+    expect(plan.totalNM).toBeGreaterThan(directNM)
+    // Most of the course is inside marked water; what is not is the run off
+    // each end to the points the crew actually asked for.
+    expect(plan.outsideChannelNM).not.toBeNull()
+    expect(plan.outsideChannelNM!).toBeLessThan(plan.totalNM / 2)
+  })
+
+  it('runs direct when the water around the channel is amply deep', () => {
+    // The same fixture with only the surrounding depth changed. This is the
+    // pair that proves both levels are reachable with one set of constants.
+    const b = routeBounds(from, to)
+    const plan = planRoute({ from, to, ...boat, features: channelChart(b, 12) })
+
+    expect(plan.source).toBe('charted')
+    const directNM = haversineNM(from.lat, from.lon, to.lat, to.lon)
+    expect(plan.totalNM).toBeLessThan(directNM * 1.1)
+  })
+
+  it('says out loud when the course runs outside marked water', () => {
+    const b = routeBounds(from, to)
+    const plan = planRoute({ from, to, ...boat, features: channelChart(b, 12) })
+    expect(plan.warnings.join(' ')).toMatch(/outside the marked channel/i)
+  })
+
+  it('reports no channel at all rather than "outside the channel"', () => {
+    // "There is nothing marked here" must never be rendered as "you have left
+    // the channel".
+    const b = routeBounds(from, to)
+    const features = channelChart(b, 12)
+    features.channels = []
+    const plan = planRoute({ from, to, ...boat, features })
+
+    expect(plan.outsideChannelNM).toBeNull()
+    for (const leg of plan.legs) expect(leg.channelFraction).toBeNull()
+    expect(plan.warnings.join(' ')).not.toMatch(/outside the marked channel/i)
+  })
+
+  it('still plots a course when the only charted channel is nowhere near', () => {
+    // A channel somewhere else in the box is not a reason to refuse: the
+    // planner never hands back nothing.
+    const b = routeBounds(from, to)
+    const features = channelChart(b, 12)
+    features.channels = [
+      { kind: 'fairway', rings: [boxRing(b.minLat, b.minLon, b.minLat + 0.002, b.minLon + 0.002)] },
+    ]
+    const plan = planRoute({ from, to, ...boat, features })
+    expect(plan.source).toBe('charted')
+    expect(plan.points.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('goes round a charted pile instead of through it', () => {
+    // A pile is a fixed structure; hitting one at speed ends the mission.
+    const b = routeBounds(from, to)
+    const clear = channelChart(b, 12)
+    clear.channels = []
+    const withPile: ChartFeatures = {
+      ...clear,
+      hazards: [
+        { lat: 29.32, lon: -94.82, radiusM: 60, kind: 'pile', label: 'pile' },
+      ],
+    }
+
+    const straight = planRoute({ from, to, ...boat, features: clear })
+    const round = planRoute({ from, to, ...boat, features: withPile })
+
+    expect(round.source).toBe('charted')
+    expect(round.totalNM).toBeGreaterThan(straight.totalNM)
   })
 })

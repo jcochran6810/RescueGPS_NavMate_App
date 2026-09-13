@@ -25,7 +25,14 @@
  */
 
 import { haversineNM } from './geo'
-import type { ChartFeatures, DepthPolygon, LandPolygon, PointHazard, Ring } from './routing'
+import type {
+  ChannelPolygon,
+  ChartFeatures,
+  DepthPolygon,
+  LandPolygon,
+  PointHazard,
+  Ring,
+} from './routing'
 
 export interface ChartBounds {
   minLat: number
@@ -107,11 +114,13 @@ export function bandForSpan(spanNM: number): EncBand {
 export type ChartRole =
   | 'depth'
   | 'dredged'
+  | 'fairway'
   | 'land'
   | 'shoreline'
   | 'wreck'
   | 'obstruction'
   | 'rock'
+  | 'pile'
   | 'bridge'
 
 /**
@@ -124,11 +133,16 @@ export type ChartRole =
 const ROLE_PATTERNS: { role: ChartRole; test: RegExp; geometry: 'polygon' | 'point' | 'any' }[] = [
   { role: 'depth', test: /depth[\s_]*area/i, geometry: 'polygon' },
   { role: 'dredged', test: /dredged[\s_]*area/i, geometry: 'polygon' },
+  { role: 'fairway', test: /fairway/i, geometry: 'polygon' },
   { role: 'land', test: /land[\s_]*area/i, geometry: 'polygon' },
   { role: 'shoreline', test: /shoreline[\s_]*construction/i, geometry: 'polygon' },
   { role: 'wreck', test: /wreck/i, geometry: 'any' },
   { role: 'obstruction', test: /obstruction/i, geometry: 'any' },
   { role: 'rock', test: /underwater[\s_]*rock|rock[\s_]*awash/i, geometry: 'any' },
+  // `[\W_]` rather than `\b`: an underscore IS a word character, so `\bpile`
+  // would miss `Harbor_Piles_point`, which is exactly the shape these names
+  // arrive in. The guards also stop it matching "compiled".
+  { role: 'pile', test: /(?:^|[\W_])piles?(?:[\W_]|$)/i, geometry: 'point' },
   { role: 'bridge', test: /bridge/i, geometry: 'any' },
 ]
 
@@ -288,6 +302,20 @@ export function exceededLimit(payload: unknown): boolean {
  */
 export const HAZARD_RADIUS_M = 40
 
+/**
+ * Radius given to a charted pile, metres.
+ *
+ * Deliberately not the wreck's 40 m. A pile is a metre of timber or steel in a
+ * position the chart knows to within a few metres — not a hull lying somewhere
+ * near a reported wreck position. And piles line the banks of dredged cuts,
+ * marina approaches and bridge fenders: at the harbour band a cell is 8 m, so
+ * a 40 m disc is five cells, and piles down both sides would close a 60 m
+ * channel completely. The route would then fail to the straight line, which is
+ * worse than no pile data at all on exactly the harbour routes that need it
+ * most. The lateral stand-off the coxswain sets is applied on top of this.
+ */
+export const PILE_RADIUS_M = 10
+
 /* -------------------------------------------------------------------------
  * Querying
  * ---------------------------------------------------------------------- */
@@ -372,10 +400,16 @@ export async function queryLayer(
 /**
  * Everything the router needs for one area.
  *
- * Depth areas and dredged areas both become depth polygons — a dredged channel
- * is the most useful depth on the chart and carries the same `DRVAL1`. Land
- * and shoreline construction both become land: a breakwater is not land, but
- * it stops a boat exactly like land does.
+ * A dredged area is recorded twice, and that is the point rather than a
+ * duplication: it carries a `DRVAL1` like any depth area — a dredged cut is
+ * usually the most useful depth on the chart — and it is also water traffic is
+ * meant to be in. Flattening it into a depth loses the second fact, which is
+ * the one the coxswain is actually steering by. A fairway is the opposite: it
+ * is marked water carrying no depth at all, so it becomes a channel and never
+ * a depth area.
+ *
+ * Land and shoreline construction both become land: a breakwater is not land,
+ * but it stops a boat exactly like land does.
  */
 export async function fetchChartFeatures(
   bounds: ChartBounds,
@@ -388,10 +422,10 @@ export async function fetchChartFeatures(
   try {
     layers = matchLayers(await fetcher(layersUrl(band.service)))
   } catch {
-    return { depthAreas: [], land: [], hazards: [], coverage: 'none' }
+    return { depthAreas: [], channels: [], land: [], hazards: [], coverage: 'none' }
   }
   if (layers.length === 0) {
-    return { depthAreas: [], land: [], hazards: [], coverage: 'none' }
+    return { depthAreas: [], channels: [], land: [], hazards: [], coverage: 'none' }
   }
 
   const results = await Promise.all(
@@ -402,6 +436,7 @@ export async function fetchChartFeatures(
   )
 
   const depthAreas: DepthPolygon[] = []
+  const channels: ChannelPolygon[] = []
   const land: LandPolygon[] = []
   const hazards: PointHazard[] = []
   let complete = true
@@ -415,6 +450,18 @@ export async function fetchChartFeatures(
           const d = pickNumber(f.properties, DEPTH_FIELDS)
           const rings = ringsOf(f.geometry)
           if (d !== null && rings.length > 0) depthAreas.push({ minDepthM: d, rings })
+          if (layer.role === 'dredged' && rings.length > 0) {
+            channels.push({ kind: 'dredged', rings })
+          }
+          break
+        }
+        case 'fairway': {
+          // No depth is read here on purpose: a fairway does not carry one,
+          // and inventing a depth for marked water is the guess this app
+          // refuses everywhere else. It is preferable water, not usable water
+          // — a depth area has to say so independently.
+          const rings = ringsOf(f.geometry)
+          if (rings.length > 0) channels.push({ kind: 'fairway', rings })
           break
         }
         case 'land':
@@ -425,7 +472,8 @@ export async function fetchChartFeatures(
         }
         case 'wreck':
         case 'obstruction':
-        case 'rock': {
+        case 'rock':
+        case 'pile': {
           // An area hazard is land as far as the boat is concerned; a point one
           // gets a footprint. A charted sounding deeper than any boat here is
           // still left in — the router decides, not the fetcher.
@@ -438,7 +486,8 @@ export async function fetchChartFeatures(
           if (p) {
             hazards.push({
               ...p,
-              radiusM: HAZARD_RADIUS_M,
+              radiusM: layer.role === 'pile' ? PILE_RADIUS_M : HAZARD_RADIUS_M,
+              kind: layer.role,
               label: pickNumber(f.properties, SOUNDING_FIELDS) !== null
                 ? `${layer.role} ${pickNumber(f.properties, SOUNDING_FIELDS)} m`
                 : layer.role,
@@ -454,9 +503,17 @@ export async function fetchChartFeatures(
   }
 
   if (depthAreas.length === 0) {
-    return { depthAreas: [], land, hazards, coverage: 'none' }
+    // Channels deliberately do not rescue coverage: marked water over water
+    // nobody surveyed is not a route.
+    return { depthAreas: [], channels, land, hazards, coverage: 'none' }
   }
-  return { depthAreas, land, hazards, coverage: complete ? 'full' : 'partial' }
+  return {
+    depthAreas,
+    channels,
+    land,
+    hazards,
+    coverage: complete ? 'full' : 'partial',
+  }
 }
 
 /** Lowest charted vertical clearance among bridge features, metres. */

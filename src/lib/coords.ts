@@ -74,36 +74,75 @@ export function toDD(dd: number, digits = 6): string {
 }
 
 /**
+ * The pieces of a coordinate, for a form that gives each its own box.
+ *
+ * These exist so a split-field editor and the printed string cannot disagree.
+ * The rounding carry is the reason: rounding has to happen once, on the total
+ * in the smallest unit, or a position lands on the impossible `59' 60.0"`.
+ * That rule used to live inside each formatter; now it lives here and the
+ * formatters are built on top, so there is one implementation of it.
+ *
+ * `min` and `sec` are unsigned and the sign is carried by `hemi`, which is how
+ * a chart prints them and how a crew reads them aloud.
+ */
+export interface DdmParts {
+  deg: number
+  min: number
+  hemi: string
+}
+
+export interface DmsParts {
+  deg: number
+  min: number
+  sec: number
+  hemi: string
+}
+
+/** Degrees and decimal minutes, split. Null when there is no coordinate. */
+export function ddmParts(
+  dd: number,
+  axis: Axis,
+  minuteDigits = 3,
+): DdmParts | null {
+  if (!Number.isFinite(dd)) return null
+  const factor = 10 ** minuteDigits
+  const remaining = Math.round(Math.abs(dd) * 60 * factor) / factor
+  const deg = Math.floor(remaining / 60)
+  return { deg, min: remaining - deg * 60, hemi: hemisphereFor(dd, axis) }
+}
+
+/** Degrees, minutes and decimal seconds, split. Null when there is none. */
+export function dmsParts(
+  dd: number,
+  axis: Axis,
+  secondDigits = 1,
+): DmsParts | null {
+  if (!Number.isFinite(dd)) return null
+  const factor = 10 ** secondDigits
+  let remaining = Math.round(Math.abs(dd) * 3600 * factor) / factor
+  const deg = Math.floor(remaining / 3600)
+  remaining -= deg * 3600
+  const min = Math.floor(remaining / 60)
+  return { deg, min, sec: remaining - min * 60, hemi: hemisphereFor(dd, axis) }
+}
+
+/**
  * Degrees / minutes / seconds, e.g. `27° 59' 16.3" N`.
  *
  * Rounds once on total seconds so a value like 59'59.98" carries into the next
  * minute instead of rendering the impossible `59' 60.0"`.
  */
 export function toDMS(dd: number, axis: Axis, secondDigits = 1): string {
-  if (!Number.isFinite(dd)) return ''
-  const hemi = hemisphereFor(dd, axis)
-  const factor = 10 ** secondDigits
-
-  let remaining = Math.round(Math.abs(dd) * 3600 * factor) / factor
-  const deg = Math.floor(remaining / 3600)
-  remaining -= deg * 3600
-  const min = Math.floor(remaining / 60)
-  const sec = remaining - min * 60
-
-  return `${deg}° ${min}' ${sec.toFixed(secondDigits)}" ${hemi}`
+  const p = dmsParts(dd, axis, secondDigits)
+  if (!p) return ''
+  return `${p.deg}° ${p.min}' ${p.sec.toFixed(secondDigits)}" ${p.hemi}`
 }
 
 /** Degrees / decimal minutes, e.g. `27° 59.272' N`. */
 export function toDDM(dd: number, axis: Axis, minuteDigits = 3): string {
-  if (!Number.isFinite(dd)) return ''
-  const hemi = hemisphereFor(dd, axis)
-  const factor = 10 ** minuteDigits
-
-  const remaining = Math.round(Math.abs(dd) * 60 * factor) / factor
-  const deg = Math.floor(remaining / 60)
-  const min = remaining - deg * 60
-
-  return `${deg}° ${min.toFixed(minuteDigits)}' ${hemi}`
+  const p = ddmParts(dd, axis, minuteDigits)
+  if (!p) return ''
+  return `${p.deg}° ${p.min.toFixed(minuteDigits)}' ${p.hemi}`
 }
 
 /** Normalise longitude into [-180, 180). */
