@@ -8,7 +8,10 @@ import { useIncidents } from '@/store/useIncidents'
 import { useTides } from '@/store/useTides'
 import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
-import { parseCoord } from '@/lib/coords'
+import { toDD, toDDM, toDMS } from '@/lib/coords'
+import { useCoordFormat } from '@/store/useCoordFormat'
+import { CoordInput } from '@/components/CoordInput'
+import { Sheet } from '@/components/Sheet'
 import {
   formatBearing,
   formatDistance,
@@ -31,7 +34,7 @@ import { formatTideClock, formatTideHeight, tideNow } from '@/lib/tides'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
-import { Button, Card, EmptyState, Input, Label, Spinner, Stat } from '@/components/ui'
+import { Button, Card, EmptyState, Input, Label, Segmented, Spinner, Stat } from '@/components/ui'
 
 /**
  * Chart plotter — a nautical chart, a destination, and a course that stays in
@@ -60,6 +63,16 @@ type Place = {
 /** Which end of the route a chart tap is filling in. */
 type Picking = 'start' | 'dest' | null
 
+/** Which end a sheet is editing, and how. */
+type SheetKind =
+  | { end: 'start' | 'dest'; how: 'coords' }
+  | { end: 'dest'; how: 'waypoint' }
+  | null
+
+/** Debounce before auto-plotting. Long enough that dragging the map or
+ *  typing a coordinate does not fire a chart fetch on every keystroke. */
+const PLOT_DEBOUNCE_MS = 400
+
 export function ChartTab() {
   const tracker = useTracker()
   const fix = tracker.fix
@@ -76,14 +89,18 @@ export function ChartTab() {
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
   const tides = useTides()
 
+  const format = useCoordFormat((s) => s.format)
+
   const [base, setBase] = useState<MapBase>('chart')
   const [seamarks, setSeamarks] = useState(true)
   const [picking, setPicking] = useState<Picking>(null)
   const [start, setStart] = useState<Place | null>(null)
   const [dest, setDest] = useState<Place | null>(null)
-  const [typed, setTyped] = useState({ lat: '', lon: '' })
+  const [sheet, setSheet] = useState<SheetKind>(null)
+  const [draft, setDraft] = useState({ lat: NaN, lon: NaN })
   const [plan, setPlan] = useState<RoutePlan | null>(null)
   const [planning, setPlanning] = useState(false)
+  const [planError, setPlanError] = useState<string | null>(null)
   const [targetIdx, setTargetIdx] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
 
@@ -102,20 +119,36 @@ export function ChartTab() {
     [allWaypoints, activeTeamId],
   )
 
+  const arrivalFt = tracker.arrivalFt
   const speedKn = boat?.cruise_speed_kn ?? 0
   const running = targetIdx !== null && plan !== null
 
   /* Auto-advance down the route, exactly as the search pattern does. */
   useEffect(() => {
     if (!running || !plan || targetIdx === null || !fix) return
-    if (shouldAdvance(plan, targetIdx, fix)) setTargetIdx(targetIdx + 1)
-  }, [running, plan, targetIdx, fix])
+    if (shouldAdvance(plan, targetIdx, fix, arrivalFt)) setTargetIdx(targetIdx + 1)
+  }, [running, plan, targetIdx, fix, arrivalFt])
 
-  /* Moving either end invalidates the route that joined the old ones. */
+  /*
+   * Moving either end invalidates the route that joined the old ones — and
+   * then plots the new one. The crew asked for two points, not for two points
+   * and a button; the course belongs on the chart as soon as both ends exist.
+   *
+   * Debounced because plotting fetches chart data: without it, dragging a
+   * destination across the map would fire a NOAA query per frame.
+   */
   useEffect(() => {
     setPlan(null)
     setTargetIdx(null)
-  }, [start?.lat, start?.lon, dest?.lat, dest?.lon])
+    setPlanError(null)
+    if (!start || !dest || !boat) return
+    const t = setTimeout(() => void plot(), PLOT_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+    // Deliberately keyed on the endpoint coordinates and the boat rather than
+    // on `plot` itself: `plot` is re-created every render, and depending on it
+    // would re-arm the timer forever. It reads what it needs from the render
+    // it was made in, and its own guard stops two runs overlapping.
+  }, [start?.lat, start?.lon, dest?.lat, dest?.lon, boat?.id])
 
   /** Take a one-shot GPS fix and use it as the start point. */
   async function startHere() {
@@ -137,6 +170,7 @@ export function ChartTab() {
   async function plot() {
     if (!start || !dest || !boat || planning) return
     setPlanning(true)
+    setPlanError(null)
     try {
       const bounds = routeBounds(start, dest)
       const features = await chart.load(bounds)
@@ -158,6 +192,13 @@ export function ChartTab() {
       }
       // The tide is information beside the route, never an input to it.
       void tides.refresh(dest.lat, dest.lon)
+    } catch (e) {
+      // Plotting used to be a button press, so a throw here surfaced as a
+      // rejected click. Now that it runs from an effect, an unhandled one
+      // would be a screen that silently never shows a course.
+      setPlanError(
+        e instanceof Error ? e.message : 'Could not reach the chart service.',
+      )
     } finally {
       setPlanning(false)
     }
@@ -206,61 +247,63 @@ export function ChartTab() {
       </p>
 
       {/* ------------------------------------------------------------ boat */}
-      <Card>
-        <div className="flex items-start justify-between gap-2">
-          <Label>Boat</Label>
-          {boat ? (
-            <button
+      {/* One line, not a card of tiles. The boat has to be here — nothing is
+          planned without a draft — but it is set once a season, and it was
+          pushing the chart off the screen every time. */}
+      <Card className="p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <span className="block text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              Boat
+            </span>
+            {boat ? (
+              <span className="block truncate text-sm text-slate-100">
+                <span className="font-semibold">{boat.name || 'Unnamed boat'}</span>
+                <span className="text-slate-300">
+                  {' · needs '}
+                  {formatFeet(safeDepthM(boat))}
+                  {' · '}
+                  {boat.cruise_speed_kn} kn
+                </span>
+              </span>
+            ) : (
+              <span className="block text-sm text-slate-300">
+                Add your boat — nothing is planned without a draft.
+              </span>
+            )}
+          </div>
+          {scopeBoats.length > 0 ? (
+            <Button
+              variant="ghost"
+              className="shrink-0 px-3"
               onClick={() => setEditing((v) => !v)}
-              className="mb-1.5 text-xs font-semibold text-sky-300 hover:text-sky-200"
             >
               {editing ? 'Done' : 'Edit'}
-            </button>
+            </Button>
           ) : null}
         </div>
 
-        {scopeBoats.length === 0 ? (
-          <EmptyState>
-            Add your boat so the plotter knows what water it can use. Nothing
-            here is planned without a draft.
-          </EmptyState>
-        ) : (
-          <>
-            {scopeBoats.length > 1 && (
-              <div className="mb-2 grid grid-cols-2 gap-1.5">
-                {scopeBoats.map((v) => (
-                  <button
-                    key={v.id}
-                    onClick={() => vessels.setActive(v.id)}
-                    aria-pressed={v.id === boat?.id}
-                    className={
-                      'rounded-lg border px-2 py-1.5 text-left text-xs font-semibold ' +
-                      (v.id === boat?.id
-                        ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                        : 'border-white/10 text-slate-300 hover:bg-white/5')
-                    }
-                  >
-                    {v.name || 'Unnamed boat'}
-                    <span className="block font-normal text-slate-400">
-                      {formatFeet(v.draft_m)} draft
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {boat && (
-              <div className="grid grid-cols-3 gap-2">
-                <Stat label="Draft" value={formatFeet(boat.draft_m)} />
-                <Stat
-                  label="Needs"
-                  value={formatFeet(safeDepthM(boat))}
-                  hint="draft + margin"
-                />
-                <Stat label="Cruise" value={`${boat.cruise_speed_kn} kn`} />
-              </div>
-            )}
-          </>
+        {scopeBoats.length > 1 && (
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            {scopeBoats.map((v) => (
+              <button
+                key={v.id}
+                onClick={() => vessels.setActive(v.id)}
+                aria-pressed={v.id === boat?.id}
+                className={
+                  'min-h-11 rounded-lg border px-2 py-1.5 text-left text-xs font-semibold ' +
+                  (v.id === boat?.id
+                    ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                    : 'border-white/10 text-slate-300 hover:bg-white/5')
+                }
+              >
+                {v.name || 'Unnamed boat'}
+                <span className="block font-normal text-slate-400">
+                  {formatFeet(v.draft_m)} draft
+                </span>
+              </button>
+            ))}
+          </div>
         )}
 
         {(editing || scopeBoats.length === 0) && (
@@ -273,54 +316,72 @@ export function ChartTab() {
         )}
       </Card>
 
-      {/* ----------------------------------------------------------- chart */}
-      <Card>
-        <div className="flex items-start justify-between gap-2">
-          <Label>Chart</Label>
-          <span className="tnum mb-1.5 text-xs text-slate-400">
-            {chart.status === 'loading'
-              ? 'loading depths…'
-              : chart.status === 'ready'
-                ? `depths: ${chart.features.coverage}`
-                : chart.status === 'error'
-                  ? 'no depths'
-                  : ''}
-          </span>
-        </div>
+      {/* ---------------------------------------------------- from / to */}
+      {/* Both ends together, above the chart, each one line of position and
+          one row of ways to set it. This used to be two full cards below the
+          map, which meant scrolling past the chart to say where you were
+          going and then scrolling back to look at it. */}
+      <Card className="p-3">
+        {/* Called, not rendered as <EndRow/>: a component declared inside
+            another is a new type every render, so React would remount these
+            rows — and the chip you just tapped would lose focus. */}
+        {endRow({
+          end: 'start',
+          label: 'From',
+          place: start,
+          onClear: () => setStart(null),
+        })}
+        <div className="my-2 h-px bg-white/10" />
+        {endRow({
+          end: 'dest',
+          label: 'To',
+          place: dest,
+          onClear: () => setDest(null),
+        })}
+        {start && !startIsHere ? (
+          <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
+            The course starts where you said, not where you are. Steering still
+            follows your live fix.
+          </p>
+        ) : null}
+      </Card>
 
-        <div className="mb-2 grid grid-cols-3 gap-1.5">
-          {(
-            [
-              ['chart', 'Chart'],
-              ['satellite', 'Satellite'],
-            ] as [MapBase, string][]
-          ).map(([id, label]) => (
+      {/* ----------------------------------------------------------- chart */}
+      <Card className="p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <Segmented
+            label="Base layer"
+            value={base}
+            onChange={setBase}
+            options={[
+              { id: 'chart' as MapBase, label: 'Chart' },
+              { id: 'satellite' as MapBase, label: 'Satellite' },
+            ]}
+            className="max-w-44"
+          />
+          <div className="flex items-center gap-1.5">
             <button
-              key={id}
-              onClick={() => setBase(id)}
-              aria-pressed={base === id}
+              onClick={() => setSeamarks((v) => !v)}
+              aria-pressed={seamarks}
               className={
-                'rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
-                (base === id
+                'min-h-9 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
+                (seamarks
                   ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
                   : 'border-white/10 text-slate-300 hover:bg-white/5')
               }
             >
-              {label}
+              Buoys
             </button>
-          ))}
-          <button
-            onClick={() => setSeamarks((v) => !v)}
-            aria-pressed={seamarks}
-            className={
-              'rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
-              (seamarks
-                ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                : 'border-white/10 text-slate-300 hover:bg-white/5')
-            }
-          >
-            Buoys
-          </button>
+            <span className="tnum text-xs text-slate-400">
+              {chart.status === 'loading'
+                ? 'depths…'
+                : chart.status === 'ready'
+                  ? chart.features.coverage
+                  : chart.status === 'error'
+                    ? 'no depths'
+                    : ''}
+            </span>
+          </div>
         </div>
 
         <SatelliteMap
@@ -340,10 +401,7 @@ export function ChartTab() {
           onPick={
             picking
               ? (p) => {
-                  const place = {
-                    ...p,
-                    label: picking === 'start' ? 'Picked on chart' : 'Picked on chart',
-                  }
+                  const place = { ...p, label: 'Picked on chart' }
                   if (picking === 'start') setStart(place)
                   else setDest(place)
                   setPicking(null)
@@ -353,170 +411,25 @@ export function ChartTab() {
           pickHint={
             picking === 'start'
               ? 'Tap the chart where you are starting from'
-              : 'Tap the chart where you want to go'
+              : picking === 'dest'
+                ? 'Tap the chart where you want to go'
+                : undefined
           }
           height={320}
         />
 
         <div className="mt-2 grid grid-cols-2 gap-2">
           <Button
-            variant={picking ? 'primary' : 'default'}
-            onClick={() => setPicking(picking ? null : 'dest')}
-            disabled={!start && !picking}
+            variant={picking ? 'primary' : 'ghost'}
+            onClick={() => setPicking(null)}
+            disabled={!picking}
           >
-            {picking ? 'Cancel pick' : 'Pick destination'}
+            {picking ? 'Cancel pick' : 'Tap a chip above to pick'}
           </Button>
           <Button variant="ghost" onClick={() => void takeFix()}>
             Take a fix
           </Button>
         </div>
-      </Card>
-
-      {/* ----------------------------------------------------------- start */}
-      <Card>
-        <Label>Start point</Label>
-
-        {start ? (
-          <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/5 px-3 py-2.5">
-            <div className="text-sm font-semibold text-slate-50">{start.label}</div>
-            <div className="tnum mt-0.5 text-xs text-slate-300">
-              {start.lat.toFixed(5)}, {start.lon.toFixed(5)}
-              {!startIsHere && fix
-                ? ` · ${formatDistance(haversineNM(fix.lat, fix.lon, start.lat, start.lon), 'nm')} from you`
-                : ''}
-            </div>
-          </div>
-        ) : (
-          <EmptyState>
-            Where are you setting off from? Choose one before picking a
-            destination.
-          </EmptyState>
-        )}
-
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Button
-            variant={start ? 'default' : 'primary'}
-            onClick={() => void startHere()}
-          >
-            Use current location
-          </Button>
-          <Button
-            variant={picking === 'start' ? 'primary' : 'default'}
-            onClick={() => setPicking(picking === 'start' ? null : 'start')}
-          >
-            {picking === 'start' ? 'Cancel' : 'Select on map'}
-          </Button>
-        </div>
-        {start && !startIsHere && (
-          <p className="mt-1.5 text-xs text-amber-200">
-            This is not where you are now. The course is planned from here, but
-            steering still follows your live position.
-          </p>
-        )}
-      </Card>
-
-      {/* ----------------------------------------------------- destination */}
-      <Card>
-        <Label>Destination</Label>
-
-        {!start && (
-          <p className="mb-2 text-xs text-slate-400">
-            Set a start point above first.
-          </p>
-        )}
-
-        {dest ? (
-          <div className="rounded-xl border border-sky-400/30 bg-sky-500/5 px-3 py-2.5">
-            <div className="text-sm font-semibold text-slate-50">{dest.label}</div>
-            <div className="tnum mt-0.5 text-xs text-slate-300">
-              {dest.lat.toFixed(5)}, {dest.lon.toFixed(5)}
-              {fix
-                ? ` · ${formatDistance(haversineNM(fix.lat, fix.lon, dest.lat, dest.lon), 'nm')} direct`
-                : ''}
-            </div>
-          </div>
-        ) : (
-          <EmptyState>
-            {start
-              ? 'Tap the chart, or choose a waypoint below.'
-              : 'Waiting on a start point.'}
-          </EmptyState>
-        )}
-
-        {start && incident?.lkp_lat != null && incident.lkp_lng != null && (
-          <button
-            onClick={() =>
-              setDest({
-                lat: incident.lkp_lat as number,
-                lon: incident.lkp_lng as number,
-                label: `LKP · ${incident.incident_number}`,
-              })
-            }
-            className="mt-2 w-full rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-200 hover:bg-amber-500/15"
-          >
-            Run to the LKP
-            <span className="block font-normal text-amber-100/70">
-              {incident.incident_name || incident.incident_number}
-            </span>
-          </button>
-        )}
-
-        {start && waypoints.length > 0 && (
-          <div className="mt-2 max-h-48 space-y-1 overflow-y-auto">
-            {waypoints.slice(0, 40).map((w) => (
-              <button
-                key={w.id}
-                onClick={() => setDest({ lat: w.lat, lon: w.lon, label: w.name })}
-                className="flex w-full min-h-11 items-center justify-between gap-2 rounded-lg border border-white/10 px-3 text-left text-sm text-slate-200 hover:bg-white/5"
-              >
-                <span className="truncate">{w.name}</span>
-                {fix && (
-                  <span className="tnum shrink-0 text-xs text-slate-400">
-                    {formatDistance(haversineNM(fix.lat, fix.lon, w.lat, w.lon), 'nm')}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Input
-            inputMode="decimal"
-            placeholder="Latitude"
-            value={typed.lat}
-            disabled={!start}
-            onChange={(e) => setTyped({ ...typed, lat: e.target.value })}
-            aria-label="Destination latitude"
-          />
-          <Input
-            inputMode="decimal"
-            placeholder="Longitude"
-            value={typed.lon}
-            disabled={!start}
-            onChange={(e) => setTyped({ ...typed, lon: e.target.value })}
-            aria-label="Destination longitude"
-          />
-        </div>
-        <Button
-          className="mt-2 w-full"
-          variant="ghost"
-          disabled={!start}
-          onClick={() => {
-            // coords.ts is deliberately strict and returns NaN rather than
-            // guessing at an ambiguous position — a plausible-looking wrong
-            // coordinate is the worst failure this app can produce.
-            const lat = parseCoord(typed.lat, 'lat')
-            const lon = parseCoord(typed.lon, 'lon')
-            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-              toast('Those coordinates could not be read', 'error')
-              return
-            }
-            setDest({ lat, lon, label: 'Typed position' })
-          }}
-        >
-          Use typed coordinates
-        </Button>
       </Card>
 
       {/* ----------------------------------------------------------- route */}
@@ -532,29 +445,41 @@ export function ChartTab() {
           ) : null}
         </div>
 
-        <Button
-          variant="primary"
-          className="w-full"
-          disabled={!start || !dest || !boat || planning}
-          onClick={() => void plot()}
-        >
-          {planning ? <Spinner /> : null}
-          {planning ? 'Plotting…' : 'Plot course'}
-        </Button>
+        {/* The course plots itself as soon as both ends and a boat exist, so
+            this is a retry rather than the way in. */}
+        {planning ? (
+          <p className="flex items-center gap-2 text-sm text-slate-300">
+            <Spinner /> Plotting…
+          </p>
+        ) : null}
 
-        {!boat && (
-          <p className="mt-1.5 text-xs text-slate-400">
+        {planError ? (
+          <>
+            <p className="rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+              {planError}
+            </p>
+            <Button
+              variant="primary"
+              className="mt-2 w-full"
+              onClick={() => void plot()}
+            >
+              Try again
+            </Button>
+          </>
+        ) : null}
+
+        {!planning && !planError && !boat && (
+          <p className="text-xs text-slate-400">
             Add a boat above first — a course means nothing without a draft.
           </p>
         )}
-        {!start && boat && (
-          <p className="mt-1.5 text-xs text-slate-400">
-            Set a start point — your current location, or a spot on the chart.
-          </p>
-        )}
-        {start && !dest && boat && (
-          <p className="mt-1.5 text-xs text-slate-400">
-            Now pick where you are going.
+        {!planning && !planError && boat && (!start || !dest) && (
+          <p className="text-xs text-slate-400">
+            {!start && !dest
+              ? 'Set where you are coming from and where you are going, above.'
+              : !start
+                ? 'Set where you are starting from, above.'
+                : 'Now set where you are going, above.'}
           </p>
         )}
 
@@ -606,6 +531,11 @@ export function ChartTab() {
                     {leg.minChartedDepthM !== null
                       ? ` · ${formatFeet(leg.minChartedDepthM)} least`
                       : ' · not charted'}
+                    {/* Null means nothing is marked in this area at all,
+                        which is not the same as being outside the channel. */}
+                    {leg.channelFraction !== null && leg.channelFraction < 0.5 ? (
+                      <span className="text-amber-200"> · outside channel</span>
+                    ) : null}
                   </span>
                 </div>
               ))}
@@ -625,7 +555,19 @@ export function ChartTab() {
               <Button
                 variant="primary"
                 disabled={plan.points.length < 2}
-                onClick={() => setTargetIdx(running ? null : 1)}
+                onClick={() => {
+                  if (running) {
+                    setTargetIdx(null)
+                    return
+                  }
+                  setTargetIdx(1)
+                  // Steering needs a live position, not the single fix that
+                  // set the start point. Without this the fix never changes,
+                  // so no leg ever completes and the card sits on leg 1 for
+                  // the whole passage — the search patterns have always
+                  // started the watch here and this did not.
+                  if (!tracker.watching) tracker.start()
+                }}
               >
                 {running ? 'Stop steering' : 'Steer this route'}
               </Button>
@@ -647,8 +589,225 @@ export function ChartTab() {
           footnote="Advances by itself within each turn point. Keep tracking on so the track records where you actually went."
         />
       )}
+
+      {sheet ? (
+        <Sheet
+          label={
+            sheet.how === 'waypoint'
+              ? 'Choose a saved waypoint'
+              : sheet.end === 'start'
+                ? 'Enter the start position'
+                : 'Enter the destination'
+          }
+          onDismiss={() => setSheet(null)}
+        >
+          {sheet.how === 'coords' ? (
+            <>
+              <Label>
+                {sheet.end === 'start' ? 'Start position' : 'Destination'}
+              </Label>
+              <CoordInput
+                label={sheet.end === 'start' ? 'Start' : 'Destination'}
+                value={draft}
+                onChange={setDraft}
+                onUseFix={
+                  fix ? () => setDraft({ lat: fix.lat, lon: fix.lon }) : undefined
+                }
+                fixLabel="Fill from my current position"
+              />
+              <div className="mt-3 mb-3 grid grid-cols-2 gap-2">
+                <Button variant="ghost" onClick={() => setSheet(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={
+                    !Number.isFinite(draft.lat) || !Number.isFinite(draft.lon)
+                  }
+                  onClick={() => {
+                    const place = {
+                      lat: draft.lat,
+                      lon: draft.lon,
+                      label: 'Typed position',
+                    }
+                    if (sheet.end === 'start') setStart(place)
+                    else setDest(place)
+                    setSheet(null)
+                  }}
+                >
+                  Use this position
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Label>Saved waypoints</Label>
+              {waypoints.length === 0 ? (
+                <EmptyState>
+                  No saved waypoints in this scope yet.
+                </EmptyState>
+              ) : (
+                <div className="mb-3 space-y-1">
+                  {waypoints.slice(0, 60).map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => {
+                        setDest({ lat: w.lat, lon: w.lon, label: w.name })
+                        setSheet(null)
+                      }}
+                      className="min-h-11 w-full rounded-lg border border-white/10 px-3 py-2 text-left hover:bg-white/5"
+                    >
+                      <span className="block text-sm text-slate-100">{w.name}</span>
+                      <span className="tnum block text-xs text-slate-400">
+                        {formatPlace(w, format)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </Sheet>
+      ) : null}
     </div>
   )
+
+  /**
+   * One end of the route: where it is, and the ways to set it.
+   *
+   * Both ends offer the same two — type it, or tap the chart — with the
+   * shortcuts that only make sense for one of them alongside. Nothing here is
+   * gated on the other end being set: they are adjacent and equally reachable
+   * now, so the old "pick a start first" rule bought nothing and was
+   * re-implemented in six places.
+   */
+  function endRow({
+    end,
+    label,
+    place,
+    onClear,
+  }: {
+    end: 'start' | 'dest'
+    label: string
+    place: Place | null
+    onClear: () => void
+  }) {
+    const picked = picking === end
+    const lkp =
+      end === 'dest' && incident?.lkp_lat != null && incident?.lkp_lng != null
+        ? incident
+        : null
+
+    return (
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+            {label}
+          </span>
+          {place ? (
+            <button
+              onClick={onClear}
+              className="text-xs font-semibold text-slate-400 hover:text-slate-200"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+
+        <p
+          className={
+            'tnum truncate text-sm ' +
+            (place ? 'text-slate-100' : 'text-slate-400')
+          }
+        >
+          {place ? formatPlace(place, format) : 'Not set'}
+        </p>
+        {place ? (
+          <p className="truncate text-xs text-slate-400">{place.label}</p>
+        ) : null}
+
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {end === 'start' ? (
+            <Chip onClick={() => void startHere()}>Here</Chip>
+          ) : null}
+          <Chip
+            active={picked}
+            onClick={() => setPicking(picked ? null : end)}
+          >
+            {picked ? 'Tap chart…' : 'Map'}
+          </Chip>
+          <Chip
+            onClick={() => {
+              setDraft(
+                place
+                  ? { lat: place.lat, lon: place.lon }
+                  : { lat: NaN, lon: NaN },
+              )
+              setSheet({ end, how: 'coords' })
+            }}
+          >
+            Coords
+          </Chip>
+          {end === 'dest' && waypoints.length > 0 ? (
+            <Chip onClick={() => setSheet({ end: 'dest', how: 'waypoint' })}>
+              Waypoint
+            </Chip>
+          ) : null}
+          {lkp ? (
+            <Chip
+              onClick={() =>
+                setDest({
+                  lat: lkp.lkp_lat as number,
+                  lon: lkp.lkp_lng as number,
+                  label: `LKP — ${lkp.incident_name}`,
+                })
+              }
+            >
+              LKP
+            </Chip>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+}
+
+/** A small pill in an end row. Same shape as the app's segmented options. */
+function Chip({
+  children,
+  onClick,
+  active = false,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  active?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={
+        'min-h-9 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ' +
+        (active
+          ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+          : 'border-white/10 text-slate-300 hover:bg-white/5')
+      }
+    >
+      {children}
+    </button>
+  )
+}
+
+/** A position on one line, in whichever format the crew reads. */
+function formatPlace(
+  p: { lat: number; lon: number },
+  format: 'dd' | 'ddm' | 'dms',
+): string {
+  if (format === 'dd') return `${toDD(p.lat)}, ${toDD(p.lon)}`
+  if (format === 'dms') {
+    return `${toDMS(p.lat, 'lat')}  ${toDMS(p.lon, 'lon')}`
+  }
+  return `${toDDM(p.lat, 'lat')}  ${toDDM(p.lon, 'lon')}`
 }
 
 /* -------------------------------------------------------------------------

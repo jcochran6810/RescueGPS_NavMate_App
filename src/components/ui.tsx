@@ -121,3 +121,56 @@ export function EmptyState({ children }: { children: ReactNode }) {
     </p>
   )
 }
+
+/**
+ * A row of mutually exclusive choices.
+ *
+ * This pattern was hand-copied a dozen times across the tabs before it was a
+ * component, and every copy carried the same accessibility gap: the selected
+ * option was styled but never announced, so a screen reader heard a row of
+ * ordinary buttons with no indication which one was in force. It is a radio
+ * group, so it is built as one.
+ */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  className = '',
+}: {
+  value: T
+  options: { id: T; label: string; hint?: string }[]
+  onChange: (id: T) => void
+  /** The group's accessible name — what the choice is about. */
+  label: string
+  className?: string
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className={'flex gap-1 ' + className}
+    >
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={value === o.id}
+          title={o.hint}
+          onClick={() => onChange(o.id)}
+          className={
+            'min-h-9 flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
+            'transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 ' +
+            'focus-visible:outline-sky-400 ' +
+            (value === o.id
+              ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+              : 'border-white/10 text-slate-300 hover:bg-white/5')
+          }
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}

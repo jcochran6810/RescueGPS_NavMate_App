@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { parseCoord, toDD, toDMS } from '@/lib/coords'
+import { toDD, toDMS } from '@/lib/coords'
 import {
   bearingDeg,
   formatBearing,
@@ -15,6 +15,7 @@ import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
 import { WaypointPhoto } from '@/components/WaypointPhoto'
 import { Button, Card, EmptyState, Input, Label, Spinner } from '@/components/ui'
+import { CoordInput } from '@/components/CoordInput'
 import type { Waypoint } from '@/lib/types'
 
 export function WaypointsTab() {
@@ -28,8 +29,7 @@ export function WaypointsTab() {
   const isAdmin = role === 'owner' || role === 'admin'
 
   const [name, setName] = useState('')
-  const [lat, setLat] = useState('')
-  const [lon, setLon] = useState('')
+  const [pos, setPos] = useState({ lat: NaN, lon: NaN })
   const [note, setNote] = useState('')
   const [photos, setPhotos] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
@@ -78,8 +78,8 @@ export function WaypointsTab() {
   }
 
   async function save() {
-    const pLat = parseCoord(lat, 'lat')
-    const pLon = parseCoord(lon, 'lon')
+    const pLat = pos.lat
+    const pLon = pos.lon
     if (!Number.isFinite(pLat) || !Number.isFinite(pLon)) {
       toast('Enter a valid latitude and longitude', 'error')
       return
@@ -101,8 +101,7 @@ export function WaypointsTab() {
         return
       }
       setName('')
-      setLat('')
-      setLon('')
+      setPos({ lat: NaN, lon: NaN })
       setNote('')
       setPhotos([])
       if (fileRef.current) fileRef.current.value = ''
@@ -140,21 +139,8 @@ export function WaypointsTab() {
           placeholder="Name (e.g. Marker 12)"
           maxLength={200}
         />
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Input
-            value={lat}
-            onChange={(e) => setLat(e.target.value)}
-            placeholder="Latitude"
-            inputMode="decimal"
-            aria-label="Latitude"
-          />
-          <Input
-            value={lon}
-            onChange={(e) => setLon(e.target.value)}
-            placeholder="Longitude"
-            inputMode="decimal"
-            aria-label="Longitude"
-          />
+        <div className="mt-2">
+          <CoordInput label="Waypoint" value={pos} onChange={setPos} />
         </div>
         <textarea
           value={note}
@@ -216,8 +202,7 @@ export function WaypointsTab() {
                 toast(useTracker.getState().error ?? 'No fix', 'error')
                 return
               }
-              setLat(toDD(fix.lat))
-              setLon(toDD(fix.lon))
+              setPos({ lat: fix.lat, lon: fix.lon })
               toast('Location loaded', 'success')
             }}
           >
@@ -311,19 +296,18 @@ function WaypointCard({
   const cameraRef = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState({
     name: w.name,
-    lat: toDD(w.lat),
-    lon: toDD(w.lon),
+    lat: w.lat,
+    lon: w.lon,
     note: w.note,
   })
 
   function beginEdit() {
-    setDraft({ name: w.name, lat: toDD(w.lat), lon: toDD(w.lon), note: w.note })
+    setDraft({ name: w.name, lat: w.lat, lon: w.lon, note: w.note })
     setEditing(true)
   }
 
   async function commit() {
-    const lat = parseCoord(draft.lat, 'lat')
-    const lon = parseCoord(draft.lon, 'lon')
+    const { lat, lon } = draft
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       toast('Enter a valid latitude and longitude', 'error')
       return
@@ -334,10 +318,10 @@ function WaypointCard({
 
     // Send only what actually changed, so two people editing different fields
     // of the same shared waypoint do not overwrite each other. Coordinates are
-    // compared through the same 6-decimal rendering the form showed — the
-    // draft was seeded from toDD(), so comparing against the full-precision
-    // stored value flagged every edit as a coordinate change and silently
-    // re-rounded the position each time.
+    // still compared through toDD() rather than as raw numbers: the form
+    // round-trips a position through a 6-decimal rendering, so comparing
+    // full-precision values would flag every edit as a coordinate change and
+    // silently re-round the position each time.
     const patch: Partial<Waypoint> = {}
     if (name !== w.name) patch.name = name
     if (note !== w.note) patch.note = note
@@ -374,20 +358,11 @@ function WaypointCard({
           maxLength={200}
           aria-label="Waypoint name"
         />
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Input
-            value={draft.lat}
-            onChange={(e) => setDraft({ ...draft, lat: e.target.value })}
-            placeholder="Latitude"
-            inputMode="decimal"
-            aria-label="Latitude"
-          />
-          <Input
-            value={draft.lon}
-            onChange={(e) => setDraft({ ...draft, lon: e.target.value })}
-            placeholder="Longitude"
-            inputMode="decimal"
-            aria-label="Longitude"
+        <div className="mt-2">
+          <CoordInput
+            label="Waypoint"
+            value={{ lat: draft.lat, lon: draft.lon }}
+            onChange={(v) => setDraft({ ...draft, lat: v.lat, lon: v.lon })}
           />
         </div>
         <textarea

@@ -126,6 +126,52 @@ Add new items at the top. Use the format:
       signal; confirm in a real browser that re-plotting a route in an area
       already visited works with the network off. Related: there are now two
       tile caches sharing one device budget — see the storage item below.
+- [ ] 2026-09-13 — **The pass-abeam half of the arrival rule is unit-tested
+      only.** `shouldAdvance` (`src/lib/steer.ts`) completes a leg either
+      inside the arrival circle or on passing the mark while still heading
+      down the leg. The circle is exercised in the browser drive; the abeam
+      path is not, because a scripted position cannot easily produce a
+      believable course over ground through the tracker's Kalman filter, and
+      the drive's boat holds station rather than running. It depends on
+      `fix.heading`, which on many devices is derived by the filter rather
+      than reported — so the first real test is a boat running a route at
+      speed. If legs stop advancing in the field, check whether a heading is
+      present at all: with none, the rule deliberately falls back to the
+      circle alone.
+- [ ] 2026-09-13 — **The marked-channel layers have never been seen for real.**
+      `FAIRWY` (fairways) and `PILPNT` (piles) are matched by name at runtime
+      like the existing eight roles, and are as unverified as those are — the
+      proxy 403s `encdirect.noaa.gov`. If NOAA names its fairway layer
+      something the pattern misses, the channel preference simply stays inert
+      and the router behaves as it did before, which is the safe direction to
+      fail (and is a tested requirement, not an assumption). Worth confirming
+      the real names per usage band along with the item above. Also: piles are
+      high-cardinality — a busy harbour can return thousands — so this may trip
+      `exceededTransferLimit` and start showing the "chart query hit its limit"
+      warning on routes that never showed it before. That is honest, not a
+      regression, but it will look like one.
+- [ ] 2026-09-13 — **The channel preference only sees inside the routing
+      grid**, whose margin is `max(1 NM, 35% of the direct distance)` clamped
+      to 20 NM (`MARGIN_FRACTION` in `src/lib/routing.ts`). A marked channel
+      worth using that lies outside that box is invisible to the planner.
+      Widening the margin changes `cellM` and therefore the geometry of every
+      existing route, so it was deliberately not done inside the channel
+      change.
+- [ ] 2026-09-13 — **Measure the channel-aware plot on a real phone.** The
+      penalty makes the octile heuristic weaker (it under-estimates by up to
+      the penalty ratio where a channel is charted but the course runs outside
+      it), so A* expands more. Saturation bounds it and `hasChannels`
+      short-circuits the whole thing where nothing is marked — which is most
+      of the coast — but the worst case is a box with a channel in one corner
+      and a passage that ignores it. Same lever as before if it hitches:
+      `MAX_SIDE`, or move `planRoute` into a worker.
+- [ ] 2026-09-13 — `Segmented` in `src/components/ui.tsx` was extracted from
+      **14 hand-rolled copies across 7 files** and is currently used only by
+      the new code and the Chart tab. The copies in `TrackTab`, `AdminTab`,
+      `SearchTab`, `EtaTab` and `DataTab` still set no `aria-pressed` and no
+      group role, so their selected option is styled but never announced.
+      Swapping them is mechanical; it was left out of the chart change because
+      those screens have no browser coverage.
 - [ ] 2026-09-13 — Bridges are read for air draft but do not yet block a
       route. `src/lib/chart.ts` matches the bridge layers and
       `clearsHeight()` in `src/lib/vessel.ts` does the comparison, but nothing

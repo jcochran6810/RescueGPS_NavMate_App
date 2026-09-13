@@ -15,7 +15,11 @@ import { ACCURACY_GATES, QUALITY_LABEL, fixQuality } from '@/lib/track'
 import { toDD, toDMS } from '@/lib/coords'
 import { download, trackToGPX } from '@/lib/transfer'
 import { toast } from '@/store/useToast'
-import { Button, Card, Label, Stat } from '@/components/ui'
+import { Button, Card, Label, Segmented, Stat } from '@/components/ui'
+import {
+  ARRIVAL_FT_CHOICES,
+  type ArrivalFt,
+} from '@/lib/steer'
 
 const UNITS: { id: DistanceUnit; label: string }[] = [
   { id: 'nm', label: 'NM' },
@@ -39,36 +43,6 @@ const QUALITY_COLOUR: Record<string, string> = {
   coarse: 'text-red-300',
 }
 
-/** Segmented control — the app already uses this shape in three places. */
-function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-}: {
-  value: T
-  options: { id: T; label: string }[]
-  onChange: (id: T) => void
-}) {
-  return (
-    <div className="flex gap-1">
-      {options.map((o) => (
-        <button
-          key={o.id}
-          onClick={() => onChange(o.id)}
-          className={
-            'flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
-            (value === o.id
-              ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-              : 'border-white/10 text-slate-300 hover:bg-white/5')
-          }
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 export function TrackTab() {
   const {
     fix,
@@ -87,6 +61,8 @@ export function TrackTab() {
     clearTrail,
     setIntervalS,
     setGateM,
+    arrivalFt,
+    setArrivalFt,
   } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
 
@@ -133,7 +109,7 @@ export function TrackTab() {
       <Card>
         <Label>Map</Label>
         <div className="mb-2">
-          <Segmented value={view} options={VIEWS} onChange={setView} />
+          <Segmented label="Map view" value={view} options={VIEWS} onChange={setView} />
         </div>
 
         {view === 'plot' ? (
@@ -300,6 +276,33 @@ export function TrackTab() {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Not a recording setting, but it lives here with the other
+            navigation preferences rather than in a settings screen of its
+            own. It governs both the chart plotter's routes and the search
+            patterns, which steer by the same rule. */}
+        <div className="mb-3">
+          <span className="mb-1.5 block text-xs text-slate-300">
+            Count a turn point reached within
+          </span>
+          <Segmented
+            label="Arrival distance"
+            value={String(arrivalFt)}
+            onChange={(v) => setArrivalFt(Number(v) as ArrivalFt)}
+            options={ARRIVAL_FT_CHOICES.map((ft) => ({
+              id: String(ft),
+              label: `${ft} ft`,
+            }))}
+          />
+          <p className="mt-1.5 text-xs text-slate-400">
+            How close counts as arriving, so steering moves on to the next leg.
+            A leg also completes if you pass the mark and keep going — a fast
+            boat can cross a small circle between two fixes, and without that
+            the course would sit on a point already astern of you. Whichever
+            you pick, the circle is never smaller than the accuracy your
+            receiver is claiming.
+          </p>
         </div>
 
         <div className="mb-3 flex gap-1">

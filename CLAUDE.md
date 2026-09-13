@@ -220,7 +220,29 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ambiguous input rather than guessing — a wrong coordinate that looks
   plausible is the worst possible failure for a rescue crew. Do not "fix"
   a rejection by making the parser lenient without a test proving the input
-  is unambiguous.
+  is unambiguous. **`src/components/CoordInput.tsx` is the one place a
+  coordinate is typed** — Waypoints, the waypoint editor, the LKP card and the
+  Chart tab all use it. It never parses anything itself: each format lays out
+  its own boxes and joins them into a canonical string `parseCoord` already
+  accepts, so the strict rules keep firing and there is no second parser to
+  drift. Keep it that way. (The Convert tab is deliberately not a caller — it
+  is a converter showing three formats at once, not a position picker.)
+- **A leg completes two ways, and the second one has a condition on it.**
+  `src/lib/steer.ts` advances when the boat is inside the arrival circle (a
+  crew setting, 50/100/150 ft, floored at the fix's own accuracy) **or** when
+  it has passed abeam of the mark *and is still heading down the leg*. That
+  last clause is load-bearing: the function used to refuse a plane-crossing
+  test outright so that "a boat that has to abort a turn and come round again
+  should be given the same point back". The heading check is what preserves
+  that, and `steer.test.ts` holds both cases so the reasoning cannot be lost.
+- **`src/lib/routing.ts` prefers marked channels, and the cost must never dip
+  below 1.** `astar`'s octile heuristic is admissible *and consistent* only
+  while every step costs at least 1; the closed-set pruning depends on the
+  second. So a preference is always a penalty on the cells you want avoided,
+  never a discount on the cells you want used. Two words to keep apart in that
+  file: **edge** means the bank of navigable water (a geometric proxy),
+  **channel** means a charted DRGARE or FAIRWY. They were once both called
+  "channel" and it made the file unreadable.
 - **Supabase keys are compiled in on purpose.** `src/lib/supabase.ts` falls
   back to the project URL and publishable key. Both are publishable; RLS is
   the security boundary. Never add a service-role key to this repo.
@@ -262,6 +284,113 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
+
+### 2026-09-13 — claude/charming-rubin-rlz3ks (channels, the From/To header, arrival)
+
+Three requests in one session, each one a correction to how the chart plotter
+behaves in a boat rather than a new screen.
+
+**"The start location and destination need to be more compact and above the
+chart… once start and destination are selected the course is plotted."** The
+map already sat above the Start and Destination cards — but under a 110–450 px
+Boat card, and above roughly 900 px of Start and Destination, so a crew
+scrolled past the chart to say where they were going and back again to look at
+it. Both ends are now two rows in one card above the map: a line of position
+and a chip row each (From = Here / Map / Coords, To = Map / Coords / Waypoint /
+LKP). Every shortcut survived; they just fit. The start-before-destination gate
+is gone — it was re-implemented in six places and bought nothing once the two
+were adjacent. The course plots itself on a 400 ms debounce as soon as both
+ends and a boat exist; `plot()` gained the `catch` it never had, because
+moving it into an effect would have turned a throw into a screen that silently
+never showed a course.
+
+**"Both need the 2 options to enter coordinates or choose on map, matching the
+app's input method and format selection."** A premise worth correcting before
+building: **the app had no format selector anywhere.** `parseCoord` infers the
+format from what you type, and the Convert tab shows three at once because it
+is a converter, not a picker. So the selector is new. `CoordInput` gives each
+format its own boxes and joins them into a canonical string `parseCoord`
+already accepts — every rejection the strict parser makes still fires, and
+`coords.ts` is untouched except additively (`ddmParts`/`dmsParts`, with
+`toDDM`/`toDMS` rebuilt on them so the rounding carry that stops `59' 60.0"`
+exists once; its 23 tests pass unchanged, which is the proof). DD keeps a
+signed box and no hemisphere buttons, because offering both a minus and a W
+invites "-94.8 W", which the parser rightly refuses. Rolled out to the
+Waypoints form, the waypoint editor and the LKP card, so "matches the rest of
+the app" is true rather than aspirational, and the format is one persisted
+setting.
+
+**"Stay within marked channels… not through land, obstructions/piles, or leave
+marked channels."** NOAA's dredged areas were already being fetched and
+flattened into plain depth polygons one line later; fairways and pilings were
+not fetched at all. A dredged area is now recorded **twice** — it carries a
+`DRVAL1` like any depth area, and it is also water traffic is meant to be in,
+and flattening it lost the fact the coxswain steers by. Fairways become
+channels and never depths: a FAIRWY carries no depth and inventing one is the
+guess this engine refuses everywhere else, so marked water is *preferable*,
+never *passable*. Piles get a 10 m footprint rather than a wreck's 40 m —
+piles line the banks of dredged cuts and at the harbour band 40 m is five
+cells, so both banks would close a 60 m channel outright and fail the route to
+a straight line, which is worse than having no pile data at all.
+
+The cost is a **penalty on non-channel cells, never a discount on channel
+ones.** `astar`'s octile heuristic is admissible *and consistent* only while
+every step costs at least 1, and the closed-set pruning depends on the second —
+a cheaper-than-1 cell would silently return a path that is not the best. Two
+levels encode "until there is a clear, deep enough unobstructed path": water a
+full depth band clear of the boat is cheap to cross, water that merely clears
+its draft is dear. `CHANNEL_WEIGHT`/`preferCells` were renamed to edge wording,
+because they mean "stay off the bank" and two meanings of "channel" in one file
+made it unreadable.
+
+**"A leg completes within 50–150 ft."** It was 0.05 NM — 304 ft. Now a setting
+(50/100/150, default 150). Tightening the circle alone would have caused a
+worse failure than the one being fixed: at 20 kn a boat crosses a 50 ft circle
+in three seconds, so the fixes can straddle it and the leg never completes at
+all. A leg now also completes on passing the mark **while still heading down
+the leg** — the condition that preserves this function's own long-standing
+refusal of a plane-crossing test ("a boat that has to abort a turn and come
+round again should be given the same point back"). The circle is floored at the
+fix's own accuracy, because a ±25 m receiver cannot report being inside a 50 ft
+circle.
+
+**Three bugs that only a browser found, and they are the argument for the
+drive script.**
+
+1. **stringPull's channel budget was argued provably inert with no channel
+   charted** — a chord cannot be octile-longer than the path it replaces. True
+   in arithmetic, false in floating point: both sides sum the same irrational
+   √2 a different number of times in a different order, so equal lengths
+   differed by ~1e-13 and a strict `>` rejected half the chords. A plain course
+   round one bar came out as **49 legs instead of 3**. Fixed with an arithmetic
+   tolerance, pinned by a test that fails without it.
+2. **A pure distance ramp made one cell outside a cut cost ~8 % of the
+   penalty** — near enough to free that the course hugged the channel boundary
+   for its whole length without ever crossing it. The decision a crew makes is
+   binary, so most of the weight is now a step at the boundary.
+3. **ChartTab's "Steer this route" never started the position watch.** Only the
+   search patterns did. With tracking off the fix never changed, so **no leg
+   could ever complete** and the card sat on leg 1 for the whole passage. Every
+   unit test passed against code that could not advance a single leg in the
+   app.
+
+**Verification.** 427 tests, up from 391. The browser drive is 54 checks, up
+from 39: the From/To controls are above the chart by bounding box, both ends
+set by coordinates and by map tap, the format selector switches and the value
+survives, impossible minutes are refused, the course appears with no button
+press and swings into the stubbed dredged cut rather than merely clearing the
+bar, and the boat is walked to a real turn point and asserted **not** arrived
+at 200 ft (which the old 304 ft circle would have called done) and arrived at
+120 ft. Every new behavioural test was confirmed to fail with its mechanism
+disabled — one was rewritten after that check showed it passed either way.
+
+**Still open, in `fix_list.md`:** the FAIRWY and PILPNT layer names have never
+been seen for real (the proxy 403s NOAA); if a name misses, the preference goes
+inert and routing behaves as before, which is the safe way to fail and is
+itself a test. Piles are high-cardinality and may start tripping the transfer
+limit. The preference only sees inside the routing grid. The pass-abeam rule is
+unit-tested only — a scripted position cannot produce a believable course
+through the Kalman filter, so the first real test is a boat at speed.
 
 ### 2026-09-13 — claude/charming-rubin-rlz3ks (incidents merged into the command table)
 
