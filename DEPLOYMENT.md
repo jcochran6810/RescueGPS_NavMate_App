@@ -18,6 +18,18 @@ older deployment.
   the `waypoint-photos` storage bucket applied. The database is empty and ready.
 - `vercel.json` pins the framework, build command, output directory, SPA
   rewrite and security headers, so Vercel needs no build configuration.
+  **It is schema-validated by the deployment and rejects any property it does
+  not know — including a `"//"` key used as a comment.** A rejected file fails
+  the deploy outright rather than falling back, so the live site silently stays
+  on the last good commit while `main` moves on; that happened once and cost two
+  sessions' work its release. Put explanation in this file, never in that one.
+  `src/lib/vercel-config.test.ts` now fails the test run instead of the deploy.
+
+  The one thing in there worth explaining: the SPA rewrite is
+  `/((?!api/).*)`, and the `api/` exclusion is what keeps the catch-all from
+  swallowing the ENC relay (`api/enc.js`). Vercel checks the filesystem before
+  rewrites, so it is belt and braces — but braces that fail silently, and the
+  test asserts the behaviour rather than describing it.
 - The Supabase URL and publishable key are compiled into the bundle
   (`src/lib/supabase.ts`), so **no environment variables are required**.
 
