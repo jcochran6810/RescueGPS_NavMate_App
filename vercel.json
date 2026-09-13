@@ -3,7 +3,8 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "//": "The SPA catch-all must not swallow the ENC relay in api/. Vercel checks the filesystem before rewrites, so this is belt and braces — but it is the kind of belt that is cheap and the kind of braces that fail silently.",
+  "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
   "headers": [
     {
       "source": "/(.*)",

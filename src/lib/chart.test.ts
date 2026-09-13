@@ -4,6 +4,7 @@ import {
   bandForSpan,
   boundsSpanNM,
   containsBounds,
+  encRequestUrl,
   padBounds,
   ENC_BANDS,
   exceededLimit,
@@ -411,14 +412,39 @@ describe('fetchChartFeatures', () => {
     expect(wreck).toMatchObject({ lat: 29.32, lon: -94.82 })
   })
 
-  it('reports no coverage when the service cannot be reached at all', async () => {
-    const f = await fetchChartFeatures(BOX, {
-      fetcher: async () => {
-        throw new Error('blocked')
-      },
+  it('says the service is unreachable rather than calling it empty sea', async () => {
+    // These are different facts and the crew acts on them differently: one is
+    // "this app cannot see the chart", the other is "there is no chart here".
+    // Reporting the first as the second is how a straight line through land
+    // goes unexplained.
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async () => {
+          throw new Error('Failed to fetch')
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'unreachable',
+      service: expect.stringContaining('encdirect.noaa.gov'),
     })
-    expect(f.coverage).toBe('none')
-    expect(f.depthAreas).toEqual([])
+  })
+
+  it('says so when the service answers but nothing is named as expected', async () => {
+    // NOAA republishes weekly and renames; if the patterns stop matching, that
+    // is this app's problem to fix and it must not look like a coverage gap.
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async () => ({
+          layers: [
+            { id: 1, name: 'Harbor.Something_Else_area', geometryType: 'esriGeometryPolygon' },
+          ],
+        }),
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'no-layers',
+    })
   })
 
   it('reports no coverage when the area has no charted depths — outside US waters', async () => {
@@ -567,5 +593,52 @@ describe('marked channels', () => {
     })
     expect(f.channels).toEqual([])
     expect(f.coverage).toBe('full')
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * The ENC relay
+ *
+ * The tiles are <img> and need no permission; these queries are fetch, and a
+ * browser blocks a cross-origin JSON response unless the host allows it. The
+ * relay is the only way round that, so where a query is sent is worth pinning.
+ * ---------------------------------------------------------------------- */
+
+describe('encRequestUrl', () => {
+  const target =
+    'https://encdirect.noaa.gov/arcgis/rest/services/encdirect/enc_harbour/MapServer/layers?f=json'
+
+  it('leaves the URL alone outside a browser — there is no origin to relay to', () => {
+    expect(encRequestUrl(target)).toBe(target)
+  })
+
+  it('sends it through this app own origin in a browser', () => {
+    const g = globalThis as { window?: unknown }
+    g.window = {}
+    try {
+      const out = encRequestUrl(target)
+      expect(out.startsWith('/api/enc?u=')).toBe(true)
+      // Encoded, so the query string of the target cannot be read as ours.
+      expect(out).toContain(encodeURIComponent(target))
+      expect(out).not.toContain('?f=json')
+    } finally {
+      delete g.window
+    }
+  })
+
+  it('never relays a host it was not built for', () => {
+    const g = globalThis as { window?: unknown }
+    g.window = {}
+    try {
+      // The relay itself refuses these too, but nothing should be asking.
+      expect(encRequestUrl('https://example.com/anything')).toBe(
+        'https://example.com/anything',
+      )
+      expect(encRequestUrl('https://gis.charttools.noaa.gov/x')).toBe(
+        'https://gis.charttools.noaa.gov/x',
+      )
+    } finally {
+      delete g.window
+    }
   })
 })

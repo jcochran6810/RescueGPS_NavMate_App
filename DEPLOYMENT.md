@@ -78,27 +78,28 @@ uses external nameservers rather than Vercel's), add exactly the record it
 displays at whatever manages `stationinsight.com`'s DNS — typically
 `CNAME navmate → cname.vercel-dns.com`.
 
-### Moving between the two
+### Moving between the two — DONE
 
 NavMate served `rescuegps.stationinsight.com` until September 2026, when that
-address was handed to the command system. A domain can only be on one Vercel
-project at a time, so the handover has an order, and a short window where the
-old address is down:
+address was handed to the command system. Both moves are complete, verified
+through the Vercel API: `navmate.stationinsight.com` is on
+**rescuegps-navmate** (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`) and
+`rescuegps.stationinsight.com` is on **rescuegps-navigator-pro**
+(`prj_KEOHsBii7KDFIGEYjBMrF0ACWmpu`). There is no Vercel MCP tool for project
+domains — it was the dashboard.
 
-1. Add `navmate.stationinsight.com` to **rescuegps-navmate** and confirm it
-   serves NavMate.
-2. Remove `rescuegps.stationinsight.com` from **rescuegps-navmate**.
-3. Add `rescuegps.stationinsight.com` to **rescuegps-navigator-pro**
-   (`prj_KEOHsBii7KDFIGEYjBMrF0ACWmpu`).
+**The part that bit, and the lesson if this is ever done again.** An installed
+PWA is bound to the origin it came from. Every icon installed from the old
+address now opens the command system, silently, with no way back — and the
+cached waypoints, queued writes and saved chart tiles stay behind on that
+origin, unreachable, because NavMate is no longer served there to read them.
 
-There is no Vercel MCP tool for project domains — this is the dashboard.
-
-**Tell anyone with NavMate installed to reinstall before step 2.** An installed
-PWA is bound to its origin: their icon keeps pointing at the old address, which
-after step 3 opens the command system, and their cached waypoints, queued
-writes and saved chart tiles stay behind on that origin. The app renders a
-banner saying this (`src/components/MovedNotice.tsx`), but only when served
-from the old address, so it disappears by itself once they have moved.
+There *was* a banner for this, shown only on the old address so it would
+retire itself. It never reached anyone, and could not have: the moment the
+domain moved, the app stopped being served from the one place the banner could
+appear. It has since been deleted as dead code. **A notice inside the app is
+the wrong instrument for an origin move.** Anyone still on an old install has
+to be told out of band, before the domain is pulled, not after.
 
 ### 3. Point Supabase Auth at the subdomain
 

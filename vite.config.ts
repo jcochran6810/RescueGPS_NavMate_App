@@ -122,6 +122,27 @@ export default defineConfig({
       },
     }),
   ],
+  // `api/enc.js` only exists once Vercel has deployed it, so `npm run dev`
+  // would 404 every chart query and the plotter would look broken locally for
+  // a reason that has nothing to do with the code. This is the same relay,
+  // done by the dev server.
+  server: {
+    proxy: {
+      '/api/enc': {
+        target: 'https://encdirect.noaa.gov',
+        changeOrigin: true,
+        rewrite: (path: string) => {
+          const u = new URL(path, 'http://localhost').searchParams.get('u')
+          if (!u) return path
+          const target = new URL(u)
+          // Same single-host rule as the deployed relay. A dev server that
+          // forwarded anywhere would be a hole on the developer's machine.
+          if (target.hostname !== 'encdirect.noaa.gov') return path
+          return target.pathname + target.search
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

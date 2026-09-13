@@ -8,15 +8,9 @@ Add new items at the top. Use the format:
 
 ## Open
 
-- [ ] 2026-09-13 — **Move the two domains, then set the Supabase Auth URLs.**
-      Neither has an MCP tool — both are dashboards. Order matters, because a
-      domain can only be on one Vercel project at a time:
-      (1) add `navmate.stationinsight.com` to `rescuegps-navmate`
-      (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`) and confirm it serves NavMate;
-      (2) remove `rescuegps.stationinsight.com` from `rescuegps-navmate`;
-      (3) add `rescuegps.stationinsight.com` to `rescuegps-navigator-pro`
-      (`prj_KEOHsBii7KDFIGEYjBMrF0ACWmpu`), which currently has no custom
-      domain. Then Auth → URL Configuration: **Site URL
+- [ ] 2026-09-13 — **Set the Supabase Auth URLs.** The domain moves are done
+      (see Done below); this half is not, and it is the half with the trap in
+      it. Auth → URL Configuration: **Site URL
       `https://rescuegps.stationinsight.com`** (the command system has no
       explicit redirect and depends on the fallback; NavMate always sends its
       own origin, so it does not care), and allow-list the bare origin *and*
@@ -26,13 +20,6 @@ Add new items at the top. Use the format:
       in the command dashboard. Also still worth checking: whether "Confirm
       email" is on, and whether the sender is custom SMTP rather than the
       rate-limited built-in. Full detail in `DEPLOYMENT.md`.
-- [ ] 2026-09-13 — **Retire the moved-address banner** once everyone has
-      reinstalled. `src/components/MovedNotice.tsx` renders only when the app
-      is served from `rescuegps.stationinsight.com`, so it retires itself for
-      each person the moment they reinstall — but once that address belongs to
-      the command system, NavMate is never served from it at all and the
-      component is dead code. Delete it and its two call sites in
-      `src/App.tsx` after the handover has settled.
 - [ ] 2026-09-13 — **A NavMate incident is readable by every signed-in user on
       the project.** The command system's `"Org-scoped incidents read
       (transitional)"` policy returns true whenever `organization_id is null`,
@@ -138,6 +125,20 @@ Add new items at the top. Use the format:
       speed. If legs stop advancing in the field, check whether a heading is
       present at all: with none, the rule deliberately falls back to the
       circle alone.
+- [ ] 2026-09-13 — **Confirm what the chart service actually does, now the
+      app can say.** Reported from the water: auto-plot draws a straight line
+      through land, which means `planRoute` fell back — the router never got a
+      chart. Three causes were indistinguishable until now (unreachable /
+      renamed layers / genuinely no coverage); the app now names which, and
+      ENC queries go through the `/api/enc` relay so CORS can no longer be the
+      cause. **What remains unconfirmed is whether the relay reaches NOAA at
+      the service paths in `ENC_BANDS`** — `enc_harbour` and friends have
+      never been resolved for real, because the sandbox proxy denies every
+      NOAA host. Once deployed, plot a course and read the chart card: a 404
+      through the relay means the service path is wrong; a 502 means the relay
+      itself could not reach NOAA; a named layer failure means
+      `ROLE_PATTERNS` needs updating. Vercel's function logs carry the same
+      answer.
 - [ ] 2026-09-13 — **The marked-channel layers have never been seen for real.**
       `FAIRWY` (fairways) and `PILPNT` (piles) are matched by name at runtime
       like the existing eight roles, and are as unverified as those are — the
@@ -334,6 +335,24 @@ Add new items at the top. Use the format:
       triggers and its own policies were untouched; opening an incident in the
       field now also makes the crew member a participant and initial IC through
       their existing trigger.
+
+- [x] 2026-09-13 — **The two domains are moved.** Verified through the Vercel
+      API rather than assumed: `navmate.stationinsight.com` is on
+      `rescuegps-navmate` (`prj_QkHXnAngwdCSZwz1S0qAVeDNPvJT`, production
+      deploy `fb0ece7`, READY) and `rescuegps.stationinsight.com` is on
+      `rescuegps-navigator-pro` (`prj_KEOHsBii7KDFIGEYjBMrF0ACWmpu`). The
+      Supabase Auth URL half of that item is still open above.
+
+- [x] 2026-09-13 — **The moved-address banner is retired**, prompted by the
+      handover actually landing: a phone's NavMate icon opened the command
+      system, which is a PWA install bound to the origin it came from and not
+      a bug. `MovedNotice` only ever rendered on
+      `rescuegps.stationinsight.com`, so once NavMate stopped being served
+      there it could never appear again. Deleted along with its two call sites
+      in `src/App.tsx` and the three drive checks that had to re-serve `dist/`
+      under the old hostname to exercise it (54 → 51). Anyone still holding an
+      old install gets told directly — there is no longer any address the app
+      can reach them from.
 
 - [x] 2026-08-03 — Attach a custom domain to the `rescuegps-navmate` Vercel
       project. Confirmed done on 2026-09-13 — it held
