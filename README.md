@@ -25,8 +25,9 @@ between them — see `supabase/migrations/README.md`.
 > old one keeps its own cached waypoints, queued writes and saved chart tiles
 > and none of it follows. Uninstall it and install again from
 > `navmate.stationinsight.com`; anything stamped there and not yet synced does
-> not make the trip. The app shows a banner saying so, but only when it is
-> being served from the old address, so it retires itself.
+> not make the trip. The app cannot warn you from the old address, because it
+> is no longer served there — the old icon simply opens the command system,
+> with no explanation. Tell anyone still holding one.
 
 This is a standalone app with its own codebase and hosting project. Since
 September 2026 it **shares a Supabase database with the RescueGPS command
