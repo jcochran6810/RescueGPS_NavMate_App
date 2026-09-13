@@ -285,6 +285,95 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-13 — claude/charming-rubin-rlz3ks (a straight line through land)
+
+Two reports from the phone, one of which was not a bug and one of which was
+three of them.
+
+**"I click the NavMate app and it opens the command RescueGPS instead."** Not
+the last change, and not code. The domain handover had completed — verified
+through the Vercel API rather than assumed: `navmate.stationinsight.com` is on
+`rescuegps-navmate` (production `fb0ece7`, READY) and
+`rescuegps.stationinsight.com` is on `rescuegps-navigator-pro`. A PWA install
+is bound to the origin it came from, so the icon opened what now lives at the
+old address. The remedy was on the phone: delete, reinstall from the new host.
+
+That retired `MovedNotice`. It rendered **only** on the old host, so it could
+warn people before the swap and disappear after — and it never got the chance,
+because the moment the domain moved, NavMate stopped being served from the one
+place the banner could appear. Deleted with its two call sites and the three
+drive checks that had to re-serve `dist/` under the old hostname to exercise
+it. The lesson is now in `DEPLOYMENT.md` rather than only in a commit: **a
+notice inside the app is the wrong instrument for an origin move**, because
+the move deletes the only place it can render. Out of band, before the domain
+is pulled, is the only thing that works.
+
+**"Auto-plot only does a straight line, and it goes through land."** The router
+was not choosing that line. `planRoute` fell back, and the fallback avoids
+nothing — it never had a chart. What made it undiagnosable is that three
+different failures were indistinguishable:
+
+  - the service could not be reached (no signal, moved endpoint, or the host
+    not sending `Access-Control-Allow-Origin`);
+  - the service answered but nothing matched `ROLE_PATTERNS` (NOAA
+    republishes weekly and renames);
+  - the service answered and this water genuinely has no ENC coverage.
+
+All three came out as `coverage: 'none'`, and the first two got there by
+swallowing the error entirely. On the water that is the difference between a
+bug and geography.
+
+**And a worse one underneath it.** `useChartData.load` treated a swallowed
+failure as a *successful* empty load — `status: 'ready'` with `bounds` set —
+so `covers()` returned true and every later plot in that area reused the empty
+result. One blocked request turned the plotter into a straight-line-only tool
+for the rest of the session, with nothing on screen to say so. `bounds` is now
+left null on failure, so the next plot retries.
+
+`fetchChartFeatures` throws `ChartUnavailableError` with a `kind`
+(`unreachable` | `no-layers`), the band and the **service URL it tried**;
+genuine no-coverage still returns `'none'`, because that one is a fact about
+the sea rather than a fault. The chart card says which it was and names the
+host.
+
+**Then the most likely cause, removed.** The chart *tiles* are `<img>`, so the
+browser fetches them however NOAA likes; the depth and hazard **queries** are
+`fetch`, which a browser blocks cross-origin unless the host allows it. That
+is exactly the reported shape — chart visible, routing dead — and nothing in
+the page can work around it, because the block happens before any of our code
+runs. So `api/enc.js`: a same-origin relay, and the first server-side code in
+this app. Deliberately **not** a general proxy — one host, one path prefix, no
+credentials, and three separate checks (scheme, host, path) because each is a
+different way of being somewhere else. An open relay would let anyone route
+traffic through this deployment.
+
+It doubles as the diagnostic that is still owed: a failure returns NOAA's own
+status and body rather than an opaque browser block, so a 404 (wrong service
+path) and a 502 (relay reached nothing) are readable instead of identical.
+
+Supporting changes: `encRequestUrl` puts the routing rule in one exported,
+tested function — outside a browser the URL is used as-is, so unit tests and
+any Node caller are unaffected. `vercel.json`'s SPA catch-all now excludes
+`/api/` (Vercel checks the filesystem before rewrites, so belt and braces, but
+the kind that fails silently). `vite.config.ts` proxies `/api/enc` in dev with
+the same single-host rule, because the function only exists once deployed and
+`npm run dev` would otherwise 404 every query and look broken for the wrong
+reason.
+
+**Verification.** 431 tests, up from 427. The drive is 55 checks: it now stubs
+the **relay** rather than the NOAA host, so it exercises the path the app
+actually takes, and asserts 12 queries went through the relay and 0 went
+direct. The three new failure-reporting checks were each confirmed to fail
+with the old swallowing restored.
+
+**Still unconfirmed, and stated plainly rather than assumed.** The sandbox
+proxy denies every NOAA host — checked in the proxy log, not guessed — so
+`enc_harbour` and its siblings have **never been resolved against the real
+service**. If the service paths are wrong rather than CORS, the relay does not
+fix it; it does now say so. The answer comes from a desktop console or from
+the chart card once this is live, and is recorded as the top item in
+`fix_list.md`.
+
 ### 2026-09-13 — claude/charming-rubin-rlz3ks (channels, the From/To header, arrival)
 
 Three requests in one session, each one a correction to how the chart plotter
