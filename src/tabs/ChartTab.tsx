@@ -119,14 +119,15 @@ export function ChartTab() {
     [allWaypoints, activeTeamId],
   )
 
+  const arrivalFt = tracker.arrivalFt
   const speedKn = boat?.cruise_speed_kn ?? 0
   const running = targetIdx !== null && plan !== null
 
   /* Auto-advance down the route, exactly as the search pattern does. */
   useEffect(() => {
     if (!running || !plan || targetIdx === null || !fix) return
-    if (shouldAdvance(plan, targetIdx, fix)) setTargetIdx(targetIdx + 1)
-  }, [running, plan, targetIdx, fix])
+    if (shouldAdvance(plan, targetIdx, fix, arrivalFt)) setTargetIdx(targetIdx + 1)
+  }, [running, plan, targetIdx, fix, arrivalFt])
 
   /*
    * Moving either end invalidates the route that joined the old ones — and
@@ -554,7 +555,19 @@ export function ChartTab() {
               <Button
                 variant="primary"
                 disabled={plan.points.length < 2}
-                onClick={() => setTargetIdx(running ? null : 1)}
+                onClick={() => {
+                  if (running) {
+                    setTargetIdx(null)
+                    return
+                  }
+                  setTargetIdx(1)
+                  // Steering needs a live position, not the single fix that
+                  // set the start point. Without this the fix never changes,
+                  // so no leg ever completes and the card sits on leg 1 for
+                  // the whole passage — the search patterns have always
+                  // started the watch here and this did not.
+                  if (!tracker.watching) tracker.start()
+                }}
               >
                 {running ? 'Stop steering' : 'Steer this route'}
               </Button>

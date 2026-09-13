@@ -227,6 +227,14 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   accepts, so the strict rules keep firing and there is no second parser to
   drift. Keep it that way. (The Convert tab is deliberately not a caller — it
   is a converter showing three formats at once, not a position picker.)
+- **A leg completes two ways, and the second one has a condition on it.**
+  `src/lib/steer.ts` advances when the boat is inside the arrival circle (a
+  crew setting, 50/100/150 ft, floored at the fix's own accuracy) **or** when
+  it has passed abeam of the mark *and is still heading down the leg*. That
+  last clause is load-bearing: the function used to refuse a plane-crossing
+  test outright so that "a boat that has to abort a turn and come round again
+  should be given the same point back". The heading check is what preserves
+  that, and `steer.test.ts` holds both cases so the reasoning cannot be lost.
 - **`src/lib/routing.ts` prefers marked channels, and the cost must never dip
   below 1.** `astar`'s octile heuristic is admissible *and consistent* only
   while every step costs at least 1; the closed-set pruning depends on the

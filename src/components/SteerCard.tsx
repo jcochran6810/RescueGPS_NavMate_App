@@ -5,8 +5,9 @@ import {
   formatDistance,
   haversineNM,
 } from '@/lib/geo'
-import type { LatLon } from '@/lib/search'
-import { ARRIVAL_NM, type SteerablePlan } from '@/lib/steer'
+import type { SteerFix } from '@/lib/steer'
+import { arrivalRadiusNM, type SteerablePlan } from '@/lib/steer'
+import { useTracker } from '@/store/useTracker'
 
 /**
  * Leg-by-leg steering for any ordered list of points.
@@ -29,18 +30,22 @@ export function SteerCard({
   plan: SteerablePlan
   targetIdx: number
   setTargetIdx: (i: number | null) => void
-  fix: LatLon | null
+  fix: SteerFix | null
   lastLabel?: string
   footnote?: string
 }) {
+  const arrivalFt = useTracker((s) => s.arrivalFt)
   const target = plan.points[targetIdx]
   const last = targetIdx >= plan.points.length - 1
   const distNM =
     fix && target ? haversineNM(fix.lat, fix.lon, target.lat, target.lon) : null
+  // The circle the steering rule is actually using, so this card and the rule
+  // cannot disagree about when the crew has arrived.
+  const radiusNM = arrivalRadiusNM(arrivalFt, fix?.accuracy)
   // Inside the arrival circle a bearing is GPS jitter dressed up as a heading,
   // so it is withheld rather than printed.
   const course =
-    fix && target && distNM !== null && distNM >= ARRIVAL_NM
+    fix && target && distNM !== null && distNM >= radiusNM
       ? bearingDeg(fix.lat, fix.lon, target.lat, target.lon)
       : null
   // The leg that starts at the target — what to steer after the turn.
@@ -98,7 +103,7 @@ export function SteerCard({
         </Button>
       </div>
       <p className="mt-1.5 text-xs text-slate-400">
-        {footnote.replace('within each', `within ${formatDistance(ARRIVAL_NM, 'nm')} of each`)}
+        {footnote.replace('within each', `within ${arrivalFt} ft of each`)}
       </p>
     </Card>
   )

@@ -67,7 +67,11 @@ cannot overwrite each other.
   with the team, so a department's Marine 2 is set up once. The route comes
   back as legs with a course, a distance and the least charted depth on each
   one, plus total distance, time to run, arrival clock time and fuel, and it
-  steers leg by leg like a search pattern, auto-advancing at each turn point.
+  steers leg by leg like a search pattern, advancing by itself at each turn
+  point — within a distance you set (50, 100 or 150 ft), or the moment you pass
+  the mark and keep going, which is what stops a fast boat sailing straight
+  through a small circle between two GPS fixes and leaving the course stuck on
+  a point already astern.
   Turn points save as waypoints. Charts are NOAA ENC (US waters), with
   OpenSeaMap buoys and lights over the top, and the whole area can be pulled
   onto the device before the signal goes.

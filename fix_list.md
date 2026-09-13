@@ -126,6 +126,18 @@ Add new items at the top. Use the format:
       signal; confirm in a real browser that re-plotting a route in an area
       already visited works with the network off. Related: there are now two
       tile caches sharing one device budget — see the storage item below.
+- [ ] 2026-09-13 — **The pass-abeam half of the arrival rule is unit-tested
+      only.** `shouldAdvance` (`src/lib/steer.ts`) completes a leg either
+      inside the arrival circle or on passing the mark while still heading
+      down the leg. The circle is exercised in the browser drive; the abeam
+      path is not, because a scripted position cannot easily produce a
+      believable course over ground through the tracker's Kalman filter, and
+      the drive's boat holds station rather than running. It depends on
+      `fix.heading`, which on many devices is derived by the filter rather
+      than reported — so the first real test is a boat running a route at
+      speed. If legs stop advancing in the field, check whether a heading is
+      present at all: with none, the rule deliberately falls back to the
+      circle alone.
 - [ ] 2026-09-13 — **The marked-channel layers have never been seen for real.**
       `FAIRWY` (fairways) and `PILPNT` (piles) are matched by name at runtime
       like the existing eight roles, and are as unverified as those are — the

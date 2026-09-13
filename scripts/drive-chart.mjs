@@ -338,6 +338,8 @@ await page.waitForTimeout(400)
 ok('steering card appears', (await page.getByText(/^Steering$/).count()) > 0)
 const steerLine = await page.locator('.text-2xl').first().textContent()
 ok('a course to steer is shown', !!steerLine && /°|Here/.test(steerLine), steerLine ?? '')
+ok('the steering card names the arrival distance it is using',
+   (await page.getByText(/within 150 ft of each/i).count()) > 0)
 
 // --- save as waypoints -----------------------------------------------------
 await page.getByRole('button', { name: 'Save as waypoints' }).click()
@@ -351,6 +353,43 @@ ok('route points saved as waypoints',
 const routeLons = (rows.waypoints ?? []).map((w) => w.lon).filter(Number.isFinite)
 // Rounding the bar needs only lon > -94.812. Reaching the cut needs
 // -94.806. The gap between them is the detour the channel preference bought.
+// --- the leg completes on arrival -----------------------------------------
+// The saved turn points are the route's own coordinates, so the boat can be
+// walked up to the first one without production code exposing anything for
+// the test's benefit.
+const turn1 = (rows.waypoints ?? []).find((w) => w.name === 'Turn 1')
+const legBefore =
+  await page.getByText(/Point \d+ of \d+|To the start point/).first().textContent()
+// Repeated fixes, not a single jump: the tracker refuses one implying a speed
+// nothing on the incident could make, and restarts the filter only after three
+// refusals in a row, so one teleport is correctly ignored.
+const holdAt = async (latitude, longitude) => {
+  for (let i = 0; i < 5; i++) {
+    await context.setGeolocation({ latitude: latitude + i * 1e-7, longitude, accuracy: 5 })
+    await page.waitForTimeout(700)
+  }
+  return page.getByText(/Point \d+ of \d+|To the start point/).first().textContent()
+}
+
+if (turn1) {
+  const ftShort = (n) => turn1.lat - n / 6076.115 / 60
+
+  // 200 ft short. The old circle was 0.05 NM (304 ft), so this is exactly the
+  // case that used to call the leg done while the boat was still most of a
+  // football field away.
+  const at200 = await holdAt(ftShort(200), turn1.lon)
+  ok('200 ft short of the mark is NOT yet arrived',
+     at200 === legBefore, `${legBefore} → ${at200}`)
+
+  // 120 ft short: inside the 150 ft circle.
+  const at120 = await holdAt(ftShort(120), turn1.lon)
+  ok('arriving within the set distance completes the leg',
+     at120 !== legBefore, `${legBefore} → ${at120}`)
+} else {
+  ok('200 ft short of the mark is NOT yet arrived', false, 'no Turn 1 saved')
+  ok('arriving within the set distance completes the leg', false, 'no Turn 1 saved')
+}
+
 ok('the course swings into the dredged cut rather than just clearing the bar',
    routeLons.some((v) => v >= CHANNEL_WEST),
    `turn-point longitudes: ${routeLons.map((v) => v.toFixed(4)).join(', ')} ` +
@@ -405,6 +444,34 @@ ok('moved-address banner shows on the address that is moving',
 ok('and it points at the new address',
    (await oldPage.locator('a[href="https://navmate.stationinsight.com"]').count()) > 0)
 await oldPage.close()
+
+// --- the arrival setting, where a crew changes it ---------------------------
+// Escape first: a coordinate sheet may still be open over the page, and its
+// backdrop swallows the menu tap.
+await page.keyboard.press('Escape')
+await page.waitForTimeout(300)
+await page.getByLabel('Open the menu').click()
+await page.waitForTimeout(300)
+const trackEntry = page.getByRole('menuitem', { name: /Live tracking/i })
+if ((await trackEntry.count()) > 0) {
+  await trackEntry.first().click()
+  await page.waitForTimeout(500)
+  const group = page.getByRole('radiogroup', { name: 'Arrival distance' })
+  ok('the arrival distance is settable on the Track tab',
+     (await group.count()) > 0)
+  ok('it offers exactly the three distances asked for',
+     (await page.getByRole('radio', { name: '50 ft', exact: true }).count()) === 1
+     && (await page.getByRole('radio', { name: '100 ft', exact: true }).count()) === 1
+     && (await page.getByRole('radio', { name: '150 ft', exact: true }).count()) === 1)
+  ok('150 ft is the one in force by default',
+     (await page.getByRole('radio', { name: '150 ft', exact: true }).getAttribute('aria-checked')) === 'true')
+  await page.getByRole('radio', { name: '50 ft', exact: true }).click()
+  await page.waitForTimeout(300)
+  ok('the choice takes effect',
+     (await page.getByRole('radio', { name: '50 ft', exact: true }).getAttribute('aria-checked')) === 'true')
+} else {
+  ok('the arrival distance is settable on the Track tab', false, 'Track tab not reachable')
+}
 
 // --- no sideways scroll ----------------------------------------------------
 for (const w of [320, 360, 390]) {

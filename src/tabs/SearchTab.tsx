@@ -180,14 +180,15 @@ export function SearchTab() {
 
   const [targetIdx, setTargetIdx] = useState<number | null>(null)
   const running = targetIdx !== null && plan !== null
+  const arrivalFt = useTracker((s) => s.arrivalFt)
 
   // Arriving at the target advances to the next turn point. The arrival
-  // circle is fixed at 0.05 NM (~90 m) — small enough to hold the pattern,
-  // big enough that a boat does not have to drive over the exact point.
+  // circle is the crew's setting (Track tab), floored at whatever the fix
+  // itself can resolve — see `shouldAdvance`.
   useEffect(() => {
     if (!running || !fix || !plan) return
-    if (shouldAdvance(plan, targetIdx, fix)) setTargetIdx(targetIdx + 1)
-  }, [running, fix, plan, targetIdx])
+    if (shouldAdvance(plan, targetIdx, fix, arrivalFt)) setTargetIdx(targetIdx + 1)
+  }, [running, fix, plan, targetIdx, arrivalFt])
 
   /* --------------------------------------------------------------- render */
 

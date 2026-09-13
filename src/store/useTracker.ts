@@ -1,5 +1,10 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
+import {
+  ARRIVAL_FT_CHOICES,
+  DEFAULT_ARRIVAL_FT,
+  type ArrivalFt,
+} from '@/lib/steer'
 import type { Fix } from '@/lib/types'
 import {
   DEFAULT_GATE_M,
@@ -25,6 +30,12 @@ interface TrackerState {
   intervalS: number
   /** Worst accuracy, metres, a fix may report and still be used. 0 = take any. */
   gateM: number
+  /**
+   * How close counts as arriving at a turn point, in feet. Read by the
+   * steering rule in `lib/steer.ts`, which both the chart routes and the
+   * search patterns share.
+   */
+  arrivalFt: ArrivalFt
   /** Fixes refused this session, and why the last one was. */
   rejected: Record<RejectReason, number>
   lastReject: string | null
@@ -38,6 +49,7 @@ interface TrackerState {
   clearTrail: () => void
   setIntervalS: (seconds: number) => void
   setGateM: (meters: number) => void
+  setArrivalFt: (feet: ArrivalFt) => void
   once: () => Promise<Fix | null>
 }
 
@@ -159,6 +171,7 @@ export const useTracker = create<TrackerState>()(
       trail: [],
       intervalS: DEFAULT_INTERVAL_S,
       gateM: DEFAULT_GATE_M,
+      arrivalFt: DEFAULT_ARRIVAL_FT,
       rejected: { accuracy: 0, jump: 0, stale: 0 },
       lastReject: null,
       derived: { speed: false, heading: false },
@@ -239,6 +252,11 @@ export const useTracker = create<TrackerState>()(
         set({ gateM: meters })
       },
 
+      setArrivalFt: (feet) => {
+        if (!ARRIVAL_FT_CHOICES.includes(feet)) return
+        set({ arrivalFt: feet })
+      },
+
       once: () =>
         new Promise<Fix | null>((resolve) => {
           // Already tracking, and the position is seconds old: that fix has
@@ -277,7 +295,13 @@ export const useTracker = create<TrackerState>()(
       storage: createJSONStorage(() => localStorage),
       // Only the preferences are kept. A trail restored on next launch would
       // look like the crew teleported between shifts.
-      partialize: (s) => ({ intervalS: s.intervalS, gateM: s.gateM }),
+      // `arrivalFt` needs no version bump: a v2 payload simply lacks the key,
+      // and persist merges it back to the default above.
+      partialize: (s) => ({
+        intervalS: s.intervalS,
+        gateM: s.gateM,
+        arrivalFt: s.arrivalFt,
+      }),
       // Version 1 stored the interval alone. Without this the bump would
       // throw it away and quietly reset a preference the crew had chosen.
       migrate: (persisted, version) => {
