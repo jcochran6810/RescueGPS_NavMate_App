@@ -219,13 +219,29 @@ const OUTSIDE_THIN_WEIGHT = 1.5
 /**
  * Distance over which leaving a channel ramps up to its full cost, metres.
  *
- * Not a claim that closer is safer. Its job is to keep the cost field
- * continuous so A* does not thrash at a channel-polygon boundary, and so a
- * short gap between a dredged cut and the fairway continuing it costs in
- * proportion to its length rather than standing up like a wall. It also
- * saturates there, which is what stops the penalty swamping the heuristic.
+ * Not a claim that closer is safer. Its job is to keep a short gap between a
+ * dredged cut and the fairway continuing it costing in proportion to its
+ * length rather than standing up like a wall, and to saturate, which is what
+ * stops the penalty swamping the heuristic.
  */
 const CHANNEL_FADE_M = 200
+
+/**
+ * The share of the penalty charged the instant a cell is outside the channel,
+ * before the distance ramp adds the rest.
+ *
+ * Found by driving the built app rather than by reasoning. With a pure ramp
+ * from zero, a cell one cell outside a cut cost about 8 % of the full penalty
+ * — near enough to free that the course rounded the bar's tip *just* outside
+ * the dredged area for its whole length, hugging the boundary without ever
+ * crossing it. That is the letter of the cost function and the opposite of
+ * what a coxswain would do.
+ *
+ * The decision a crew actually makes is binary: in the channel, or not. So
+ * the step carries most of the weight and the ramp only says how much worse
+ * it gets from there.
+ */
+const OUTSIDE_STEP = 0.55
 
 /**
  * How far a course may run outside marked water before it is worth saying so.
@@ -638,7 +654,8 @@ export function channelPenalty(
 ): number {
   if (!g.hasChannels) return 0
   if (g.channel[i] === 1) return 0
-  const ramp = Math.min(1, g.channelDist[i] / p.channelFadeCells)
+  const reach = Math.min(1, g.channelDist[i] / p.channelFadeCells)
+  const ramp = OUTSIDE_STEP + (1 - OUTSIDE_STEP) * reach
   // An unsurveyed cell has a NaN depth, fails this comparison and lands in the
   // dear branch, which is where it belongs. `passable` should never let one
   // through to here — this is belt and braces, not a live branch.
@@ -921,9 +938,15 @@ export function astar(
  * It needs no "is a channel charted?" guard, because it is inert without one:
  * with `channel` all zero, every arriving cell contributes its own step
  * length, so the budget is the sub-path's octile length and the chord's is the
- * octile distance between the same endpoints — which is never longer. The
- * guard can therefore never fire, and the function is bit-identical to what it
- * was before channels existed.
+ * octile distance between the same endpoints — which is never longer.
+ *
+ * That is true in arithmetic and false in floating point, which cost a
+ * straight diagonal 49 legs instead of 3 before it was caught. Both sides sum
+ * the same irrational √2 a different number of times in a different order, so
+ * two mathematically equal lengths differ by about 1e-13 and a strict `>`
+ * fires on half the chords. Hence the tolerance: it is pure arithmetic slack,
+ * far below any distance the grid can express — a millionth of a cell is
+ * microns — and it is what actually makes the no-channel case inert.
  */
 export function stringPull(
   g: RouteGrid,
@@ -949,7 +972,8 @@ export function stringPull(
     for (let j = path.length - 1; j > anchor + 1; j--) {
       const chordOut = chordOutsideChannel(g, path[anchor], path[j], p)
       if (chordOut === null) continue
-      if (chordOut > outAt[j] - outAt[anchor]) continue
+      const budget = outAt[j] - outAt[anchor]
+      if (chordOut > budget + budget * 1e-9 + 1e-9) continue
       best = j
       break
     }

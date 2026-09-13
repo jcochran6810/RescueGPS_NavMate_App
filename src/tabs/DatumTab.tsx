@@ -7,7 +7,8 @@ import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
-import { parseCoord, toDD, toDMS } from '@/lib/coords'
+import { toDD, toDMS } from '@/lib/coords'
+import { CoordInput } from '@/components/CoordInput'
 import { formatBearing, formatDistance, formatDuration } from '@/lib/geo'
 import { download } from '@/lib/transfer'
 import {
@@ -337,8 +338,7 @@ function LkpCard({
   takeFix: () => Promise<{ lat: number; lon: number } | null>
 }) {
   const [editing, setEditing] = useState(false)
-  const [lat, setLat] = useState('')
-  const [lon, setLon] = useState('')
+  const [pos, setPos] = useState({ lat: NaN, lon: NaN })
   const [time, setTime] = useState(() => toLocalInput(new Date()))
   const [source, setSource] = useState<LkpSource>('witness')
   const [objectType, setObjectType] = useState('person_in_water')
@@ -349,8 +349,8 @@ function LkpCard({
   const showForm = editing || !lkp
 
   async function save() {
-    const pLat = parseCoord(lat, 'lat')
-    const pLon = parseCoord(lon, 'lon')
+    const pLat = pos.lat
+    const pLon = pos.lon
     if (!Number.isFinite(pLat) || !Number.isFinite(pLon)) {
       toast('Enter a valid last known position', 'error')
       return
@@ -385,8 +385,7 @@ function LkpCard({
         {lkp && !showForm && (
           <button
             onClick={() => {
-              setLat(toDD(lkp.lat ?? Number.NaN))
-              setLon(toDD(lkp.lon ?? Number.NaN))
+              setPos({ lat: lkp.lat ?? Number.NaN, lon: lkp.lon ?? Number.NaN })
               setTime(toLocalInput(new Date(lkp.recorded_at)))
               if (payload) {
                 setSource(payload.source)
@@ -424,39 +423,22 @@ function LkpCard({
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            <Input
-              value={lat}
-              onChange={(e) => setLat(e.target.value)}
-              placeholder="Latitude"
-              inputMode="decimal"
-              aria-label="LKP latitude"
-            />
-            <Input
-              value={lon}
-              onChange={(e) => setLon(e.target.value)}
-              placeholder="Longitude"
-              inputMode="decimal"
-              aria-label="LKP longitude"
-            />
-          </div>
-          <Button
-            variant="ghost"
-            className="mt-2 w-full"
-            onClick={async () => {
+          <CoordInput
+            label="LKP"
+            value={pos}
+            onChange={setPos}
+            fixLabel="Use my position (on scene at the LKP)"
+            onUseFix={async () => {
               const fix = await takeFix()
               if (!fix) {
                 toast(useTracker.getState().error ?? 'No fix', 'error')
                 return
               }
-              setLat(toDD(fix.lat))
-              setLon(toDD(fix.lon))
+              setPos({ lat: fix.lat, lon: fix.lon })
               setSource('gps')
               setErrorNM(String(LKP_ERROR_NM.gps))
             }}
-          >
-            Use my position (on scene at the LKP)
-          </Button>
+          />
 
           <div className="mt-2">
             <span className="mb-1 block text-xs text-slate-300">

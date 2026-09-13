@@ -1022,6 +1022,30 @@ describe('planRoute with a marked channel', () => {
     expect(plan.points.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('does not shatter an unmarked route into dozens of legs', () => {
+    // The budget rule in stringPull is supposed to be inert where nothing is
+    // marked, because a chord can never be octile-longer than the path it
+    // replaces. True in arithmetic, false in floating point: the two sides sum
+    // the same irrational √2 a different number of times in a different order,
+    // so equal lengths differed by about 1e-13 and a strict comparison
+    // rejected half the chords. This exact route came out as 49 legs instead
+    // of 3 — a wall of turn points on a phone, for a course round one bar.
+    const b = routeBounds(from, to)
+    const features: ChartFeatures = {
+      depthAreas: [
+        { minDepthM: 1.7, rings: [boxRing(b.minLat, b.minLon, b.maxLat, b.maxLon)] },
+        { minDepthM: 0.3, rings: [boxRing(29.315, b.minLon, 29.325, -94.812)] },
+      ],
+      channels: [],
+      land: [],
+      hazards: [],
+      coverage: 'full',
+    }
+    const plan = planRoute({ from, to, ...boat, features })
+    expect(plan.source).toBe('charted')
+    expect(plan.legs.length).toBeLessThanOrEqual(6)
+  })
+
   it('goes round a charted pile instead of through it', () => {
     // A pile is a fixed structure; hitting one at speed ends the mission.
     const b = routeBounds(from, to)

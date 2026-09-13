@@ -163,8 +163,22 @@ export function CoordInput({
         options={COORD_FORMATS}
       />
 
-      <Row axis="lat" />
-      <Row axis="lon" />
+      <AxisRow
+        axis="lat"
+        boxes={boxes.lat}
+        format={format}
+        label={label}
+        invalid={invalid('lat')}
+        onEdit={(patch) => edit('lat', patch)}
+      />
+      <AxisRow
+        axis="lon"
+        boxes={boxes.lon}
+        format={format}
+        label={label}
+        invalid={invalid('lon')}
+        onEdit={(patch) => edit('lon', patch)}
+      />
 
       {/* The same position in the formats you are not typing in. A crew
           reading a number off a radio in one format and entering it in
@@ -199,77 +213,96 @@ export function CoordInput({
       ) : null}
     </div>
   )
+}
 
-  function Row({ axis }: { axis: Axis }) {
-    const b = boxes[axis]
-    const name = axis === 'lat' ? 'Latitude' : 'Longitude'
-    const bad = invalid(axis)
-    const ring = bad ? 'border-red-400/60' : ''
+/**
+ * One axis, laid out for the format in force.
+ *
+ * Module level, not nested inside `CoordInput`. A component declared inside
+ * another is a new type on every render, so React unmounts and remounts it —
+ * which for a text field means losing focus after every character typed.
+ */
+function AxisRow({
+  axis,
+  boxes: b,
+  format,
+  label,
+  invalid,
+  onEdit,
+}: {
+  axis: Axis
+  boxes: Boxes
+  format: CoordFormat
+  label: string
+  invalid: boolean
+  onEdit: (patch: Partial<Boxes>) => void
+}) {
+  const name = axis === 'lat' ? 'Latitude' : 'Longitude'
+  const ring = invalid ? 'border-red-400/60' : ''
 
-    return (
-      <div>
-        <span className="mb-1 block text-xs text-slate-300">{name}</span>
-        <div className="flex items-start gap-1.5">
-          {format === 'dd' ? (
+  return (
+    <div>
+      <span className="mb-1 block text-xs text-slate-300">{name}</span>
+      <div className="flex items-start gap-1.5">
+        {format === 'dd' ? (
+          <Input
+            value={b.a}
+            onChange={(e) => onEdit({ a: e.target.value })}
+            placeholder={axis === 'lat' ? '29.300500' : '-94.820000'}
+            inputMode="decimal"
+            aria-label={`${label} ${name.toLowerCase()}, decimal degrees`}
+            aria-invalid={invalid}
+            className={'tnum ' + ring}
+          />
+        ) : (
+          <>
             <Input
               value={b.a}
-              onChange={(e) => edit(axis, { a: e.target.value })}
-              placeholder={axis === 'lat' ? '29.300500' : '-94.820000'}
-              inputMode="decimal"
-              aria-label={`${label} ${name.toLowerCase()}, decimal degrees`}
-              aria-invalid={bad}
+              onChange={(e) => onEdit({ a: e.target.value })}
+              placeholder={axis === 'lat' ? '29' : '94'}
+              inputMode="numeric"
+              aria-label={`${label} ${name.toLowerCase()}, degrees`}
+              aria-invalid={invalid}
               className={'tnum ' + ring}
             />
-          ) : (
-            <>
+            <Input
+              value={b.b}
+              onChange={(e) => onEdit({ b: e.target.value })}
+              placeholder={format === 'ddm' ? '18.030' : '18'}
+              inputMode="decimal"
+              aria-label={`${label} ${name.toLowerCase()}, minutes`}
+              aria-invalid={invalid}
+              className={'tnum ' + ring}
+            />
+            {format === 'dms' ? (
               <Input
-                value={b.a}
-                onChange={(e) => edit(axis, { a: e.target.value })}
-                placeholder={axis === 'lat' ? '29' : '94'}
-                inputMode="numeric"
-                aria-label={`${label} ${name.toLowerCase()}, degrees`}
-                aria-invalid={bad}
-                className={'tnum ' + ring}
-              />
-              <Input
-                value={b.b}
-                onChange={(e) => edit(axis, { b: e.target.value })}
-                placeholder={format === 'ddm' ? '18.030' : '18'}
+                value={b.c}
+                onChange={(e) => onEdit({ c: e.target.value })}
+                placeholder="01.8"
                 inputMode="decimal"
-                aria-label={`${label} ${name.toLowerCase()}, minutes`}
-                aria-invalid={bad}
+                aria-label={`${label} ${name.toLowerCase()}, seconds`}
+                aria-invalid={invalid}
                 className={'tnum ' + ring}
               />
-              {format === 'dms' ? (
-                <Input
-                  value={b.c}
-                  onChange={(e) => edit(axis, { c: e.target.value })}
-                  placeholder="01.8"
-                  inputMode="decimal"
-                  aria-label={`${label} ${name.toLowerCase()}, seconds`}
-                  aria-invalid={bad}
-                  className={'tnum ' + ring}
-                />
-              ) : null}
-              <Segmented
-                label={`${label} ${name.toLowerCase()} hemisphere`}
-                value={b.hemi}
-                onChange={(hemi) => edit(axis, { hemi })}
-                options={HEMIS[axis]}
-                className="w-20 shrink-0"
-              />
-            </>
-          )}
-        </div>
-        {bad ? (
-          <p className="mt-1 text-xs text-red-300">
-            That is not a {name.toLowerCase()} this app will guess at — check
-            the {format === 'dd' ? 'number' : 'degrees and minutes'}.
-          </p>
-        ) : null}
+            ) : null}
+            <Segmented
+              label={`${label} ${name.toLowerCase()} hemisphere`}
+              value={b.hemi}
+              onChange={(hemi) => onEdit({ hemi })}
+              options={HEMIS[axis]}
+              className="w-20 shrink-0"
+            />
+          </>
+        )}
       </div>
-    )
-  }
+      {invalid ? (
+        <p className="mt-1 text-xs text-red-300">
+          That is not a {name.toLowerCase()} this app will guess at — check the{' '}
+          {format === 'dd' ? 'number' : 'degrees and minutes'}.
+        </p>
+      ) : null}
+    </div>
+  )
 }
 
 /** NaN is a value here — "not set" — so it has to compare equal to itself. */
