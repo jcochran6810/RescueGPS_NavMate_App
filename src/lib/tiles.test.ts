@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
+  HYBRID_BLEND,
   LABELS,
   MAX_LAT,
+  NOAA_CHART,
   SATELLITE,
+  SEAMARKS,
+  sharedZoomRange,
   clampLat,
   latToTileY,
   lonToTileX,
@@ -175,5 +179,43 @@ describe('imagery sources', () => {
     expect(SATELLITE.attribution).toMatch(/Esri/)
     expect(SATELLITE.overlay).toBeUndefined()
     expect(LABELS.overlay).toBe(true)
+  })
+})
+
+describe('hybrid base layers', () => {
+  it('clamps to the levels both sources publish', () => {
+    // The imagery runs 0–19 and the chart 6–18. Taking either range alone
+    // would let the map reach a level where only one of the two halves
+    // exists, and a "50/50 mix" that is silently 100 % satellite at zoom 19
+    // reads on the water as "the shoal is gone".
+    expect(sharedZoomRange([SATELLITE, NOAA_CHART])).toEqual({
+      min: 6,
+      max: 18,
+    })
+  })
+
+  it('leaves a single source exactly as it is', () => {
+    expect(sharedZoomRange([SATELLITE])).toEqual({ min: 0, max: 19 })
+    expect(sharedZoomRange([NOAA_CHART])).toEqual({ min: 6, max: 18 })
+  })
+
+  it('falls back to the first source when the ranges do not overlap', () => {
+    // An inverted range would clamp every zoom to nonsense. Nothing in the
+    // app pairs these two, but the guard is what stops a future pairing from
+    // failing silently.
+    const high = { ...SATELLITE, minZoom: 19, maxZoom: 19 }
+    const low = { ...NOAA_CHART, minZoom: 6, maxZoom: 10 }
+    expect(sharedZoomRange([low, high])).toEqual({ min: 6, max: 10 })
+  })
+
+  it('blends half and half', () => {
+    expect(HYBRID_BLEND).toBe(0.5)
+  })
+
+  it('draws the chart transparently, so imagery can show through it', () => {
+    // The blend only works because the chart's tiles are transparent PNGs.
+    // Drop that parameter and the hybrid view is just the chart.
+    expect(NOAA_CHART.url(12, 1, 1)).toContain('transparent=true')
+    expect(SEAMARKS.overlay).toBe(true)
   })
 })

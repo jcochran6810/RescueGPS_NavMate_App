@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes } from 'react'
 
 type Variant = 'primary' | 'default' | 'ghost' | 'danger'
@@ -75,6 +76,42 @@ export function Input({
         className
       }
     />
+  )
+}
+
+/**
+ * A labelled input.
+ *
+ * A placeholder is not a label: it disappears the moment a value is typed, so
+ * a filled-in form of numbers becomes a grid of numbers with nothing saying
+ * which is the draft and which the stand-off. That is a nuisance in most apps
+ * and a hazard in this one — the boat's numbers are what the plotter refuses
+ * to put it aground with, and they are typed once a season and read back
+ * months later.
+ *
+ * The placeholder stays for the suggested default, which is only useful while
+ * the box is empty anyway.
+ */
+export function Field({
+  label,
+  hint,
+  id,
+  className = '',
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & { label: string; hint?: string }) {
+  const auto = useId()
+  const inputId = id ?? auto
+  return (
+    <div className={'space-y-1 ' + className}>
+      <label
+        htmlFor={inputId}
+        className="block text-xs font-semibold text-slate-300"
+      >
+        {label}
+      </label>
+      <Input id={inputId} {...props} />
+      {hint ? <p className="text-[11px] text-slate-400">{hint}</p> : null}
+    </div>
   )
 }
 

@@ -195,11 +195,22 @@ ok('Chart plotter opens', await page.getByRole('heading', { name: 'Chart plotter
 ok('asks for a boat before it will plan anything',
    (await page.getByText(/Add your boat/i).count()) > 0)
 
+// Every field carries a *visible* label, not just a placeholder. A placeholder
+// vanishes the moment a number is typed, and these numbers are entered once a
+// season and read back months later — a filled form of bare numbers is how
+// somebody swaps the draft and the stand-off.
+for (const l of ['Boat name', 'Callsign', 'Draft (ft)', 'Under-keel margin (ft)',
+                 'Cruise speed (kn)', 'Top speed (kn)', 'Air draft (ft)',
+                 'Stand-off from hazards (ft)']) {
+  ok(`boat form labels "${l}" on screen`,
+     await page.locator('label', { hasText: new RegExp(`^${l.replace(/[()]/g, '\\$&')}$`) }).first().isVisible())
+}
+
 await page.getByLabel('Boat name').fill('Marine 2')
-await page.getByLabel('Draft in feet', { exact: true }).fill('3')
-await page.getByLabel('Under-keel margin in feet').fill('2')
-await page.getByLabel('Cruise speed in knots').fill('20')
-await page.getByLabel('Stand-off from hazards in feet').fill('0')
+await page.getByLabel('Draft (ft)', { exact: true }).fill('3')
+await page.getByLabel('Under-keel margin (ft)', { exact: true }).fill('2')
+await page.getByLabel('Cruise speed (kn)', { exact: true }).fill('20')
+await page.getByLabel('Stand-off from hazards (ft)', { exact: true }).fill('0')
 await page.getByRole('button', { name: 'Add boat' }).click()
 await page.waitForTimeout(600)
 
@@ -213,6 +224,46 @@ ok('seamark overlay requested', tileHits.seamark > 0, `${tileHits.seamark} tiles
 const chartUrl = encHits.find((u) => u.includes('GetMap'))
 ok('chart requested as a WMS GetMap in EPSG:3857',
    !!chartUrl && chartUrl.includes('crs=EPSG:3857') && /bbox=-?\d+\.?\d*,/.test(chartUrl))
+
+// --- hybrid base layer -----------------------------------------------------
+// The ask was a 50/50 mix, so both halves have to actually be fetched. A
+// hybrid that quietly drew one source would look like a working feature.
+{
+  // Counted from the DOM rather than from network hits: the chart tiles were
+  // already fetched in chart view, so switching to hybrid serves them from the
+  // browser's own cache and no second request arrives. What matters is that
+  // both layers are on screen at once.
+  const drawn = async () => await page.evaluate(() => {
+    const src = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src') ?? '')
+    return {
+      chart: src.filter((u) => u.includes('gis.charttools.noaa.gov')).length,
+      imagery: src.filter((u) => u.includes('server.arcgisonline.com')).length,
+    }
+  })
+
+  const before = await drawn()
+  ok('the plain chart view draws no imagery',
+     before.chart > 0 && before.imagery === 0,
+     `${before.chart} chart, ${before.imagery} imagery`)
+
+  await page.getByRole('radio', { name: 'Hybrid', exact: true }).click()
+  await page.waitForTimeout(900)
+  const both = await drawn()
+  ok('hybrid draws both the chart and the imagery',
+     both.chart > 0 && both.imagery > 0,
+     `${both.chart} chart, ${both.imagery} imagery`)
+  ok('the chart is blended over the imagery at half strength',
+     (await page.locator('div[style*="opacity: 0.5"]').count()) === 1)
+  ok('hybrid fetched the imagery it draws', tileHits.imagery > 0,
+     `${tileHits.imagery} imagery tiles`)
+
+  await page.getByRole('radio', { name: 'Chart', exact: true }).click()
+  await page.waitForTimeout(700)
+  const back = await drawn()
+  ok('switching back drops the imagery layer again',
+     back.chart > 0 && back.imagery === 0,
+     `${back.chart} chart, ${back.imagery} imagery`)
+}
 
 // --- the From/To controls sit ABOVE the chart ------------------------------
 // Measured, not assumed: this is the whole point of the layout change.

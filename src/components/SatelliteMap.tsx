@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Fix } from '@/lib/types'
 import {
+  HYBRID_BLEND,
   LABELS,
   NOAA_CHART,
   SATELLITE,
@@ -11,6 +12,7 @@ import {
   lonToTileX,
   metersPerPixel,
   pickScaleBar,
+  sharedZoomRange,
   tileXToLon,
   tileYToLat,
   tilesForView,
@@ -22,6 +24,12 @@ import type { PathMarker } from '@/components/TrackPath'
 const MIN_ZOOM = 3
 const MAX_ZOOM = 19
 const DEFAULT_ZOOM = 16
+/** What the offline-save button says it is about to pull down. */
+const SAVE_NOUN: Record<MapBase, string> = {
+  satellite: 'imagery',
+  chart: 'chart',
+  hybrid: 'chart and imagery',
+}
 /** Movement under this is a tap, not a pan. */
 const TAP_SLOP_PX = 6
 /** And a tap held longer than this is a press, not a pick. */
@@ -38,7 +46,14 @@ const TAP_MS = 500
  * right, and the map says the imagery is missing rather than quietly showing
  * the crew a blank ocean.
  */
-export type MapBase = 'satellite' | 'chart'
+/**
+ * What the map draws underneath everything else.
+ *
+ * `hybrid` is not a third source — it is the imagery with the chart blended
+ * over it at half strength, so a crew can read a depth contour and see the
+ * bank it belongs to in the same glance.
+ */
+export type MapBase = 'satellite' | 'chart' | 'hybrid'
 
 export function SatelliteMap({
   trail,
@@ -332,7 +347,17 @@ export function SatelliteMap({
 
   /* ------------------------------------------------------------------ tiles */
 
-  const baseSource = base === 'chart' ? NOAA_CHART : SATELLITE
+  /**
+   * The base layers, bottom first. Two of them in the hybrid view — the
+   * imagery carries the ground, the chart carries the soundings — and the
+   * chart's tiles are transparent PNGs, so blending them is a matter of
+   * drawing one over the other rather than of compositing anything.
+   */
+  const baseSources = useMemo<TileSource[]>(() => {
+    if (base === 'hybrid') return [SATELLITE, NOAA_CHART]
+    return [base === 'chart' ? NOAA_CHART : SATELLITE]
+  }, [base])
+  const baseLabel = base === 'hybrid' ? 'Hybrid chart and satellite' : baseSources[0].label
   /**
    * The overlays currently drawn. Kept as a list so `saveArea` fills the cache
    * with exactly what is on screen rather than assuming imagery.
@@ -344,10 +369,10 @@ export function SatelliteMap({
     return out
   }, [labels, seamarks])
 
-  const z = Math.max(
-    baseSource.minZoom,
-    Math.min(baseSource.maxZoom, Math.round(zoom)),
-  )
+  // Clamped to the levels *every* base layer publishes, so the hybrid view
+  // cannot zoom to where only one of its two halves exists.
+  const baseZoom = useMemo(() => sharedZoomRange(baseSources), [baseSources])
+  const z = Math.max(baseZoom.min, Math.min(baseZoom.max, Math.round(zoom)))
   /** Between integer zooms the whole tile layer is scaled rather than refetched. */
   const scale = 2 ** (zoom - z)
   const layerW = w / scale
@@ -492,8 +517,8 @@ export function SatelliteMap({
   const saveArea = async () => {
     if (saving) return
     const urls = new Set<string>()
-    const sources = [baseSource, ...overlaySources]
-    for (const level of [z, Math.min(z + 1, baseSource.maxZoom)]) {
+    const sources = [...baseSources, ...overlaySources]
+    for (const level of [z, Math.min(z + 1, baseZoom.max)]) {
       const mult = 2 ** (level - z)
       for (const t of tilesForView(center, level, layerW * mult, layerH * mult)) {
         for (const src of sources) {
@@ -536,7 +561,8 @@ export function SatelliteMap({
         onPointerUp={onPointerUp}
         onPointerCancel={endPointer}
       >
-        {placed && layer(baseSource)}
+        {placed &&
+          baseSources.map((src, i) => layer(src, i === 0 ? 1 : HYBRID_BLEND))}
         {placed && overlaySources.map((src) => layer(src, 0.9))}
 
         {placed && onPick && pickHint ? (
@@ -569,7 +595,7 @@ export function SatelliteMap({
             'pointer-events-none absolute inset-0 ' + (placed ? '' : 'hidden')
           }
           role="img"
-          aria-label={`${baseSource.label} map, ${trail.length} track points`}
+          aria-label={`${baseLabel} map, ${trail.length} track points`}
         >
           {markers.map((m) => {
             const p = project(m.lat, m.lon)
@@ -773,7 +799,7 @@ export function SatelliteMap({
           // wrong is the zoom.
           <div className="pointer-events-none absolute top-2 right-12 left-2 rounded-lg bg-navy-950/85 px-2.5 py-1.5 text-[11px] text-amber-200">
             {online
-              ? 'Satellite imagery did not load here. The track, waypoints and scale below are still exact.'
+              ? `${baseLabel} tiles did not all load here. The track, waypoints and scale below are still exact.`
               : 'Offline — only imagery already saved to this device will appear. The track below is still exact.'}
           </div>
         )}
@@ -781,7 +807,7 @@ export function SatelliteMap({
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[10px] text-slate-300">
-          {[baseSource, ...overlaySources].map((s) => s.attribution).join(' · ')}{' '}
+          {[...baseSources, ...overlaySources].map((s) => s.attribution).join(' · ')}{' '}
           · z{zoom.toFixed(1)}
         </p>
         <button
@@ -791,7 +817,7 @@ export function SatelliteMap({
         >
           {saving
             ? `Saving ${saving.done}/${saving.total}…`
-            : `Save ${base === 'chart' ? 'chart' : 'imagery'} for offline`}
+            : `Save ${SAVE_NOUN[base]} for offline`}
         </button>
       </div>
     </div>

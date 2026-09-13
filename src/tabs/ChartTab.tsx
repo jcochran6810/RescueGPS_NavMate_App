@@ -34,7 +34,7 @@ import { formatTideClock, formatTideHeight, tideNow } from '@/lib/tides'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
-import { Button, Card, EmptyState, Input, Label, Segmented, Spinner, Stat } from '@/components/ui'
+import { Button, Card, EmptyState, Field, Label, Segmented, Spinner, Stat } from '@/components/ui'
 
 /**
  * Chart plotter — a nautical chart, a destination, and a course that stays in
@@ -348,17 +348,24 @@ export function ChartTab() {
 
       {/* ----------------------------------------------------------- chart */}
       <Card className="p-3">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <Segmented
-            label="Base layer"
-            value={base}
-            onChange={setBase}
-            options={[
-              { id: 'chart' as MapBase, label: 'Chart' },
-              { id: 'satellite' as MapBase, label: 'Satellite' },
-            ]}
-            className="max-w-44"
-          />
+        {/* Three choices no longer fit beside the Buoys toggle at 320 px, so
+            the base layer takes its own row rather than truncating to "Sat…". */}
+        <Segmented
+          label="Base layer"
+          value={base}
+          onChange={setBase}
+          options={[
+            { id: 'chart' as MapBase, label: 'Chart' },
+            { id: 'satellite' as MapBase, label: 'Satellite' },
+            {
+              id: 'hybrid' as MapBase,
+              label: 'Hybrid',
+              hint: 'The chart blended over the satellite imagery, half and half',
+            },
+          ]}
+          className="mb-2"
+        />
+        <div className="mb-2 flex items-center justify-end gap-2">
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setSeamarks((v) => !v)}
@@ -917,63 +924,75 @@ function VesselForm({
   return (
     <div className="mt-3 space-y-2 border-t border-white/10 pt-3">
       <div className="grid grid-cols-2 gap-2">
-        <Input placeholder="Name" value={form.name} onChange={set('name')} aria-label="Boat name" />
-        <Input placeholder="Callsign" value={form.callsign} onChange={set('callsign')} aria-label="Boat callsign" />
+        <Field
+          label="Boat name"
+          placeholder="Fire boat 2"
+          value={form.name}
+          onChange={set('name')}
+        />
+        <Field
+          label="Callsign"
+          placeholder="FB2"
+          value={form.callsign}
+          onChange={set('callsign')}
+        />
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Input
+        <Field
+          label="Draft (ft)"
           inputMode="decimal"
-          placeholder={`Draft ft (${(VESSEL_DEFAULTS.draft_m * 3.280839895).toFixed(1)})`}
+          placeholder={(VESSEL_DEFAULTS.draft_m * 3.280839895).toFixed(1)}
           value={form.draftFt}
           onChange={set('draftFt')}
-          aria-label="Draft in feet"
         />
-        <Input
+        <Field
+          label="Under-keel margin (ft)"
           inputMode="decimal"
-          placeholder={`Under keel ft (${(VESSEL_DEFAULTS.under_keel_margin_m * 3.280839895).toFixed(1)})`}
+          placeholder={(
+            VESSEL_DEFAULTS.under_keel_margin_m * 3.280839895
+          ).toFixed(1)}
           value={form.marginFt}
           onChange={set('marginFt')}
-          aria-label="Under-keel margin in feet"
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Input
+        <Field
+          label="Cruise speed (kn)"
           inputMode="decimal"
-          placeholder="Cruise kn (20)"
+          placeholder="20"
           value={form.cruise}
           onChange={set('cruise')}
-          aria-label="Cruise speed in knots"
         />
-        <Input
+        <Field
+          label="Top speed (kn)"
           inputMode="decimal"
-          placeholder="Top kn (35)"
+          placeholder="35"
           value={form.max}
           onChange={set('max')}
-          aria-label="Top speed in knots"
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Input
+        <Field
+          label="Air draft (ft)"
           inputMode="decimal"
-          placeholder="Air draft ft"
+          placeholder="0"
           value={form.airDraftFt}
           onChange={set('airDraftFt')}
-          aria-label="Air draft in feet"
         />
-        <Input
+        <Field
+          label="Stand-off from hazards (ft)"
           inputMode="decimal"
-          placeholder="Stand-off ft (100)"
+          placeholder="100"
           value={form.clearanceFt}
           onChange={set('clearanceFt')}
-          aria-label="Stand-off from hazards in feet"
         />
       </div>
-      <Input
+      <Field
+        label="Fuel burn at cruise (gal/h) — optional"
         inputMode="decimal"
-        placeholder="Fuel burn gal/h at cruise (optional)"
+        placeholder="Leave blank if you do not track it"
         value={form.burn}
         onChange={set('burn')}
-        aria-label="Fuel burn in gallons per hour"
       />
       <p className="text-xs text-slate-400">
         Draft plus the under-keel margin is the depth the plotter will not go
