@@ -96,10 +96,19 @@ cannot overwrite each other.
   distance and bearing to that station, whether the tide is making or ebbing, a
   picker for the next four stations along, and the full table for the next two
   days. US waters only.
-- **Compass** — a rose that turns under a fixed lubber line, from the device
-  magnetometer, falling back to GPS course when you are moving. Points to any
-  saved waypoint and says which way to turn, with the true bearing and distance
-  to everything saved listed underneath.
+- **Compass** — a graduated rose that turns under a fixed index, from the
+  device magnetometer, falling back to GPS course when you are moving. It
+  reads **true** north: the local magnetic variation comes from the World
+  Magnetic Model computed on the device, so the dial agrees with every other
+  bearing in the app instead of being off by the 10–20° a magnetometer is wrong
+  by on either coast. One tap switches it back to magnetic. The heading is
+  tilt-compensated — it survives the phone being held up to eye height, rolled
+  in the hand or turned to landscape, where a plain phone compass swings wildly
+  — and a bubble level, a steadiness reading and a figure-of-eight prompt say
+  when the reading should not be trusted. Points to any saved waypoint and says
+  which way to turn, marks course over ground beside heading so the set on a
+  search leg is visible, holds a sighted bearing while you lower the phone, and
+  lists the true bearing and distance to everything saved underneath.
 - **Convert** — type coordinates as decimal degrees, DMS or degrees-decimal-minutes
   and the other formats follow. UTM (WGS-84) is derived alongside.
 - **Entering a position, anywhere in the app** — waypoints, the LKP, and both
@@ -185,6 +194,7 @@ npm run lint
 ```
 src/
   lib/          coordinate math, distance/bearing, 60 D = S × T, sun events,
+                tilt-compensated heading, the World Magnetic Model,
                 NOAA tides, GPS gating and Kalman filter, Web Mercator tiles
                 and chart sources, ENC depth/hazard fetching, the route
                 planner (rasterise → A* → string-pull), vessel and safe-depth
@@ -203,6 +213,7 @@ brand/
 scripts/
   make-icons.mjs   regenerates every icon in public/ from the two masters
   drive-chart.mjs  headless drive of the chart plotter against a stubbed NOAA
+  drive-compass.mjs  headless drive of the compass on synthetic sensor events
 ```
 
 ## Data model

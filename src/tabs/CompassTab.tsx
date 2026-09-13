@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { useTracker } from '@/store/useTracker'
+import { useHeading } from '@/store/useHeading'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useTeams } from '@/store/useTeams'
 import { Compass } from '@/components/Compass'
@@ -8,7 +9,10 @@ import {
   formatBearing,
   formatDistance,
   haversineNM,
+  isAtPosition,
+  relativeBearing,
 } from '@/lib/geo'
+import { magneticFromTrue } from '@/lib/geomag'
 import { Card, EmptyState, Label } from '@/components/ui'
 
 /**
@@ -21,6 +25,9 @@ export function CompassTab() {
   const { fix, watching, error, once } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
+  const heading = useHeading((s) => s.heading)
+  const shownReference = useHeading((s) => s.shownReference)
+  const declination = useHeading((s) => s.declination)
 
   useEffect(() => {
     if (!fix && !watching) void once()
@@ -33,11 +40,18 @@ export function CompassTab() {
     if (lat === null || lon === null) return []
     return waypoints
       .filter((w) => (activeTeamId ? w.team_id === activeTeamId : w.team_id === null))
-      .map((w) => ({
-        w,
-        bearing: bearingDeg(lat, lon, w.lat, w.lon),
-        distanceNM: haversineNM(lat, lon, w.lat, w.lon),
-      }))
+      .map((w) => {
+        const distanceNM = haversineNM(lat, lon, w.lat, w.lon)
+        return {
+          w,
+          // A bearing to a point you are standing on is a metre of GPS jitter
+          // swung through the whole compass, so it is not printed at all.
+          bearing: isAtPosition(distanceNM)
+            ? null
+            : bearingDeg(lat, lon, w.lat, w.lon),
+          distanceNM,
+        }
+      })
       .sort((a, b) => a.distanceNM - b.distanceNM)
   }, [waypoints, activeTeamId, lat, lon])
 
@@ -81,11 +95,29 @@ export function CompassTab() {
                 key={w.id}
                 className="flex items-center justify-between gap-3 py-2"
               >
-                <span className="min-w-0 truncate text-sm text-slate-100">
+                <span className="min-w-0 flex-1 truncate text-sm text-slate-100">
                   {w.name}
                 </span>
+                {/* Which way to turn for it, when the compass is running —
+                    the step every crew does in their head otherwise. */}
+                {bearing !== null && heading !== null && (
+                  <span
+                    aria-hidden="true"
+                    className="shrink-0 text-sm text-sky-400"
+                    style={{
+                      transform: `rotate(${relativeBearing(
+                        shownReference === 'magnetic' && declination !== null
+                          ? magneticFromTrue(bearing, declination)
+                          : bearing,
+                        heading,
+                      )}deg)`,
+                    }}
+                  >
+                    ↑
+                  </span>
+                )}
                 <span className="tnum shrink-0 text-sm text-slate-300">
-                  {formatBearing(bearing)}
+                  {bearing === null ? 'here' : formatBearing(bearing)}
                 </span>
                 <span className="tnum shrink-0 text-sm text-slate-300">
                   {formatDistance(distanceNM, 'nm')}
@@ -95,8 +127,9 @@ export function CompassTab() {
           </ul>
         )}
         <p className="mt-2 text-xs text-slate-400">
-          Bearings are true, worked from the coordinates. The dial above may be
-          magnetic depending on the device — it says which.
+          Bearings are true, worked from the coordinates. The dial above is
+          corrected to true north from the magnetic model unless you switch it
+          to magnetic, and it says which it is showing.
         </p>
       </Card>
     </div>

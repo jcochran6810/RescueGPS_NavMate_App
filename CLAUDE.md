@@ -268,6 +268,31 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   `src/store/useIncidents.ts`; and NavMate filters on `client_id is not null`,
   because a command-created incident is not something the field app has a UI
   for.
+- **The compass reads true north, and that is not cosmetic.** `src/lib/geomag.ts`
+  is the World Magnetic Model (WMM2025) evaluated on the device, checked against
+  all 100 of NOAA's published test values in `geomag.test.ts`. Every bearing
+  elsewhere in NavMate is true, worked from coordinates; a magnetometer is
+  magnetic, and on either US coast those differ by 10–20°. Two conventions on
+  one screen is how a crew ends up steering 15° off, so the dial is corrected
+  rather than captioned with a warning. The model expires in **2030** —
+  `modelValidity()` says so on screen, and replacing it means swapping the four
+  coefficient tables for the next release. Do not "simplify" it to a dipole: the
+  non-dipole field is exactly the part that matters near a coast.
+- **A phone compass is not `360 - alpha`.** `src/lib/heading.ts` builds the full
+  rotation matrix and picks what counts as "pointing" from how the phone is being
+  held — the top edge of the screen when it is flat, the back of the phone when it
+  is held up to read — because `alpha` is the azimuth of the top edge, and a phone
+  held up has its top edge pointing at the sky where every direction is the same
+  direction. The band between the two holds is placed where the two answers agree,
+  so crossing it moves nothing. There is one unavoidable 180° flip, at top-edge
+  pointing straight down, and it is put where nobody holds a phone. Screen
+  rotation is part of this, not a correction bolted on after.
+- **"The readings keep changing" is both a broken magnetometer and a turning
+  boat.** `headingWander` fits a straight line through the recent readings and
+  reports the residual, so a turn at any rate fits the line and a jittering sensor
+  does not. The first version measured how far the readings moved and called a
+  hard turn a fault — the browser drive is what caught it.
+
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
@@ -284,6 +309,112 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
+
+### 2026-09-13 — claude/navmate-compass-feature-hf4h6z (the compass, made an instrument)
+
+"Fix the compass feature. Make it rival other compass apps with graphics and
+accuracy." Both halves were real, and the accuracy half was worse than it
+looked: the old dial had **three** separate faults, any one of which is enough
+to put a boat on the wrong heading.
+
+**It was showing magnetic north and telling the crew to fix it themselves.**
+The card carried a note — "apply your local declination before passing a
+bearing to anyone working from a chart" — directly underneath a table of *true*
+bearings worked from coordinates. On this coast that is 10–20° of disagreement
+between two numbers on one screen, with the reconciliation left as an exercise.
+So `src/lib/geomag.ts` is now the **World Magnetic Model, evaluated on the
+device**: geodetic to geocentric, Schmidt semi-normalised Legendre functions to
+degree 12, coefficients carried forward from the 2025 epoch by their secular
+variation. It runs offline from a compiled-in table, which is the only form
+that is any use to a crew out of coverage.
+
+Nothing about that is worth having unless it is *right*, so it is checked
+against **all 100 of NOAA's own published WMM2025 test values** — every
+declination and inclination to within 0.006°, every intensity to within
+0.15 nT, across the model's whole five-year window and a spread of altitudes.
+The dial now says `13.9° W` for Boston and corrects the heading by it.
+
+**It could not survive the phone being held up.** `360 - alpha` is exact for a
+phone lying flat and meaningless for one held at eye height, because `alpha` is
+the azimuth of the **top edge of the screen**, and when that edge points at the
+sky every direction is the same direction — so a few degrees of roll swings the
+heading by tens. `src/lib/heading.ts` builds the whole rotation matrix and
+chooses the pointer from the hold: top edge when flat, back of the phone when
+held up, interpolated across a band deliberately placed where the two answers
+*agree*. The browser drive puts five physically identical attitudes through it
+— the same direction, rolled ±40° — and reads **330, 330, 330, 330, 331**. With
+the old code restored, the same five read **291, 309, 329, 350, 9**.
+
+There is one 180° ambiguity left, at top-edge-pointing-straight-down, and there
+is no removing it: a phone in that attitude points at every bearing at once.
+It is placed where nobody holds a phone, and said so in the file.
+
+**The dial span the long way round north.** `rotate(-heading)` with 359 → 1 is a
+358° backspin, once per pass through north, on the one instrument whose whole
+job is north. The drawn angle is now unwrapped and allowed to run past 360, and
+the drive reads the transform back out to prove it: 362.4° then 358.2°, four
+degrees, not three hundred and fifty-six. With the fix removed: -357.6° then
+-1.8°.
+
+**Then the thing no phone compass admits to.** A magnetometer beside a radio,
+an engine block or a steel wheelhouse is wrong by tens of degrees and gives no
+sign except that the numbers will not settle. iOS reports its own accuracy
+figure; Android reports nothing at all. So the store watches the scatter — but
+"the readings keep changing" is also exactly what a boat coming round looks
+like, and telling a coxswain mid-turn that their compass is broken is worse
+than silence. `headingWander` fits a straight line through the recent readings
+and reports the **residual**: a turn at any rate fits the line, jitter does not.
+The first version measured how far the readings moved, and the browser drive
+caught it calling a 45°/s turn a fault — a bug that would have fired on every
+hard turn of every search.
+
+**Smoothing had the same tension and gets the same treatment.** Enough damping
+to hold a needle steady in a shaking hand puts it seconds behind a boat coming
+round, and a crew steering by a lagging compass chases it. The time constant
+now closes up as the error grows — 0.4 s still, 0.05 s turning — and is scaled
+by elapsed time rather than sample count, so a phone reporting at 60 Hz is not
+smoothed twice as hard as one reporting at 30. Measured in the drive: **8° of
+lag at 45°/s**, which is faster than anything this app will be on, and back
+within 2° a second after steadying. That lag is inherent (rate × time constant)
+and is recorded rather than hidden.
+
+**The graphics.** A 112 px dial with eight ticks became a full-width rose: 180
+graduations at 2°, stepped at 10° and 30°, numbered every 30°, cardinals and
+intercardinals, a red north arm stopping short of a hub so it never crosses the
+digits, the heading read large in the middle with its reference spelled out
+under it, a fixed amber index, a sky-blue pointer and dashed lead line to the
+chosen waypoint, a hollow marker for course over ground beside the heading —
+the gap between them is the set the boat is taking — and a spirit level whose
+bubble says *how* to hold it, not just that it is wrong. It animates in a frame
+loop against the group's transform rather than through React, because
+re-rendering 180 ticks at 60 Hz costs battery on the one device that has none
+to spare, and it honours `prefers-reduced-motion`.
+
+Also new: **Take a bearing**, which holds up to four sighted bearings with times
+so the phone can be lowered and the numbers read — two bearings and a chart is
+a fix, and it is what a hand-bearing compass is for. The bearings table gained a
+per-row arrow pointing the way to turn.
+
+**Verification.** 576 tests, up from 431: 111 in `geomag.test.ts` (100 of them
+NOAA's own), 34 in `heading.test.ts` against attitudes worked out by hand — a
+test cannot tilt a phone, so the maths is checked where it can be. Plus
+`scripts/drive-compass.mjs`, **42 checks** driving the production build with
+synthetic `DeviceOrientationEvent`s, which is the only thing that answers
+whether any of it reaches the screen. Four of the new behavioural checks were
+each confirmed to **fail with their mechanism removed** — the roll invariance,
+the unwrapped rotation, the turn-versus-jitter test and the declination
+correction. One of them (the lift from flat to eye height at zero roll) passes
+against the old code too; that is said plainly in the script rather than
+counted as evidence.
+
+**Not verified, and in `fix_list.md`:** none of this has run on a real phone.
+Chromium's synthetic events are the real code path but not a real magnetometer,
+and three things can only be answered on hardware — whether Android's
+`deviceorientationabsolute` is magnetic north as assumed (it is documented so,
+and the whole declination correction rests on it), whether iOS's
+`webkitCompassAccuracy` maps onto the steadiness bands sensibly, and whether
+the wander thresholds are right for a real sensor's noise floor rather than for
+a synthetic one.
 
 ### 2026-09-13 — claude/charming-rubin-rlz3ks (a straight line through land)
 

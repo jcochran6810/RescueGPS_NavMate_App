@@ -8,6 +8,43 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-13 — **The compass has never run against a real magnetometer.**
+      Everything in this session was driven with synthetic
+      `DeviceOrientationEvent`s in headless Chromium, which exercises the real
+      code path but not a real sensor. Three things can only be settled on
+      hardware:
+      - **Is Android's `deviceorientationabsolute` referenced to magnetic
+        north?** It is documented and implemented as a geomagnetic reference,
+        and the whole true-north correction rests on it. If any device turns
+        out to report true north already, the correction would be applied
+        twice and the dial would be out by double the variation — on an iPhone
+        this is not in doubt (Apple documents `webkitCompassHeading` as
+        magnetic), so the check is an Android one. Put the phone next to a
+        known bearing and compare.
+      - **Do iOS's `webkitCompassAccuracy` values land sensibly** on the
+        good/fair/poor bands (≤15°, ≤30°, worse)? Apple's figure is a claimed
+        error in degrees, and a negative value means unusable.
+      - **Are the wander thresholds right for a real sensor's noise floor?**
+        8° RMS for "poor" and 4° for "fair" were chosen against synthetic
+        noise. A real magnetometer's quiet-state scatter may want them moved;
+        too tight and the card cries wolf, too loose and it never warns.
+- [ ] 2026-09-13 — **The magnetic model expires in 2030.** `src/lib/geomag.ts`
+      carries WMM2025, valid 2025.0–2030.0. Past that the secular-variation
+      terms are an extrapolation that degrades every year. `modelValidity()`
+      already says so on the compass card, so it will not fail silently;
+      replacing it is swapping the four coefficient tables for the next
+      release (NOAA NCEI publish it as public-domain data) and updating the
+      test values in `geomag.test.ts` to match. The expansion itself does not
+      change.
+- [ ] 2026-09-13 — **The compass lags about 8° during a 45°/s turn**, measured
+      in `scripts/drive-compass.mjs`. That is rate × the smoother's time
+      constant and it is a deliberate trade: less smoothing means a needle that
+      will not settle in a shaking hand. It recovers to within 2° a second
+      after steadying, which is when the number is read, and realistic boat
+      turn rates (10–20°/s) give about 5°. If it ever proves annoying, the fix
+      is a rate-aware filter (alpha-beta) rather than simply opening the gain —
+      and that brings its own overshoot at the end of a turn.
+
 - [ ] 2026-09-13 — **Set the Supabase Auth URLs.** The domain moves are done
       (see Done below); this half is not, and it is the half with the trap in
       it. Auth → URL Configuration: **Site URL
