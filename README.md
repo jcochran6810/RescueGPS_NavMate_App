@@ -52,10 +52,16 @@ cannot overwrite each other.
   RescueGPS's own field names, ready for its drift engine. All of it works
   offline and syncs later.
 - **Chart plotter** — a nautical chart with charted depths, and an automatic
-  course to anywhere you point at. Tap the chart, pick a saved waypoint, or run
-  straight to the active incident's LKP, and the app works out a route that
-  keeps the boat in water it can actually use: round the shoals, off the
-  wrecks, through the channel. It needs to know the boat first — draft, the
+  course to anywhere you point at. Set where you are coming from and where you
+  are going on one compact row above the chart — your current position, a tap
+  on the chart, typed coordinates, a saved waypoint, or the active incident's
+  LKP — and the course draws itself on the chart as soon as both ends are
+  set. No button. The route keeps the boat in water it can actually use: round
+  the shoals, off the wrecks and the piles, and **inside the marked channel**.
+  Dredged areas and fairways are read from the chart and strongly preferred, so
+  the course rides the cut rather than cutting a corner across open water that
+  merely happens to be deep enough; where it does have to run outside marked
+  water it says so, on the route and on the leg. It needs to know the boat first — draft, the
   water you want under the keel, how far off a hazard you want to be, and
   cruise speed — which is what the **vessel list** is for; boats are shared
   with the team, so a department's Marine 2 is set up once. The route comes
@@ -91,6 +97,14 @@ cannot overwrite each other.
   to everything saved listed underneath.
 - **Convert** — type coordinates as decimal degrees, DMS or degrees-decimal-minutes
   and the other formats follow. UTM (WGS-84) is derived alongside.
+- **Entering a position, anywhere in the app** — waypoints, the LKP, and both
+  ends of a plotted course all use the same control, with a **DD / DDM / DMS**
+  selector that lays out the right boxes for the format and remembers your
+  choice everywhere. It shows the position back to you in the other two
+  formats before you commit it, and it refuses what it cannot read — 75
+  minutes, a hemisphere from the wrong axis, a minus sign contradicting a W —
+  the moment you type it, rather than guessing at a position that looks
+  plausible and is wrong.
 - **Live tracking** — position on a satellite map, with speed in knots,
   heading, accuracy and altitude. The fix stream is gated and filtered before
   anything is drawn on it: a fix reporting worse accuracy than you asked for

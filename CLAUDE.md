@@ -220,7 +220,21 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ambiguous input rather than guessing — a wrong coordinate that looks
   plausible is the worst possible failure for a rescue crew. Do not "fix"
   a rejection by making the parser lenient without a test proving the input
-  is unambiguous.
+  is unambiguous. **`src/components/CoordInput.tsx` is the one place a
+  coordinate is typed** — Waypoints, the waypoint editor, the LKP card and the
+  Chart tab all use it. It never parses anything itself: each format lays out
+  its own boxes and joins them into a canonical string `parseCoord` already
+  accepts, so the strict rules keep firing and there is no second parser to
+  drift. Keep it that way. (The Convert tab is deliberately not a caller — it
+  is a converter showing three formats at once, not a position picker.)
+- **`src/lib/routing.ts` prefers marked channels, and the cost must never dip
+  below 1.** `astar`'s octile heuristic is admissible *and consistent* only
+  while every step costs at least 1; the closed-set pruning depends on the
+  second. So a preference is always a penalty on the cells you want avoided,
+  never a discount on the cells you want used. Two words to keep apart in that
+  file: **edge** means the bank of navigable water (a geometric proxy),
+  **channel** means a charted DRGARE or FAIRWY. They were once both called
+  "channel" and it made the file unreadable.
 - **Supabase keys are compiled in on purpose.** `src/lib/supabase.ts` falls
   back to the project URL and publishable key. Both are publishable; RLS is
   the security boundary. Never add a service-role key to this repo.
