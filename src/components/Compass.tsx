@@ -1,38 +1,35 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useHeading } from '@/store/useHeading'
+import { useHeading, type HeadingReference } from '@/store/useHeading'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useWaypoints } from '@/store/useWaypoints'
+import { CompassRose, type RoseMarker } from '@/components/CompassRose'
 import {
   bearingDeg,
   compassPoint,
   formatBearing,
   formatDistance,
   haversineNM,
-  relativeBearing,
+  isAtPosition,
   MPS_TO_KNOTS,
 } from '@/lib/geo'
+import { describeTurn, normalizeDeg } from '@/lib/heading'
+import { formatDeclination, magneticFromTrue, WMM_NAME } from '@/lib/geomag'
 import { Button, Card, Label } from '@/components/ui'
 
-const TICKS = [
-  { deg: 0, label: 'N' },
-  { deg: 45, label: '' },
-  { deg: 90, label: 'E' },
-  { deg: 135, label: '' },
-  { deg: 180, label: 'S' },
-  { deg: 225, label: '' },
-  { deg: 270, label: 'W' },
-  { deg: 315, label: '' },
-]
-
 /**
- * A compass rose that turns under a fixed lubber line, plus an optional
- * pointer to a saved waypoint.
+ * The compass card: a rose, what it is referenced to, how far to trust it, and
+ * what is worth pointing at.
  *
- * The card rotates the *dial* rather than a needle, which is how a real
- * hand-bearing compass reads: whatever is at the top of the screen is the way
- * the phone is pointing.
+ * The ordering is deliberate. Every number on this card is worthless if the
+ * reading behind it is bad, so the things that say whether it is bad — the
+ * reference, the calibration, the tilt — sit with the dial rather than in a
+ * footnote under everything else.
  */
+
+/** Below this there is no course to speak of, only GPS noise. */
+const COURSE_MIN_KN = 1
+
 export function Compass({
   lat,
   lon,
@@ -40,11 +37,30 @@ export function Compass({
   lat: number | null
   lon: number | null
 }) {
-  const { heading, permission, listening, magnetic, enable, disable } = useHeading()
+  const {
+    heading: sensorHeading,
+    shownReference,
+    reference,
+    declination,
+    declinationStale,
+    calibration,
+    accuracyDeg,
+    tilt,
+    level,
+    mode,
+    permission,
+    listening,
+    silent,
+    enable,
+    disable,
+    setReference,
+    setPosition,
+  } = useHeading()
   const fix = useTracker((s) => s.fix)
   const all = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const [targetId, setTargetId] = useState('')
+  const [sights, setSights] = useState<{ deg: number; ref: string; at: number }[]>([])
 
   // Same scope as the bearings table below and the rest of the app — the
   // picker offering a waypoint the table has filtered out reads as a bug.
@@ -56,89 +72,243 @@ export function Compass({
     [all, activeTeamId],
   )
 
+  // Declination is a function of where you are, so the model needs the fix.
+  // The store ignores a move too small to matter, so this can fire freely.
+  useEffect(() => {
+    if (lat !== null && lon !== null) setPosition(lat, lon, fix?.altitude ?? 0)
+  }, [lat, lon, fix?.altitude, setPosition])
+
   // Stop the sensor when the card goes away — a magnetometer left running is a
   // meaningful drain on a shift-long battery.
   useEffect(() => () => disable(), [disable])
 
+  const speedKn = fix?.speed != null ? fix.speed * MPS_TO_KNOTS : null
   const gpsCourse =
-    fix?.heading != null && fix.speed != null && fix.speed * MPS_TO_KNOTS > 1
+    fix?.heading != null && speedKn != null && speedKn > COURSE_MIN_KN
       ? fix.heading
       : null
 
-  // The magnetometer wins when it is running: it works standing still, which
-  // GPS course does not.
-  const shown = heading ?? gpsCourse
-  const source = heading !== null ? 'compass' : gpsCourse !== null ? 'gps' : null
+  /*
+   * The magnetometer wins when it is running: it works standing still, which
+   * course over ground does not. When it falls back, the dial is showing a true
+   * bearing whatever the crew asked for, because course over ground is worked
+   * from positions and has no magnetic version.
+   */
+  const usingSensor = sensorHeading !== null
+  const shown = usingSensor ? sensorHeading : gpsCourse
+  const dialReference: HeadingReference = usingSensor ? shownReference : 'true'
+
+  /** A true bearing, put into whatever the dial is showing. */
+  const toDial = (trueDeg: number): number =>
+    dialReference === 'magnetic' && declination !== null
+      ? magneticFromTrue(trueDeg, declination)
+      : trueDeg
 
   const target = waypoints.find((w) => w.id === targetId) ?? null
   const leg = useMemo(() => {
     if (!target || lat === null || lon === null) return null
-    return {
-      bearing: bearingDeg(lat, lon, target.lat, target.lon),
-      distanceNM: haversineNM(lat, lon, target.lat, target.lon),
-    }
+    const distanceNM = haversineNM(lat, lon, target.lat, target.lon)
+    // Standing on it, the bearing is a metre of GPS jitter pointed at random.
+    if (isAtPosition(distanceNM)) return { bearing: null, distanceNM }
+    return { bearing: bearingDeg(lat, lon, target.lat, target.lon), distanceNM }
   }, [target, lat, lon])
+
+  const markers: RoseMarker[] = []
+  if (leg?.bearing != null) markers.push({ deg: toDial(leg.bearing), kind: 'target' })
+  // Course over ground next to heading is the crab angle — how far the boat is
+  // being set off the way it is pointed. On a search leg that difference is
+  // the current, and it is worth seeing rather than deducing.
+  if (gpsCourse !== null && usingSensor) {
+    markers.push({ deg: toDial(gpsCourse), kind: 'course' })
+  }
+
+  const badTilt = usingSensor && tilt != null && tilt > 30
+  const degraded = calibration === 'poor' || badTilt
+
+  const caption = shown === null
+    ? 'No heading'
+    : `${compassPoint(shown)} · ${dialReference === 'true' ? 'True' : 'Magnetic'}`
 
   return (
     <Card>
-      <Label>Compass</Label>
-
-      <div className="flex items-center gap-4">
-        <Dial heading={shown} targetBearing={leg?.bearing ?? null} />
-
-        <div className="min-w-0 flex-1">
-          <div className="tnum text-3xl font-semibold text-slate-50">
-            {shown === null ? '—' : `${Math.round(shown)}°`}
-          </div>
-          <div className="text-sm text-slate-300">
-            {shown === null ? 'No heading' : compassPoint(shown)}
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            {source === 'compass'
-              ? magnetic
-                ? 'Device compass — magnetic north'
-                : 'Device compass'
-              : source === 'gps'
-                ? 'GPS course over ground — true north'
-                : listening
-                  ? 'Waiting for a reading…'
-                  : 'Off'}
-          </div>
-        </div>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <Label>Compass</Label>
+        <ReferenceToggle
+          value={reference}
+          onChange={setReference}
+          disabled={declination === null}
+        />
       </div>
 
-      {!listening && (
-        <Button variant="ghost" className="mt-3 w-full" onClick={() => void enable()}>
+      <CompassRose
+        heading={shown}
+        markers={markers}
+        level={usingSensor ? level : null}
+        tilt={usingSensor ? tilt : null}
+        caption={caption}
+        degraded={degraded}
+      />
+
+      <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <Stat label="Source">
+          {usingSensor
+            ? mode === 'upright'
+              ? 'Held up'
+              : 'Held flat'
+            : gpsCourse !== null
+              ? 'GPS course'
+              : listening
+                ? 'Waiting…'
+                : 'Off'}
+        </Stat>
+        <Stat label="Variation">
+          {declination === null ? '—' : formatDeclination(declination)}
+        </Stat>
+        <Stat label="Steadiness">
+          <span
+            className={
+              calibration === 'poor'
+                ? 'text-red-300'
+                : calibration === 'fair'
+                  ? 'text-amber-300'
+                  : calibration === 'good'
+                    ? 'text-emerald-300'
+                    : ''
+            }
+          >
+            {!usingSensor
+              ? '—'
+              : calibration === 'unknown'
+                ? 'Checking'
+                : calibration === 'good'
+                  ? accuracyDeg != null && accuracyDeg >= 0
+                    ? `±${Math.round(accuracyDeg)}°`
+                    : 'Good'
+                  : calibration === 'fair'
+                    ? 'Fair'
+                    : 'Poor'}
+          </span>
+        </Stat>
+      </dl>
+
+      {shown !== null && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            variant="default"
+            className="flex-1"
+            onClick={() =>
+              setSights((s) =>
+                [
+                  {
+                    deg: normalizeDeg(shown),
+                    ref: dialReference === 'true' ? 'T' : 'M',
+                    at: Date.now(),
+                  },
+                  ...s,
+                ].slice(0, 4),
+              )
+            }
+          >
+            Take a bearing
+          </Button>
+          {sights.length > 0 && (
+            <Button variant="ghost" onClick={() => setSights([])}>
+              Clear
+            </Button>
+          )}
+        </div>
+      )}
+
+      {sights.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {sights.map((s) => (
+            <li
+              key={s.at}
+              className="tnum flex items-center justify-between rounded-lg bg-white/5 px-3 py-1.5 text-sm text-slate-100"
+            >
+              <span>
+                {Math.round(s.deg)}° {s.ref} · {compassPoint(s.deg)}
+              </span>
+              <span className="text-xs text-slate-400">
+                {new Date(s.at).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {!listening ? (
+        <Button variant="primary" className="mt-3 w-full" onClick={() => void enable()}>
           Start compass
         </Button>
-      )}
-      {listening && (
+      ) : (
         <Button variant="ghost" className="mt-3 w-full" onClick={disable}>
           Stop compass
         </Button>
       )}
 
+      {calibration === 'poor' && (
+        <Note tone="warn">
+          The reading is wandering. Move the phone in a figure of eight a few
+          times, and keep it clear of the radio, the engine and anything steel —
+          a magnetometer beside metal is wrong by tens of degrees and gives no
+          other sign of it.
+        </Note>
+      )}
+      {badTilt && calibration !== 'poor' && (
+        <Note tone="warn">
+          Held {Math.round(tilt!)}° off level. Bring the bubble to the middle —
+          {mode === 'upright' ? ' hold it upright' : ' lay it flat'} — before
+          reading a bearing off it.
+        </Note>
+      )}
+      {listening && silent && (
+        <Note tone="warn">
+          No compass readings are arriving. This device may have no
+          magnetometer; heading falls back to GPS course, which needs you to be
+          moving.
+        </Note>
+      )}
       {permission === 'denied' && (
-        <p className="mt-2 text-xs text-amber-300">
+        <Note tone="warn">
           Motion and orientation access was refused. Allow it in your browser
-          settings, or move at over 1 knot to read a GPS course instead.
-        </p>
+          settings, or move at over {COURSE_MIN_KN} knot to read a GPS course
+          instead.
+        </Note>
       )}
       {permission === 'unsupported' && (
-        <p className="mt-2 text-xs text-amber-300">
+        <Note tone="warn">
           This device has no orientation sensor. Heading falls back to GPS
           course, which needs you to be moving.
-        </p>
+        </Note>
       )}
-      {source === 'compass' && magnetic && (
-        <p className="mt-2 text-xs text-slate-400">
-          Readings are magnetic. Apply your local declination before passing a
-          bearing to anyone working from a chart.
-        </p>
+      {declinationStale && (
+        <Note tone="warn">
+          The magnetic model ({WMM_NAME}) is past its valid window, so the
+          variation above is an extrapolation. It wants replacing with the
+          current one.
+        </Note>
+      )}
+      {declination === null && (
+        <Note tone="quiet">
+          Take a position fix and the dial can be corrected to true north.
+          Without one it can only show magnetic.
+        </Note>
+      )}
+      {!usingSensor && gpsCourse !== null && (
+        <Note tone="quiet">
+          Showing course over ground — where the boat is going, not where the
+          phone is pointed. Start the compass for a heading that works standing
+          still.
+        </Note>
       )}
 
       {waypoints.length > 0 && (
-        <div className="mt-3">
+        <div className="mt-4">
           <Label>Point to a waypoint</Label>
           <select
             value={targetId}
@@ -154,11 +324,14 @@ export function Compass({
           </select>
           {leg && (
             <p className="tnum mt-2 text-sm text-slate-300">
-              {formatBearing(leg.bearing)} · {formatDistance(leg.distanceNM, 'nm')}
-              {shown !== null && (
+              {leg.bearing === null
+                ? 'You are on it'
+                : formatBearing(leg.bearing)}{' '}
+              · {formatDistance(leg.distanceNM, 'nm')}
+              {leg.bearing !== null && shown !== null && (
                 <span className="text-slate-400">
                   {' '}
-                  · {describeTurn(leg.bearing, shown)}
+                  · {describeTurn(toDial(leg.bearing), shown)}
                 </span>
               )}
             </p>
@@ -174,78 +347,68 @@ export function Compass({
   )
 }
 
-/** "turn 40° right" / "dead ahead", from a bearing and the current heading. */
-function describeTurn(bearing: number, heading: number): string {
-  const rel = relativeBearing(bearing, heading)
-  if (!Number.isFinite(rel)) return ''
-  if (Math.abs(rel) < 5) return 'dead ahead'
-  return `turn ${Math.round(Math.abs(rel))}° ${rel > 0 ? 'right' : 'left'}`
+function ReferenceToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: HeadingReference
+  onChange: (r: HeadingReference) => void
+  disabled: boolean
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="North reference"
+      className="flex shrink-0 rounded-lg border border-white/10 p-0.5"
+    >
+      {(['true', 'magnetic'] as const).map((r) => (
+        <button
+          key={r}
+          type="button"
+          disabled={disabled && r === 'true'}
+          aria-pressed={value === r}
+          onClick={() => onChange(r)}
+          className={
+            'min-h-8 rounded-md px-2.5 text-xs font-semibold transition-colors ' +
+            'disabled:cursor-not-allowed disabled:opacity-40 ' +
+            (value === r
+              ? 'bg-sky-500 text-navy-950'
+              : 'text-slate-300 hover:bg-white/5')
+          }
+        >
+          {r === 'true' ? 'True' : 'Mag'}
+        </button>
+      ))}
+    </div>
+  )
 }
 
-function Dial({
-  heading,
-  targetBearing,
-}: {
-  heading: number | null
-  targetBearing: number | null
-}) {
-  // With no heading the rose sits north-up, which is at least honest — the
-  // lubber line then means "north", not "where you are pointing".
-  const rotation = heading === null ? 0 : -heading
-
+function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <svg
-      viewBox="-60 -60 120 120"
-      className="size-28 shrink-0"
-      role="img"
-      aria-label={
-        heading === null ? 'Compass, no heading' : `Heading ${Math.round(heading)} degrees`
+    <div className="rounded-xl bg-white/5 px-2 py-2">
+      <dt className="text-[10px] font-semibold tracking-wide text-slate-400 uppercase">
+        {label}
+      </dt>
+      <dd className="tnum mt-0.5 truncate text-sm text-slate-100">{children}</dd>
+    </div>
+  )
+}
+
+function Note({
+  tone,
+  children,
+}: {
+  tone: 'warn' | 'quiet'
+  children: React.ReactNode
+}) {
+  return (
+    <p
+      className={
+        'mt-2 text-xs ' + (tone === 'warn' ? 'text-amber-300' : 'text-slate-400')
       }
     >
-      <circle r="52" className="fill-navy-950/60 stroke-white/10" strokeWidth="2" />
-
-      <g
-        transform={`rotate(${rotation})`}
-        style={{ transition: 'transform 200ms linear' }}
-      >
-        {TICKS.map((t) => (
-          <g key={t.deg} transform={`rotate(${t.deg})`}>
-            <line
-              x1="0"
-              y1="-52"
-              x2="0"
-              y2={t.label ? '-42' : '-47'}
-              className={t.label === 'N' ? 'stroke-red-400' : 'stroke-slate-500'}
-              strokeWidth="2"
-            />
-            {t.label && (
-              <text
-                y="-30"
-                // Undo the tick's rotation about the letter's own centre, so
-                // E and W read the right way up instead of lying on their side.
-                transform={`rotate(${-t.deg} 0 -30)`}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                className={
-                  'text-[13px] font-semibold ' +
-                  (t.label === 'N' ? 'fill-red-400' : 'fill-slate-400')
-                }
-              >
-                {t.label}
-              </text>
-            )}
-          </g>
-        ))}
-
-        {targetBearing !== null && (
-          <g transform={`rotate(${targetBearing})`}>
-            <polygon points="0,-38 -6,-24 6,-24" className="fill-sky-400" />
-          </g>
-        )}
-      </g>
-
-      {/* Lubber line — the direction the device itself is pointing. */}
-      <polygon points="0,-56 -5,-46 5,-46" className="fill-amber-300" />
-    </svg>
+      {children}
+    </p>
   )
 }
