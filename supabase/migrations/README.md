@@ -49,9 +49,13 @@ What they do differently, and why:
   `navmate_guard_last_owner`, `navmate_generate_join_code`. They are only
   called from NavMate's own policies, so the prefix costs nothing and removes
   the silent-overwrite hazard permanently in both directions.
-- **NavMate's incidents table is `navmate_incidents`.** The command system's
-  `incidents` is untouched. `sar_records.incident_id` keeps its column name, so
-  no client code for SAR records changed.
+- **NavMate's incidents were merged into the command system's `incidents`**
+  by `20260913041316`. That table was briefly `navmate_incidents`; it now holds
+  0 rows and is gone. The merge is what makes the command dashboard's
+  `subscribeToAllIncidents` — written to "detect new incidents from other users
+  (e.g. field app)" — actually fire. `client_id` separates the two systems'
+  rows and `team_id` carries NavMate's scope; `lkp_lat`/`lkp_lng` lost NOT NULL
+  because NavMate opens an incident before the LKP is known.
 - **Reading a teammate's name goes through `navmate_team_profiles()`**, a
   SECURITY DEFINER function returning only id/full_name/call_sign, rather than
   a NavMate read policy on `profiles`. RLS is row-level: a policy would have
