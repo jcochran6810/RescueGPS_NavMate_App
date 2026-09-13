@@ -72,6 +72,8 @@ const PNG = Buffer.from(
 
 const tileHits = { chart: 0, seamark: 0, imagery: 0 }
 const encHits = []
+/** How the ENC queries were addressed: through our relay, or straight out. */
+const encVia = { relay: 0, direct: 0 }
 
 const browser = await chromium.launch({ args: ['--no-sandbox'] })
 const context = await browser.newContext({
@@ -94,8 +96,11 @@ await context.route('**://server.arcgisonline.com/**', (r) => {
   tileHits.imagery++
   r.fulfill({ status: 200, contentType: 'image/png', body: PNG })
 })
-await context.route('**://encdirect.noaa.gov/**', (r) => {
-  const url = r.request().url()
+// The app sends ENC queries through its own /api/enc relay, because a browser
+// blocks the cross-origin ones. So the stub answers the relay, decoding the
+// target out of `u` — driving the path the app actually takes rather than the
+// one it would take if CORS were not a thing.
+const encRespond = (r, url) => {
   encHits.push(url)
   const json = (o) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(o) })
   if (url.includes('/layers?f=json')) return json(LAYERS)
@@ -116,6 +121,16 @@ await context.route('**://encdirect.noaa.gov/**', (r) => {
   if (url.includes('/90/query')) return json({ features: [] })
   if (url.includes('/93/query')) return json({ features: [] })
   return json({ features: [] })
+}
+await context.route('**/api/enc**', (r) => {
+  encVia.relay++
+  return encRespond(r, new URL(r.request().url()).searchParams.get('u') ?? '')
+})
+// Kept so a direct call — which should no longer happen from the app — is
+// still answered rather than hitting the real service from a test.
+await context.route('**://encdirect.noaa.gov/**', (r) => {
+  encVia.direct++
+  return encRespond(r, r.request().url())
 })
 // Supabase: accept writes, serve them back, so the vessel store behaves.
 const rows = { vessels: [] }
@@ -296,6 +311,11 @@ ok('it went round the bar rather than over it',
    Number.isFinite(shownNM) && shownNM > directNM + 0.1,
    `${shownNM} NM plotted vs ${directNM.toFixed(2)} NM direct`)
 ok('ENC depth areas were queried', encHits.some((u) => u.includes('/40/query')))
+// The queries are fetch, so a browser blocks them cross-origin however well
+// the tiles draw. They must go through this app's own origin.
+ok('chart queries go through the app own relay, not straight to NOAA',
+   encVia.relay > 0 && encVia.direct === 0,
+   `relay ${encVia.relay}, direct ${encVia.direct}`)
 ok('layer ids were discovered, not hardcoded', encHits.some((u) => u.includes('/layers?f=json')))
 
 const distTile = await page.locator('div', { hasText: /^Distance$/ }).first()
@@ -391,7 +411,12 @@ ok('the course swings into the dredged cut rather than just clearing the bar',
    `(bar ends at -94.812, cut starts at ${CHANNEL_WEST})`)
 
 // --- degradation: kill the ENC service -------------------------------------
+// The relay is what the app calls, so that is what has to die. 503 is the
+// shape of the relay reaching nothing — which is also what a CORS block looks
+// like from the app's side, since both end as a rejected fetch.
+await context.unroute('**/api/enc**')
 await context.unroute('**://encdirect.noaa.gov/**')
+await context.route('**/api/enc**', (r) => r.fulfill({ status: 503, body: '' }))
 await context.route('**://encdirect.noaa.gov/**', (r) => r.fulfill({ status: 503, body: '' }))
 await page.evaluate(() => localStorage.removeItem('navmate.chart.v1'))
 await page.reload({ waitUntil: 'networkidle' })

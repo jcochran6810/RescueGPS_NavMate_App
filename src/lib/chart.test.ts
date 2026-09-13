@@ -4,6 +4,7 @@ import {
   bandForSpan,
   boundsSpanNM,
   containsBounds,
+  encRequestUrl,
   padBounds,
   ENC_BANDS,
   exceededLimit,
@@ -592,5 +593,52 @@ describe('marked channels', () => {
     })
     expect(f.channels).toEqual([])
     expect(f.coverage).toBe('full')
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * The ENC relay
+ *
+ * The tiles are <img> and need no permission; these queries are fetch, and a
+ * browser blocks a cross-origin JSON response unless the host allows it. The
+ * relay is the only way round that, so where a query is sent is worth pinning.
+ * ---------------------------------------------------------------------- */
+
+describe('encRequestUrl', () => {
+  const target =
+    'https://encdirect.noaa.gov/arcgis/rest/services/encdirect/enc_harbour/MapServer/layers?f=json'
+
+  it('leaves the URL alone outside a browser — there is no origin to relay to', () => {
+    expect(encRequestUrl(target)).toBe(target)
+  })
+
+  it('sends it through this app own origin in a browser', () => {
+    const g = globalThis as { window?: unknown }
+    g.window = {}
+    try {
+      const out = encRequestUrl(target)
+      expect(out.startsWith('/api/enc?u=')).toBe(true)
+      // Encoded, so the query string of the target cannot be read as ours.
+      expect(out).toContain(encodeURIComponent(target))
+      expect(out).not.toContain('?f=json')
+    } finally {
+      delete g.window
+    }
+  })
+
+  it('never relays a host it was not built for', () => {
+    const g = globalThis as { window?: unknown }
+    g.window = {}
+    try {
+      // The relay itself refuses these too, but nothing should be asking.
+      expect(encRequestUrl('https://example.com/anything')).toBe(
+        'https://example.com/anything',
+      )
+      expect(encRequestUrl('https://gis.charttools.noaa.gov/x')).toBe(
+        'https://gis.charttools.noaa.gov/x',
+      )
+    } finally {
+      delete g.window
+    }
   })
 })

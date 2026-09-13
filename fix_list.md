@@ -125,6 +125,20 @@ Add new items at the top. Use the format:
       speed. If legs stop advancing in the field, check whether a heading is
       present at all: with none, the rule deliberately falls back to the
       circle alone.
+- [ ] 2026-09-13 — **Confirm what the chart service actually does, now the
+      app can say.** Reported from the water: auto-plot draws a straight line
+      through land, which means `planRoute` fell back — the router never got a
+      chart. Three causes were indistinguishable until now (unreachable /
+      renamed layers / genuinely no coverage); the app now names which, and
+      ENC queries go through the `/api/enc` relay so CORS can no longer be the
+      cause. **What remains unconfirmed is whether the relay reaches NOAA at
+      the service paths in `ENC_BANDS`** — `enc_harbour` and friends have
+      never been resolved for real, because the sandbox proxy denies every
+      NOAA host. Once deployed, plot a course and read the chart card: a 404
+      through the relay means the service path is wrong; a 502 means the relay
+      itself could not reach NOAA; a named layer failure means
+      `ROLE_PATTERNS` needs updating. Vercel's function logs carry the same
+      answer.
 - [ ] 2026-09-13 — **The marked-channel layers have never been seen for real.**
       `FAIRWY` (fairways) and `PILPNT` (piles) are matched by name at runtime
       like the existing eight roles, and are as unverified as those are — the

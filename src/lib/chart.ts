@@ -393,9 +393,34 @@ export const MAX_SPLIT_DEPTH = 2
 
 export type Fetcher = (url: string) => Promise<unknown>
 
+/**
+ * Where a chart query is actually sent.
+ *
+ * The tiles are `<img>` and need nothing; these queries are `fetch`, and a
+ * browser refuses a cross-origin JSON response unless the host sends
+ * `Access-Control-Allow-Origin`. So in a browser they go through this app's
+ * own `/api/enc` relay (see `api/enc.js`), which is same-origin and therefore
+ * always allowed. Outside a browser — the unit tests, any Node caller — the
+ * URL is used as-is, because there is no origin and no relay.
+ *
+ * Exported so the rule is one testable function rather than a condition
+ * buried in a fetch call.
+ */
+export function encRequestUrl(url: string): string {
+  if (typeof window === 'undefined') return url
+  if (!url.startsWith('https://encdirect.noaa.gov/')) return url
+  return `/api/enc?u=${encodeURIComponent(url)}`
+}
+
 const defaultFetcher: Fetcher = async (url) => {
-  const res = await fetch(url, { mode: 'cors', credentials: 'omit' })
-  if (!res.ok) throw new Error(`Chart service returned ${res.status}`)
+  const res = await fetch(encRequestUrl(url), {
+    credentials: 'omit',
+  })
+  if (!res.ok) {
+    // The relay passes NOAA's status through, so this number is the service's
+    // own answer — a 404 here means the service path is wrong, not the relay.
+    throw new Error(`Chart service returned ${res.status}`)
+  }
   return (await res.json()) as unknown
 }
 
