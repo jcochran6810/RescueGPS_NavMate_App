@@ -21,7 +21,7 @@ export const INCIDENT_TYPES: { value: string; label: string }[] = [
   { value: 'piw', label: 'Person in water' },
   { value: 'swimmer', label: 'Swimmer in trouble' },
   { value: 'kayak', label: 'Kayaker missing / overdue' },
-  { value: 'jetski', label: 'Jet ski missing / overdue' },
+  { value: 'jumper', label: 'Jumper / long fall' },
   { value: 'missing_vessel', label: 'Missing / overdue vessel' },
   { value: 'capsized_vessel', label: 'Capsized vessel' },
   { value: 'vessel_in_distress', label: 'Vessel in distress' },
@@ -33,8 +33,25 @@ export const INCIDENT_TYPES: { value: string; label: string }[] = [
   { value: 'other', label: 'Other' },
 ]
 
+/**
+ * Codes no longer offered, but still readable.
+ *
+ * A type is removed from the picker, never from this map. The code lives on in
+ * every incident already opened with it — in this database and in the command
+ * system's — and dropping the label would turn a closed search's type into the
+ * raw string `jetski` on screen. Retiring a choice is a decision about what to
+ * offer next time, not about what happened last time.
+ */
+const RETIRED_TYPE_LABELS: Record<string, string> = {
+  jetski: 'Jet ski missing / overdue',
+}
+
 export function incidentTypeLabel(value: string): string {
-  return INCIDENT_TYPES.find((t) => t.value === value)?.label ?? value
+  return (
+    INCIDENT_TYPES.find((t) => t.value === value)?.label ??
+    RETIRED_TYPE_LABELS[value] ??
+    value
+  )
 }
 
 /** Statuses a crew closes an incident with (the rest are lifecycle). */

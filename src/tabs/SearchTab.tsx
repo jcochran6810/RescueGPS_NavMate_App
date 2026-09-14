@@ -28,7 +28,7 @@ import {
   type SeaClass,
   type SearchPatternPlan,
 } from '@/lib/search'
-import { survivalEstimate, formatSurvivalMinutes, type PfdStatus } from '@/lib/survival'
+import { survivalEstimate, formatSurvivalMinutes, cToF, fToC, type PfdStatus } from '@/lib/survival'
 import { sunEvents } from '@/lib/sun'
 import { SatelliteMap } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
@@ -497,28 +497,36 @@ function SurvivalCard({
   const [pfdChoice, setPfdChoice] = useState<PfdStatus | null>(null)
   const pfd = pfdChoice ?? defaultPfd
 
-  const temp = (() => {
-    const n = parseFloat(tempStr)
-    if (Number.isFinite(n)) return n
-    return waterTempC
+  /**
+   * Water temperature in **Fahrenheit**, which is what is typed and shown.
+   *
+   * The trap this shape used to set: `tempStr` is typed by the crew and
+   * `waterTempC` comes out of the stored record, so one variable carried two
+   * different units depending on which branch won. Named and converted now, so
+   * the two cannot be confused — `survivalEstimate` is handed Celsius below.
+   */
+  const tempF = (() => {
+    const typed = parseFloat(tempStr)
+    if (Number.isFinite(typed)) return typed
+    return waterTempC == null ? null : cToF(waterTempC)
   })()
 
-  if (!lkpTime || temp == null) {
+  if (!lkpTime || tempF == null) {
     return (
       <Card>
         <Label>Survival clock</Label>
         <EmptyState>
           Needs the time the person went in (the LKP) and the water
           temperature (On-scene conditions in Search datum
-          {temp == null ? ', or type it here' : ''}).
+          {tempF == null ? ', or type it here' : ''}).
         </EmptyState>
-        {temp == null && (
+        {tempF == null && (
           <Input
             value={tempStr}
             onChange={(e) => setTempStr(e.target.value)}
-            placeholder="Water temp (°C)"
+            placeholder="Water temp (°F)"
             inputMode="decimal"
-            aria-label="Water temperature, Celsius"
+            aria-label="Water temperature, Fahrenheit"
             className="mt-2"
           />
         )}
@@ -527,7 +535,13 @@ function SurvivalCard({
   }
 
   const elapsedMin = Math.max(0, (now.getTime() - new Date(lkpTime).getTime()) / 60_000)
-  const est = survivalEstimate({ waterTempC: temp, elapsedMinutes: elapsedMin, pfd })
+  // The model wants Celsius; the screen speaks Fahrenheit. One conversion,
+  // here, rather than a second unit travelling through the component.
+  const est = survivalEstimate({
+    waterTempC: fToC(tempF),
+    elapsedMinutes: elapsedMin,
+    pfd,
+  })
   const urgent = est.primaryThreat === 'drowning' || est.remainingMinutes <= 60
 
   return (
@@ -590,7 +604,7 @@ function SurvivalCard({
               ? `${formatSurvivalMinutes(est.survivalMin)}–${formatSurvivalMinutes(est.survivalMax)}`
               : 'No limit'
           }
-          hint={`water ${temp.toFixed(0)} °C`}
+          hint={`water ${tempF.toFixed(0)} °F`}
         />
       </div>
 

@@ -4,6 +4,7 @@ import {
   incidentHandoff,
   INCIDENT_TYPES,
   CLOSE_STATUSES,
+  incidentTypeLabel,
 } from './incident'
 import type { Incident, SarRecord } from './types'
 
@@ -182,8 +183,19 @@ describe('choice lists', () => {
       'vessel_overdue', 'vessel_in_distress', 'missing_person', 'medical',
       'fire', 'hazmat', 'other', 'missing_person_piw', 'debris_found',
       'medical_emergency', 'missing_person_land', 'mass_rescue',
+      // Added by 20260914000000, applied to ekhvfypxuxskjglwwoqh. This list is
+      // a copy of a live CHECK on a table shared with the command system, so
+      // it is the guard that stops a picker offering a code the database will
+      // refuse — and a refused write stops the whole offline queue behind it.
+      'jumper',
     ])
     for (const t of INCIDENT_TYPES) expect(allowed.has(t.value)).toBe(true)
+    // A retired code must still render as words: it is in rows already written
+    // here and in the command system's, and a closed search should not show
+    // `jetski` on screen because the picker moved on.
+    expect(incidentTypeLabel('jetski')).toBe('Jet ski missing / overdue')
+    expect(INCIDENT_TYPES.some((t) => t.value === 'jetski')).toBe(false)
+    expect(incidentTypeLabel('jumper')).toBe('Jumper / long fall')
     for (const s of CLOSE_STATUSES) {
       expect([
         'found_alive', 'found_deceased', 'not_found', 'false_alarm', 'cancelled',

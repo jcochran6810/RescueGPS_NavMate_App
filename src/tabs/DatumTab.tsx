@@ -9,6 +9,8 @@ import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { toDD, toDMS } from '@/lib/coords'
 import { CoordInput } from '@/components/CoordInput'
+import { cToF, fToC } from '@/lib/survival'
+import { SatelliteMap } from '@/components/SatelliteMap'
 import { formatBearing, formatDistance, formatDuration } from '@/lib/geo'
 import { download } from '@/lib/transfer'
 import {
@@ -339,6 +341,9 @@ function LkpCard({
 }) {
   const [editing, setEditing] = useState(false)
   const [pos, setPos] = useState({ lat: NaN, lon: NaN })
+  /** True while the map is open for a tap. */
+  const [picking, setPicking] = useState(false)
+  const liveFix = useTracker((st) => st.fix)
   const [time, setTime] = useState(() => toLocalInput(new Date()))
   const [source, setSource] = useState<LkpSource>('witness')
   const [objectType, setObjectType] = useState('person_in_water')
@@ -437,8 +442,44 @@ function LkpCard({
               setPos({ lat: fix.lat, lon: fix.lon })
               setSource('gps')
               setErrorNM(String(LKP_ERROR_NM.gps))
+              setPicking(false)
             }}
+            pickLabel="Choose on map"
+            picking={picking}
+            onPickOnMap={() => setPicking((v) => !v)}
           />
+
+          {picking && (
+            <div className="mt-2">
+              <SatelliteMap
+                base="hybrid"
+                trail={[]}
+                fix={liveFix}
+                height={260}
+                markers={
+                  Number.isFinite(pos.lat) && Number.isFinite(pos.lon)
+                    ? [{ id: 'lkp', name: 'LKP', lat: pos.lat, lon: pos.lon }]
+                    : []
+                }
+                pickHint="Tap where the victim was last seen"
+                onPick={(p) => {
+                  setPos({ lat: p.lat, lon: p.lon })
+                  // A point off a map is not a GPS fix and must not claim a
+                  // GPS fix's error. `position_error_nm` feeds the search
+                  // radius directly, so calling a finger on a chart ±0.1 NM
+                  // would shrink the area actually searched around a position
+                  // nobody measured. Estimated is what this is.
+                  setSource('estimated')
+                  setErrorNM(String(LKP_ERROR_NM.estimated))
+                }}
+              />
+              <p className="mt-1 text-xs text-slate-400">
+                A tap is recorded as an <strong>estimated</strong> position (±
+                {LKP_ERROR_NM.estimated} NM). Change the source below if you
+                know better than the map.
+              </p>
+            </div>
+          )}
 
           <div className="mt-2">
             <span className="mb-1 block text-xs text-slate-300">
@@ -561,7 +602,11 @@ function ConditionsCard({
       p?.current_toward_deg != null ? String(p.current_toward_deg) : '',
     )
     setCurrentKts(p?.current_kts != null ? String(p.current_kts) : '')
-    setWaterTemp(p?.water_temp_c != null ? String(p.water_temp_c) : '')
+    // Stored in Celsius, shown in Fahrenheit. Seeding the box with the raw
+    // stored number under an °F label would relabel 21 °C as 21 °F.
+    setWaterTemp(
+      p?.water_temp_c != null ? String(Math.round(cToF(p.water_temp_c))) : '',
+    )
   }, [environment?.id])
 
   const num = (s: string): number | null => {
@@ -631,14 +676,14 @@ function ConditionsCard({
       </div>
       <div className="mt-2">
         <span className="mb-1 block text-xs text-slate-300">
-          Water temp (°C, for the survival clock)
+          Water temp (°F, for the survival clock)
         </span>
         <Input
           value={waterTemp}
           onChange={(e) => setWaterTemp(e.target.value)}
           placeholder="optional"
           inputMode="decimal"
-          aria-label="Water temperature, Celsius"
+          aria-label="Water temperature, Fahrenheit"
         />
       </div>
 
@@ -652,7 +697,12 @@ function ConditionsCard({
               wind_kts: num(windKts),
               current_toward_deg: deg(currentToward),
               current_kts: num(currentKts),
-              water_temp_c: num(waterTemp),
+              water_temp_c: (() => {
+                // Typed in Fahrenheit, stored in Celsius — the column is a
+                // contract with the command system's drift engine.
+                const f = num(waterTemp)
+                return f == null ? null : fToC(f)
+              })(),
             },
             '',
           )

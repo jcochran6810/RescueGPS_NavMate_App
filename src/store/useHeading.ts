@@ -88,6 +88,27 @@ export interface HeadingState {
   setPosition: (lat: number, lon: number, altM?: number | null) => void
 }
 
+/**
+ * Does this platform require a tap before it will hand over the sensor?
+ *
+ * iOS 13+ gates `DeviceOrientationEvent` behind `requestPermission()`, and
+ * that call is only honoured from a real user gesture — calling it on mount
+ * is rejected. Everywhere else the sensor just starts, so a button there is a
+ * step asked of a crew for nothing.
+ *
+ * Checked as "does the gate exist" rather than by sniffing for iOS: the gate
+ * is the thing that matters, and a user agent string is a guess about it.
+ */
+export function headingNeedsTap(): boolean {
+  if (typeof window === 'undefined' || !('DeviceOrientationEvent' in window)) {
+    return false
+  }
+  const ctor = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
+    requestPermission?: () => Promise<'granted' | 'denied'>
+  }
+  return typeof ctor.requestPermission === 'function'
+}
+
 /** Samples per second passed on to React. The sensor fires far faster. */
 const UPDATE_HZ = 12
 const MIN_INTERVAL_MS = 1000 / UPDATE_HZ

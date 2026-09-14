@@ -454,6 +454,87 @@ describe('fetchChartFeatures', () => {
     expect(f.coverage).toBe('none')
   })
 
+  it('finds the depth layer when the service names it DEPARE', async () => {
+    // ENC is published from S-57, whose object classes are six-letter codes.
+    // A service exposing those rather than readable names was matching
+    // WRECKS and BRIDGE by accident — they read as English words — while
+    // DEPARE, DRGARE, LNDARE, FAIRWY, OBSTRN and PILPNT all missed. Enough
+    // matched to clear the old "did we recognise anything" gate, so a bay
+    // charted in detail came back as "no charted depths for this area".
+    const layers = matchLayers({
+      layers: [
+        { id: 1, name: 'DEPARE', geometryType: 'esriGeometryPolygon' },
+        { id: 2, name: 'DRGARE', geometryType: 'esriGeometryPolygon' },
+        { id: 3, name: 'LNDARE', geometryType: 'esriGeometryPolygon' },
+        { id: 4, name: 'FAIRWY', geometryType: 'esriGeometryPolygon' },
+        { id: 5, name: 'SLCONS', geometryType: 'esriGeometryPolygon' },
+        { id: 6, name: 'WRECKS', geometryType: 'esriGeometryPoint' },
+        { id: 7, name: 'OBSTRN', geometryType: 'esriGeometryPoint' },
+        { id: 8, name: 'UWTROC', geometryType: 'esriGeometryPoint' },
+        { id: 9, name: 'PILPNT', geometryType: 'esriGeometryPoint' },
+      ],
+    })
+    expect(layers.map((l) => l.role)).toEqual([
+      'depth', 'dredged', 'land', 'fairway', 'shoreline',
+      'wreck', 'obstruction', 'rock', 'pile',
+    ])
+  })
+
+  it('still finds the readable names, and the two spellings together', async () => {
+    // A service may expose either form, or both in one string. Neither may
+    // regress in favour of the other.
+    const layers = matchLayers({
+      layers: [
+        { id: 1, name: 'Harbor.Depth_Area', geometryType: 'esriGeometryPolygon' },
+        { id: 2, name: 'Dredged Area (DRGARE)', geometryType: 'esriGeometryPolygon' },
+        { id: 3, name: 'Harbor_Piles_point', geometryType: 'esriGeometryPoint' },
+      ],
+    })
+    expect(layers.map((l) => l.role)).toEqual(['depth', 'dredged', 'pile'])
+  })
+
+  it('does not match an acronym buried inside a longer word', async () => {
+    expect(
+      matchLayers({
+        layers: [
+          { id: 1, name: 'PREDEPAREA_zone', geometryType: 'esriGeometryPolygon' },
+        ],
+      }),
+    ).toEqual([])
+  })
+
+  it('blames itself, not the sea, when the catalogue has no depth layer', async () => {
+    // A layer catalogue is a property of the service, not of the water, so a
+    // catalogue with no recognisable depth layer is always this app's problem.
+    // The old gate passed as soon as ANY layer matched, so a wrecks layer was
+    // enough to let it report empty sea instead.
+    await expect(
+      fetchChartFeatures(BOX, {
+        fetcher: async () => ({
+          layers: [
+            { id: 6, name: 'WRECKS', geometryType: 'esriGeometryPoint' },
+            { id: 9, name: 'Some_Other_Thing', geometryType: 'esriGeometryPolygon' },
+          ],
+        }),
+      }),
+    ).rejects.toMatchObject({
+      name: 'ChartUnavailableError',
+      kind: 'no-layers',
+      // The names the service actually published, so one photograph of the
+      // screen settles what it is called.
+      message: expect.stringContaining('WRECKS'),
+    })
+  })
+
+  it('still calls genuinely empty water empty, when a depth layer answered', async () => {
+    // The one case that IS geography: the depth layer exists and returns
+    // nothing. This must not be swept up by the stricter gate above.
+    const f = await fetchChartFeatures(BOX, {
+      fetcher: async (url) => (url.includes('/layers?f=json') ? LAYER_PAYLOAD : { features: [] }),
+    })
+    expect(f.coverage).toBe('none')
+  })
+
   it('does not call a failed depth query an empty sea', async () => {
     // The bug this pins: a query that failed returned zero features, which
     // became `coverage: 'none'`, which the screen reported as "no charted

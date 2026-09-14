@@ -137,15 +137,19 @@ const statValue = async (name) =>
 /** Shortest angular gap, for assertions. */
 const apart = (a, b) => Math.abs((((b - a) % 360) + 540) % 360 - 180)
 
-// --- before the sensor is started ------------------------------------------
-ok('sits at no heading until the compass is started', (await reading()) === null,
-   String(await reading()))
-ok('offers to start it', await page.getByRole('button', { name: 'Start compass' }).count() > 0)
+// --- the compass is live on arrival ----------------------------------------
+// Chromium exposes no DeviceOrientationEvent.requestPermission, so this is the
+// non-iOS path: the sensor starts itself and there is nothing to press.
+ok('no start button — the compass runs on opening the page',
+   (await page.getByRole('button', { name: /start compass/i }).count()) === 0
+   && (await page.getByRole('button', { name: /allow motion access/i }).count()) === 0)
 
-// --- start it and feed a flat phone pointing north -------------------------
-await page.getByRole('button', { name: 'Start compass' }).click()
-await page.waitForTimeout(200)
+// It listens before any reading arrives, which is what makes it ready: feed a
+// single event and a heading is there, with nothing tapped in between.
 await hold(0, 0, 0)
+await page.waitForTimeout(300)
+ok('a heading appears from the first event, with nothing tapped',
+   (await reading()) !== null, String(await reading()))
 
 const declText = await statValue('Variation')
 ok('names the local magnetic variation', /^\d+(\.\d+)?° [EW]$/.test(declText), declText)
@@ -323,10 +327,31 @@ ok('explains that the table is true and the dial says which it is',
    await page.getByText(/Bearings are true/i).count() > 0)
 
 // --- stopping ---------------------------------------------------------------
-await page.getByRole('button', { name: 'Stop compass' }).click()
+// There is no Stop button any more, because there is no Start: leaving the
+// page is what stops it. That has to be proved rather than assumed — a
+// magnetometer left running behind another screen is exactly the battery this
+// app cannot spend, and it would now be invisible.
+await page.getByLabel('Open the menu').click()
 await page.waitForTimeout(300)
-ok('stops on request rather than draining the battery all shift',
-   (await reading()) === null)
+await page.getByRole('menuitem', { name: /Convert/i }).first().click()
+await page.waitForTimeout(400)
+// What a browser can actually witness is that the card unmounted, which is
+// what runs the cleanup that stops the sensor. Counting listeners from page
+// script cannot see a listener this page added, so a check that tried would be
+// theatre — said here rather than dressed up as evidence.
+ok('leaving the compass page tears the card down, which is what stops the sensor',
+   (await page.getByText(/Variation/i).count()) === 0)
+
+await page.getByLabel('Open the menu').click()
+await page.waitForTimeout(300)
+await page.getByRole('menuitem', { name: /Compass/i }).first().click()
+await page.waitForTimeout(500)
+ok('and it is live again the moment the page is reopened, still with no button',
+   (await page.getByRole('button', { name: /start compass/i }).count()) === 0)
+await hold(0, 0, 0)
+await page.waitForTimeout(300)
+ok('a reopened compass reads again from the first event',
+   (await reading()) !== null, String(await reading()))
 
 // --- the preference survives a reload --------------------------------------
 await page.reload({ waitUntil: 'networkidle' })
@@ -341,7 +366,6 @@ ok('remembers whether the crew asked for true or magnetic', pressed === 'true',
    `aria-pressed ${pressed}`)
 
 // --- no sideways scroll ----------------------------------------------------
-await page.getByRole('button', { name: 'Start compass' }).click()
 await hold(30, 20, 10, 400)
 for (const w of [320, 360, 390]) {
   await page.setViewportSize({ width: w, height: 844 })

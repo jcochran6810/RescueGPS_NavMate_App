@@ -93,6 +93,9 @@ export function CoordInput({
   label,
   onUseFix,
   fixLabel = 'Use my location',
+  onPickOnMap,
+  pickLabel = 'Choose on map',
+  picking = false,
 }: {
   /** Decimal degrees. NaN on an axis means "not set". */
   value: { lat: number; lon: number }
@@ -102,6 +105,11 @@ export function CoordInput({
   /** Renders a one-tap fill from the current GPS fix when given. */
   onUseFix?: () => void
   fixLabel?: string
+  /** Renders a pick-on-map control when given. */
+  onPickOnMap?: () => void
+  pickLabel?: string
+  /** True while the map is open and waiting for a tap. */
+  picking?: boolean
 }) {
   const format = useCoordFormat((s) => s.format)
   const setFormat = useCoordFormat((s) => s.setFormat)
@@ -206,10 +214,26 @@ export function CoordInput({
         </div>
       ) : null}
 
-      {onUseFix ? (
-        <Button variant="ghost" className="w-full" onClick={onUseFix}>
-          {fixLabel}
-        </Button>
+      {onUseFix || onPickOnMap ? (
+        // Side by side when both exist: they are two answers to one question —
+        // where is it — and stacking them reads as two separate steps.
+        <div className={onUseFix && onPickOnMap ? 'grid grid-cols-2 gap-2' : ''}>
+          {onUseFix ? (
+            <Button variant="ghost" className="w-full" onClick={onUseFix}>
+              {fixLabel}
+            </Button>
+          ) : null}
+          {onPickOnMap ? (
+            <Button
+              variant={picking ? 'primary' : 'ghost'}
+              className="w-full"
+              aria-pressed={picking}
+              onClick={onPickOnMap}
+            >
+              {picking ? 'Tap the map' : pickLabel}
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )
