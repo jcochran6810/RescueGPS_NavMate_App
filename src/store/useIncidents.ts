@@ -133,19 +133,19 @@ let flushSeq = 0
  * columns, and this result is cached in localStorage.
  */
 const INCIDENT_COLUMNS =
-  'id, client_id, team_id, incident_number, incident_type, incident_name, urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source, incident_time, summary, created_by, created_at, updated_at' as const
+  'id, client_id, team_id, incident_number, incident_type, incident_name, urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source, incident_time, time_last_alive, summary, created_by, created_at, updated_at' as const
 
 /** The row columns sent to the server (never updated_at — a trigger owns it). */
 function toRow(r: Incident) {
   const {
     id, client_id, team_id, incident_number, incident_type, incident_name,
     urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
-    incident_time, summary, created_by,
+    incident_time, time_last_alive, summary, created_by,
   } = r
   return {
     id, client_id, team_id, incident_number, incident_type, incident_name,
     urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
-    incident_time, summary, created_by,
+    incident_time, time_last_alive, summary, created_by,
   }
 }
 
@@ -292,6 +292,7 @@ export const useIncidents = create<IncidentState>()(
           lkp_time: null,
           lkp_source: null,
           incident_time: null,
+          time_last_alive: null,
           summary: '',
           created_by: uid,
           created_at: now,

@@ -231,6 +231,12 @@ export interface DatumInput {
   currentKts: number | null
   /** Initial LKP position error, NM. */
   lkpErrorNM: number
+  /**
+   * When the search object entered the water, epoch ms. Optional.
+   *
+   * See `driftStartsAt` for why this is not simply "the time drift runs from".
+   */
+  timeInWater?: number | null
 }
 
 export interface DatumResult {
@@ -269,8 +275,37 @@ export interface DatumResult {
  * the datum is the LKP and the radius is just the position errors — still a
  * real answer.
  */
+/**
+ * The moment drift starts running, given an LKP time and a time in water.
+ *
+ * **The later of the two, and that is not arbitrary.** Drift is computed
+ * *from the LKP position*, so the elapsed time has to be the time since the
+ * object was at that position — otherwise movement the LKP already accounts
+ * for gets counted twice.
+ *
+ * - Entered the water **before** the LKP (a witness saw them later, further
+ *   down): the LKP is the newer fact and already includes the earlier drift.
+ *   Run from the LKP time.
+ * - Entered the water **after** the LKP (a vessel's last position is known
+ *   and it sank an hour later): nothing was drifting in between. Run from
+ *   the time in water.
+ * - The usual case, seen going in: the two are the same and this is a no-op.
+ *
+ * Taking the earlier of the two instead would inflate the search radius and
+ * push the datum downwind of where the object actually is, which is the
+ * failure that loses a search.
+ */
+export function driftStartsAt(
+  lkpTimeMs: number,
+  timeInWaterMs?: number | null,
+): number {
+  if (timeInWaterMs == null || !Number.isFinite(timeInWaterMs)) return lkpTimeMs
+  return Math.max(lkpTimeMs, timeInWaterMs)
+}
+
 export function computeDatum(input: DatumInput): DatumResult {
-  const hours = Math.max(0, (input.at - input.lkp.time) / 3_600_000)
+  const start = driftStartsAt(input.lkp.time, input.timeInWater)
+  const hours = Math.max(0, (input.at - start) / 3_600_000)
 
   const current =
     input.currentTowardDeg !== null &&

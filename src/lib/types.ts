@@ -60,6 +60,25 @@ export interface LkpPayload {
   /** RescueGPS leeway_type key. */
   object_type: string
   position_error_nm: number
+  /**
+   * When the search object entered the water (ISO). Maps to the command
+   * system's `incident_time`, whose documented meaning is exactly this.
+   *
+   * Distinct from `recorded_at`, which is when the object was at the LKP. The
+   * two coincide when someone was seen going in, and diverge when a vessel's
+   * last position is known but it sank later — and that gap is time the
+   * search object was drifting.
+   */
+  time_in_water?: string | null
+  /**
+   * When the search object was last confirmed **alive** (ISO). Maps to
+   * `time_last_alive`.
+   *
+   * Recorded and handed on, never fed into the survival arithmetic: the USCG
+   * table is driven by immersion time, and a later sighting says the person
+   * beat the estimate rather than that the estimate should move.
+   */
+  last_seen_alive?: string | null
 }
 
 export interface CluePayload {
@@ -163,6 +182,8 @@ export interface Incident {
   lkp_source: string | null
   /** When the person went into the water — drift time starts here. */
   incident_time: string | null
+  /** When the search object was last confirmed alive (their column name). */
+  time_last_alive: string | null
   summary: string
   created_by: string
   created_at: string

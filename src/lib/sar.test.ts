@@ -10,6 +10,7 @@ import {
   LKP_ERROR_NM,
   NAV_ERROR_NM,
   type DatumInput,
+  driftStartsAt,
 } from './sar'
 import { haversineNM, bearingDeg } from './geo'
 
@@ -211,5 +212,64 @@ describe('datumReport', () => {
       leeway_type: 'person_in_water',
     })
     expect(report.simulate_drift_params.duration_hrs).toBeGreaterThanOrEqual(9)
+  })
+})
+
+describe('when the drift clock starts', () => {
+  const t = (iso: string) => new Date(iso).getTime()
+
+  it('runs from the LKP when the object went in BEFORE it was seen there', () => {
+    // Entered at 12:00, a witness saw them at 13:00 further down. The 13:00
+    // position already contains the first hour of drift; starting the clock at
+    // 12:00 would count it twice, pushing the datum past the object.
+    expect(driftStartsAt(t('2026-09-14T13:00:00Z'), t('2026-09-14T12:00:00Z')))
+      .toBe(t('2026-09-14T13:00:00Z'))
+  })
+
+  it('runs from the water when the object went in AFTER the last position', () => {
+    // A vessel's last known position at 12:00; it sank at 13:00. Nothing was
+    // drifting in between, so an hour of drift charged to it is an hour of
+    // search area invented.
+    expect(driftStartsAt(t('2026-09-14T12:00:00Z'), t('2026-09-14T13:00:00Z')))
+      .toBe(t('2026-09-14T13:00:00Z'))
+  })
+
+  it('is a no-op in the usual case, seen going in', () => {
+    const same = t('2026-09-14T12:00:00Z')
+    expect(driftStartsAt(same, same)).toBe(same)
+  })
+
+  it('falls back to the LKP when no time in water was given', () => {
+    const lkp = t('2026-09-14T12:00:00Z')
+    expect(driftStartsAt(lkp, null)).toBe(lkp)
+    expect(driftStartsAt(lkp, undefined)).toBe(lkp)
+    expect(driftStartsAt(lkp, Number.NaN)).toBe(lkp)
+  })
+
+  it('changes the datum computeDatum produces, and only in the right direction', () => {
+    const base = {
+      lkp: { lat: 29.5, lon: -94.8, time: t('2026-09-14T12:00:00Z') },
+      at: t('2026-09-14T14:00:00Z'),
+      objectType: searchObjectType('person_in_water'),
+      windFromDeg: 180,
+      windKts: 15,
+      currentTowardDeg: 90,
+      currentKts: 1,
+      lkpErrorNM: 0.1,
+    }
+    const plain = computeDatum(base)
+    // Entered the water an hour AFTER the LKP: one hour of drift, not two.
+    const later = computeDatum({ ...base, timeInWater: t('2026-09-14T13:00:00Z') })
+    expect(later.hoursAdrift).toBeCloseTo(1, 6)
+    expect(plain.hoursAdrift).toBeCloseTo(2, 6)
+    expect(later.driftDistanceNM).toBeLessThan(plain.driftDistanceNM)
+    // A smaller drift is also a smaller uncertainty, so the first search
+    // radius tightens with it rather than staying at the inflated value.
+    expect(later.searchRadiusNM).toBeLessThan(plain.searchRadiusNM)
+
+    // Entered BEFORE the LKP: the LKP is the newer fact, nothing changes.
+    const earlier = computeDatum({ ...base, timeInWater: t('2026-09-14T09:00:00Z') })
+    expect(earlier.hoursAdrift).toBeCloseTo(plain.hoursAdrift, 6)
+    expect(earlier.datum).toEqual(plain.datum)
   })
 })

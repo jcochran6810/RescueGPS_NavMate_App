@@ -458,6 +458,12 @@ export function SearchTab() {
 
       <SurvivalCard
         lkpTime={
+          // Immersion time, in order of how directly it was recorded: the
+          // crew's own "time in water" on the LKP, then the incident's
+          // `incident_time` (which means the same thing on the command side),
+          // then the LKP time, which is the best available when nobody has
+          // said when the person went in.
+          (lkp?.payload as LkpPayload | undefined)?.time_in_water ??
           incident?.incident_time ??
           incident?.lkp_time ??
           (lkp ? lkp.recorded_at : null)

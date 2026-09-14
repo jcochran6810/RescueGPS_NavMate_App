@@ -144,9 +144,19 @@ export function DatumTab() {
                 input.payload.source === 'gps'
                   ? 'field_gps'
                   : input.payload.source,
-              ...(incident.incident_time
-                ? {}
-                : { incident_time: input.recorded_at }),
+              ...(input.payload.last_seen_alive
+                ? { time_last_alive: input.payload.last_seen_alive }
+                : {}),
+              // `incident_time` means "went into the water" on their side too,
+              // so an entered time-in-water is the authoritative value and
+              // overwrites the one derived from the first LKP. Without one the
+              // old rule stands: seed it once, and never let a corrected LKP
+              // restart the drift clock.
+              ...(input.payload.time_in_water
+                ? { incident_time: input.payload.time_in_water }
+                : incident.incident_time
+                  ? {}
+                  : { incident_time: input.recorded_at }),
             })
           }
           toast(
@@ -318,6 +328,13 @@ const SOURCES: { id: LkpSource; label: string }[] = [
   { id: 'estimated', label: 'Estimated' },
 ]
 
+/** A `datetime-local` value as ISO, or null when the box is empty or unparsable. */
+function isoOrNull(local: string): string | null {
+  if (!local.trim()) return null
+  const d = new Date(local)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 function toLocalInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
@@ -345,6 +362,10 @@ function LkpCard({
   const [picking, setPicking] = useState(false)
   const liveFix = useTracker((st) => st.fix)
   const [time, setTime] = useState(() => toLocalInput(new Date()))
+  /** When they went in — the drift clock. Blank means "same as the LKP". */
+  const [inWater, setInWater] = useState('')
+  /** Last confirmed alive. Recorded and handed on; never moves the maths. */
+  const [lastAlive, setLastAlive] = useState('')
   const [source, setSource] = useState<LkpSource>('witness')
   const [objectType, setObjectType] = useState('person_in_water')
   const [errorNM, setErrorNM] = useState(String(LKP_ERROR_NM.witness))
@@ -376,6 +397,8 @@ function LkpCard({
         object_type: objectType,
         position_error_nm:
           Number.isFinite(err) && err >= 0 ? err : LKP_ERROR_NM[source],
+        time_in_water: isoOrNull(inWater),
+        last_seen_alive: isoOrNull(lastAlive),
       },
       note: note.trim(),
     })
@@ -392,6 +415,16 @@ function LkpCard({
             onClick={() => {
               setPos({ lat: lkp.lat ?? Number.NaN, lon: lkp.lon ?? Number.NaN })
               setTime(toLocalInput(new Date(lkp.recorded_at)))
+              setInWater(
+                payload?.time_in_water
+                  ? toLocalInput(new Date(payload.time_in_water))
+                  : '',
+              )
+              setLastAlive(
+                payload?.last_seen_alive
+                  ? toLocalInput(new Date(payload.last_seen_alive))
+                  : '',
+              )
               if (payload) {
                 setSource(payload.source)
                 setObjectType(payload.object_type)
@@ -417,6 +450,17 @@ function LkpCard({
           <div className="text-slate-300">
             Last seen {new Date(lkp.recorded_at).toLocaleString()}
           </div>
+          {payload?.time_in_water ? (
+            <div className="text-slate-300">
+              In the water {new Date(payload.time_in_water).toLocaleString()}
+            </div>
+          ) : null}
+          {payload?.last_seen_alive ? (
+            <div className="text-slate-300">
+              Last seen alive{' '}
+              {new Date(payload.last_seen_alive).toLocaleString()}
+            </div>
+          ) : null}
           {payload && (
             <div className="text-xs text-slate-400">
               {SOURCES.find((s) => s.id === payload.source)?.label} · ±
@@ -491,6 +535,45 @@ function LkpCard({
               onChange={(e) => setTime(e.target.value)}
               aria-label="Time last seen"
             />
+          </div>
+
+          {/* Two more clocks, because one time cannot answer both questions a
+              search asks. The LKP time says when the object was *there*, which
+              is what drift runs from. These say when it went in — which is
+              what the survival clock runs from — and when it was last known
+              alive. They are usually all the same moment, and the times they
+              are not are the times it matters. */}
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div>
+              <span className="mb-1 block text-xs text-slate-300">
+                Time in water
+              </span>
+              <Input
+                type="datetime-local"
+                value={inWater}
+                onChange={(e) => setInWater(e.target.value)}
+                aria-label="Time the victim entered the water"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">
+                Starts the survival clock. Leave blank if it is the same as the
+                time above.
+              </p>
+            </div>
+            <div>
+              <span className="mb-1 block text-xs text-slate-300">
+                Last seen alive
+              </span>
+              <Input
+                type="datetime-local"
+                value={lastAlive}
+                onChange={(e) => setLastAlive(e.target.value)}
+                aria-label="Time the victim was last seen alive"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">
+                Recorded and handed to command. It does not shorten the
+                survival estimate.
+              </p>
+            </div>
           </div>
 
           <div className="mt-2 flex gap-1">
@@ -883,6 +966,9 @@ function WorksheetCard({
       currentTowardDeg: env?.current_toward_deg ?? null,
       currentKts: env?.current_kts ?? null,
       lkpErrorNM: lkpPayload.position_error_nm,
+      timeInWater: lkpPayload.time_in_water
+        ? new Date(lkpPayload.time_in_water).getTime()
+        : null,
     })
   }, [lkp, lkpPayload, env, now])
 
