@@ -6,6 +6,8 @@ import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
+import { useGoTo } from '@/store/useGoTo'
+import type { TabId } from '@/components/NavMenu'
 import { toast } from '@/store/useToast'
 import { toDD, toDMS } from '@/lib/coords'
 import { CoordInput } from '@/components/CoordInput'
@@ -20,6 +22,9 @@ import {
   observedDrift,
   datumReport,
   LKP_ERROR_NM,
+  DRIFT_SAMPLE_SECONDS,
+  lastMarkerPoint,
+  describeDriftLeg,
   type LkpSource,
 } from '@/lib/sar'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
@@ -27,6 +32,7 @@ import { IncidentCard } from '@/components/IncidentCard'
 import type {
   CluePayload,
   DriftMarkerPayload,
+  DriftSample,
   EnvironmentPayload,
   LkpPayload,
   SarRecord,
@@ -40,7 +46,7 @@ import type {
  * coverage is precisely the one that must not be lost — and everything is
  * shaped to feed RescueGPS's drift engine when the unit is back in coverage.
  */
-export function DatumTab() {
+export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) {
   const once = useTracker((s) => s.once)
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const {
@@ -258,6 +264,53 @@ export function DatumTab() {
             'success',
           )
         }}
+        onRecord={async (marker) => {
+          const fix = await once()
+          if (!fix) {
+            toast(useTracker.getState().error ?? 'No GPS fix', 'error')
+            return
+          }
+          const p = marker.payload as DriftMarkerPayload
+          const from = lastMarkerPoint(p)
+          const obs = observedDrift(from, {
+            lat: fix.lat,
+            lon: fix.lon,
+            time: fix.timestamp,
+          })
+          if (!obs) {
+            toast('This reading is not after the one before it', 'error')
+            return
+          }
+          // Refused rather than recorded, either way: a reading here reaches
+          // the datum through "Use as current", so a number invented from
+          // noise or from a jumped fix becomes a search area in the wrong
+          // place.
+          const verdict = describeDriftLeg(
+            obs.distanceNM,
+            obs.driftKts,
+            fix.accuracy,
+          )
+          if (!verdict.ok) {
+            toast(verdict.why, 'error')
+            return
+          }
+          const sample: DriftSample = {
+            lat: fix.lat,
+            lon: fix.lon,
+            time: new Date(fix.timestamp).toISOString(),
+            set_deg: obs.setDeg,
+            drift_kts: obs.driftKts,
+            distance_nm: obs.distanceNM,
+            hours: obs.hours,
+          }
+          await updateRecord(marker.id, {
+            payload: { ...p, samples: [...(p.samples ?? []), sample] },
+          })
+          toast(
+            `Drift ${obs.driftKts.toFixed(2)} kn toward ${Math.round(obs.setDeg)}° recorded`,
+            'success',
+          )
+        }}
         onUseAsCurrent={async (p) => {
           const payload: EnvironmentPayload = {
             current_toward_deg: p.set_deg ?? null,
@@ -282,7 +335,13 @@ export function DatumTab() {
         }}
       />
 
-      <WorksheetCard lkp={lkp} environment={environment} markers={markers} clues={clues} />
+      <WorksheetCard
+        lkp={lkp}
+        environment={environment}
+        markers={markers}
+        clues={clues}
+        onNavigate={onNavigate}
+      />
 
       <ClueCard
         clues={clues}
@@ -816,15 +875,57 @@ const MARKER_TYPES: DriftMarkerPayload['marker_type'][] = [
   'custom',
 ]
 
+/**
+ * Time until the next drift reading is due off a marker still in the water.
+ *
+ * Its own component so the one-second tick re-renders a line of text rather
+ * than the whole Datum tab — this screen carries the worksheet, the map and
+ * every record of the search.
+ *
+ * It never records anything by itself. The boat has to be back at the marker
+ * for a reading to mean anything, and a fix taken automatically from wherever
+ * the boat happens to be would measure the boat's drift, not the marker's.
+ * So it counts, says when it is due, and waits.
+ */
+function MarkerCountdown({ since }: { since: number }) {
+  const now = useNow(1000)
+  const elapsed = Math.floor((now.getTime() - since) / 1000)
+  const left = DRIFT_SAMPLE_SECONDS - elapsed
+  const due = left <= 0
+  const mm = Math.floor(Math.abs(left) / 60)
+  const ss = String(Math.abs(left) % 60).padStart(2, '0')
+
+  return (
+    <div
+      className={
+        'tnum mt-1.5 flex items-center gap-2 rounded-lg px-2 py-1 text-xs ' +
+        (due
+          ? 'bg-amber-500/15 font-semibold text-amber-200'
+          : 'bg-white/5 text-slate-300')
+      }
+      // Announced once it matters rather than counted aloud every second.
+      aria-live={due ? 'polite' : 'off'}
+    >
+      {due ? (
+        <>Reading due — {mm}:{ss} overdue</>
+      ) : (
+        <>Next reading in {mm}:{ss}</>
+      )}
+    </div>
+  )
+}
+
 function DriftMarkerCard({
   markers,
   onDeploy,
   onRetrieve,
+  onRecord,
   onUseAsCurrent,
 }: {
   markers: SarRecord[]
   onDeploy: (markerType: DriftMarkerPayload['marker_type']) => Promise<void>
   onRetrieve: (marker: SarRecord) => Promise<void>
+  onRecord: (marker: SarRecord) => Promise<void>
   onUseAsCurrent: (payload: DriftMarkerPayload) => Promise<void>
 }) {
   const [markerType, setMarkerType] =
@@ -906,18 +1007,43 @@ function DriftMarkerCard({
                     </button>
                   </div>
                 ) : (
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="tnum text-xs text-slate-400">
+                  <>
+                    <div className="mt-1 tnum text-xs text-slate-400">
                       In the water at {toDD(p.deploy.lat, 4)},{' '}
                       {toDD(p.deploy.lon, 4)}
-                    </span>
-                    <button
-                      onClick={() => void onRetrieve(m)}
-                      className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
-                    >
-                      Retrieve here
-                    </button>
-                  </div>
+                    </div>
+
+                    {p.samples?.length ? (
+                      <div className="tnum mt-1 text-xs text-slate-300">
+                        Last reading: set{' '}
+                        {formatBearing(p.samples[p.samples.length - 1].set_deg)}{' '}
+                        · drift{' '}
+                        {p.samples[p.samples.length - 1].drift_kts.toFixed(2)} kn
+                        <span className="text-slate-400">
+                          {' '}
+                          ({p.samples.length} reading
+                          {p.samples.length === 1 ? '' : 's'})
+                        </span>
+                      </div>
+                    ) : null}
+
+                    <MarkerCountdown since={lastMarkerPoint(p).time} />
+
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => void onRecord(m)}
+                        className="min-h-9 rounded-lg border border-sky-400/40 px-2 py-1 text-xs font-semibold text-sky-300 hover:bg-sky-500/10"
+                      >
+                        Record drift here
+                      </button>
+                      <button
+                        onClick={() => void onRetrieve(m)}
+                        className="min-h-9 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
+                      >
+                        Retrieve here
+                      </button>
+                    </div>
+                  </>
                 )}
               </li>
             )
@@ -937,15 +1063,19 @@ function WorksheetCard({
   environment,
   markers,
   clues,
+  onNavigate,
 }: {
   lkp: SarRecord | null
   environment: SarRecord | null
   markers: SarRecord[]
   clues: SarRecord[]
+  onNavigate?: (tab: TabId) => void
 }) {
   const now = useNow(30_000)
   const create = useWaypoints((s) => s.create)
   const activeTeamId = useTeams((s) => s.activeTeamId)
+  const goTo = useGoTo((s) => s.goTo)
+  const headedToDatum = useGoTo((s) => s.headedToDatum)
   const [email, setEmail] = useState('')
 
   const lkpPayload = lkp?.payload as LkpPayload | undefined
@@ -1047,6 +1177,36 @@ function WorksheetCard({
         </div>
         <div className="tnum text-xs text-slate-300">
           {toDMS(result.datum.lat, 'lat')} {toDMS(result.datum.lon, 'lon')}
+        </div>
+
+        {/* The two moves that follow a datum, in the order they happen: get
+            there, then start sweeping. The pattern button appears only once
+            the crew has asked to be taken there, because planning a sweep
+            around a datum you are still a mile from is planning the wrong
+            sweep — the pattern is steered from where you arrive. */}
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Button
+            variant="primary"
+            onClick={() => {
+              goTo({
+                lat: result.datum.lat,
+                lon: result.datum.lon,
+                label: 'Datum',
+              })
+              onNavigate?.('chart')
+            }}
+          >
+            Take me there
+          </Button>
+          {headedToDatum ? (
+            <Button onClick={() => onNavigate?.('search')}>
+              Begin search pattern
+            </Button>
+          ) : (
+            <span className="self-center text-[11px] text-slate-400">
+              Search pattern appears once you are on your way.
+            </span>
+          )}
         </div>
       </div>
 

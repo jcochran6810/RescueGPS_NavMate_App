@@ -92,6 +92,18 @@ export interface CluePayload {
     | 'other'
 }
 
+/** One drift reading taken off a marker still in the water. */
+export interface DriftSample {
+  lat: number
+  lon: number
+  time: string
+  /** Movement since the PREVIOUS point — deploy, or the sample before this. */
+  set_deg: number
+  drift_kts: number
+  distance_nm: number
+  hours: number
+}
+
 export interface DriftMarkerPayload {
   marker_type: 'orange' | 'smoke' | 'dye' | 'debris' | 'custom'
   deploy: { lat: number; lon: number; time: string }
@@ -101,6 +113,16 @@ export interface DriftMarkerPayload {
   drift_kts?: number
   distance_nm?: number
   hours?: number
+  /**
+   * Readings taken while the marker stays in the water, newest last.
+   *
+   * Each leg runs from the point before it, so a sample is the set and drift
+   * **right now** rather than the average since deploy — which is the whole
+   * point of taking them repeatedly. The average since deploy is what
+   * `retrieve` gives, and the two answer different questions: a tide that has
+   * turned shows up in the latest leg and is buried in the average.
+   */
+  samples?: DriftSample[]
 }
 
 export interface EnvironmentPayload {

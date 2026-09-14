@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTracker } from '@/store/useTracker'
+import { useGoTo } from '@/store/useGoTo'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useTeams } from '@/store/useTeams'
 import { useVessels } from '@/store/useVessels'
@@ -148,6 +149,15 @@ export function ChartTab() {
     // would re-arm the timer forever. It reads what it needs from the render
     // it was made in, and its own guard stops two runs overlapping.
   }, [start?.lat, start?.lon, dest?.lat, dest?.lon, boat?.id])
+
+  // A destination handed over from the Datum worksheet's "Take me there".
+  // Taken once — see useGoTo for why it is not read on every render.
+  useEffect(() => {
+    const handed = useGoTo.getState().take()
+    if (handed) {
+      setDest({ lat: handed.lat, lon: handed.lon, label: handed.label })
+    }
+  }, [])
 
   /** Take a one-shot GPS fix and use it as the start point. */
   async function startHere() {

@@ -11,6 +11,11 @@ import {
   NAV_ERROR_NM,
   type DatumInput,
   driftStartsAt,
+  lastMarkerPoint,
+  driftLegIsMeaningful,
+  describeDriftLeg,
+  MAX_PLAUSIBLE_DRIFT_KTS,
+  DRIFT_SAMPLE_SECONDS,
 } from './sar'
 import { haversineNM, bearingDeg } from './geo'
 
@@ -271,5 +276,96 @@ describe('when the drift clock starts', () => {
     const earlier = computeDatum({ ...base, timeInWater: t('2026-09-14T09:00:00Z') })
     expect(earlier.hoursAdrift).toBeCloseTo(plain.hoursAdrift, 6)
     expect(earlier.datum).toEqual(plain.datum)
+  })
+})
+
+describe('repeated drift readings off a marker in the water', () => {
+  const deploy = { lat: 29.5, lon: -94.8, time: '2026-09-14T12:00:00.000Z' }
+
+  it('runs the next leg from the deploy point until a reading exists', () => {
+    expect(lastMarkerPoint({ deploy })).toEqual({
+      lat: 29.5,
+      lon: -94.8,
+      time: new Date(deploy.time).getTime(),
+    })
+  })
+
+  it('runs each later leg from the reading before it, not from deploy', () => {
+    // This is what makes a sample "the drift right now". Measuring every leg
+    // from deploy would average the tide across the whole soak, and a tide
+    // that has turned would be buried rather than shown.
+    const samples = [
+      { lat: 29.51, lon: -94.79, time: '2026-09-14T12:05:00.000Z' },
+      { lat: 29.52, lon: -94.78, time: '2026-09-14T12:10:00.000Z' },
+    ]
+    expect(lastMarkerPoint({ deploy, samples })).toEqual({
+      lat: 29.52,
+      lon: -94.78,
+      time: new Date('2026-09-14T12:10:00.000Z').getTime(),
+    })
+  })
+
+  it('refuses a leg shorter than the fixes that measured it', () => {
+    // 15 m of movement with ±10 m fixes is not a slow current, it is two
+    // noisy positions. The bearing off it is meaningless, and it would reach
+    // the datum through "Use as current".
+    const fifteenMetresNM = 15 / 1852
+    expect(driftLegIsMeaningful(fifteenMetresNM, 10)).toBe(false)
+
+    // 5 minutes at 1 kn is ~154 m — comfortably a measurement.
+    const fiveMinutesAtOneKnot = 1 * (DRIFT_SAMPLE_SECONDS / 3600)
+    expect(driftLegIsMeaningful(fiveMinutesAtOneKnot, 10)).toBe(true)
+  })
+
+  it('scales what it demands to how good the fix actually is', () => {
+    const hundredMetresNM = 100 / 1852
+    expect(driftLegIsMeaningful(hundredMetresNM, 5)).toBe(true)
+    // The same 100 m under a ±50 m fix says nothing at all.
+    expect(driftLegIsMeaningful(hundredMetresNM, 50)).toBe(false)
+  })
+
+  it('assumes a usable fix rather than waving through an unknown one', () => {
+    const tiny = 5 / 1852
+    expect(driftLegIsMeaningful(tiny, null)).toBe(false)
+  })
+
+  it('samples every five minutes', () => {
+    expect(DRIFT_SAMPLE_SECONDS).toBe(300)
+  })
+})
+
+describe('a drift reading that cannot be believed', () => {
+  const good = 1 * (DRIFT_SAMPLE_SECONDS / 3600) // 5 min at 1 kn
+
+  it('accepts an ordinary reading', () => {
+    expect(describeDriftLeg(good, 1, 10)).toEqual({ ok: true })
+  })
+
+  it('accepts a genuinely fast tide rather than second-guessing the sea', () => {
+    // A spring tide through a cut really does run this hard. Refusing it would
+    // throw away the truest current reading of the day.
+    const r = describeDriftLeg(8 * (DRIFT_SAMPLE_SECONDS / 3600), 8, 10)
+    expect(r.ok).toBe(true)
+  })
+
+  it('refuses a leg inside the noise floor, and says to wait', () => {
+    const r = describeDriftLeg(5 / 1852, 0.03, 10)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.why).toMatch(/Leave it longer/)
+  })
+
+  it('refuses a speed no water reaches, and says to fix alongside', () => {
+    // Found by driving the app: a fix taken under way produced "drift 180.53
+    // kn", and nothing stopped that reaching the datum through "Use as
+    // current".
+    const r = describeDriftLeg(2, 180.53, 5)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.why).toMatch(/faster than any current/)
+  })
+
+  it('puts the ceiling past the sea and short of a bad fix', () => {
+    expect(MAX_PLAUSIBLE_DRIFT_KTS).toBe(20)
+    expect(describeDriftLeg(good, 19.9, 5).ok).toBe(true)
+    expect(describeDriftLeg(good, 20.1, 5).ok).toBe(false)
   })
 })
