@@ -22,6 +22,7 @@ const INCIDENT: Incident = {
   lkp_time: '2026-08-06T12:00:00.000Z',
   lkp_source: 'field_gps',
   incident_time: '2026-08-06T12:00:00.000Z',
+  time_last_alive: null,
   summary: '',
   created_by: 'u1',
   created_at: '2026-08-06T12:05:00.000Z',

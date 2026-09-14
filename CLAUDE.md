@@ -310,6 +310,134 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-14 — claude/charming-rubin-rlz3ks (two clocks, and a browser catching what 600 tests could not)
+
+**"Add a time in water and last seen alive to the search datum page. This is
+important for calculating drift instead of when the incident was created."**
+
+A correction to the premise first, because it changed what needed fixing:
+drift was **not** running from the incident's creation time. `computeDatum`
+already used the LKP time the crew types. What was missing is that one time was
+being asked to answer three different questions — when the object was at the
+LKP, when it went into the water, and when it was last known alive — and
+`incident_time`, whose meaning on the command side is literally "went into the
+water", was only ever *derived*: copied from the first LKP, never enterable.
+
+Both fields turned out to have first-class homes on the shared table already —
+`incident_time` and `time_last_alive`, checked before anything was designed —
+so this needed **no migration and invents no column**.
+
+**The rule for which clock drift runs on is the load-bearing part.**
+`driftStartsAt` takes the **later** of the LKP time and the time in water:
+
+- Entered the water *before* the LKP — a witness saw them later, further down.
+  The LKP is the newer fact and already contains that first stretch of drift.
+  Running from entry counts it twice and pushes the datum **past** the object.
+- Entered *after* the LKP — a vessel's last position is known and it sank an
+  hour later. Nothing was drifting in between, and an hour charged to it is an
+  hour of search area invented.
+- Seen going in, the usual case: identical, and the rule is a no-op.
+
+The tempting version — "use the time in water whenever it is given" — fails the
+first case, and two tests fail against it. The same rule now governs the
+handoff's `hours_adrift`, which had `incident_time ?? lkp_time`.
+
+**Last seen alive is recorded, shown and handed on, and deliberately does not
+touch the survival arithmetic.** The USCG table is driven by immersion time; a
+later sighting means the person beat the estimate, not that the estimate should
+move. The field says so under the input rather than leaving a crew to wonder.
+
+---
+
+**"Add a 5 minute countdown after a datum marker is deployed, and a Record
+drift at this location button next to Retrieve here."**
+
+A marker can now be read **without pulling it out**. Each reading measures the
+leg from the **previous** point — deploy, or the reading before it — not from
+deploy every time. That is the whole reason to take them repeatedly: a tide
+that has turned shows up in the latest leg and is buried in the average since
+deploy. The average is what "Retrieve here" still gives, and the two answer
+different questions.
+
+The timer **never records anything by itself**, which is a decision rather than
+a gap: a reading only means something taken alongside the marker, and a fix
+grabbed automatically from wherever the boat happens to be would measure the
+boat's drift. So it counts, turns amber when due, and waits. It is its own
+component so the one-second tick re-renders a line of text rather than the
+whole Datum tab.
+
+**Two refusals guard the same door** — a reading reaches the datum through "Use
+as current", so a number invented here becomes a search area centred in the
+wrong place:
+
+1. A leg shorter than the fixes that measured it is receiver noise, not a slow
+   current. A ±10 m error on a 15 m leg swings the bearing by tens of degrees.
+   Scaled to the accuracy the receiver reports, and it says "leave it longer".
+2. A drift faster than water moves is a jumped fix or a position taken under
+   way. The ceiling is **20 kn**: past anything the sea does, short of anything
+   a bad fix produces, and clear of the 6–8 kn a spring tide really runs.
+
+**The second was not designed in — the browser found it.** Driving the app
+produced **"drift 180.53 kn"** and nothing stopped it, because the drive
+teleported the boat, which is exactly what a stale fix looks like to this code.
+That is the second time in three sessions a browser has caught what the unit
+tests could not, and the reason the Datum tab now has a drive at all:
+`scripts/drive-datum.mjs`, **15 checks**, offline, deploying a marker, watching
+the countdown tick, recording a believable leg (~50 m over ~20 s ≈ 3.7 kn),
+seeing the timer reset, being refused a second reading from the same spot, and
+following both worksheet buttons across tabs. It takes half a minute of wall
+clock **on purpose**: a drift reading is a real displacement over real elapsed
+time, and teleporting the boat to save twenty seconds tests neither refusal.
+
+One of its checks was rewritten after it failed for the wrong reason — it
+looked for a toast that had already gone, where what matters is that no reading
+was written.
+
+---
+
+**"In the search around here field, add a Take me there button, and a Begin
+search pattern button after Take me there is selected."**
+
+Both live on the datum, in the order the two moves happen. "Take me there"
+hands the datum to the chart plotter as a destination and switches to it;
+"Begin search pattern" appears only once that has been asked for, because a
+pattern is steered from where you arrive and planning a sweep around a datum
+you are still a mile from plans the wrong sweep.
+
+Tab state is local to `App`, so `useGoTo` is the seam — a place one screen
+leaves for another, **consumed once**, so a destination the crew then edits by
+hand is not silently overwritten on the next mount. Not persisted: it is a
+gesture in one sitting, and everything that must survive a reload is already a
+`sar_records` row.
+
+---
+
+**"Nothing shows up on the command side when an incident is handed off."**
+Investigated and **not a NavMate bug**. The incident `INC-260913-HHF98` is in
+the shared table, active, flagged field-created; running the command app's own
+query (`select * where status in ('active','suspended')`) as that signed-in
+account returns it **first**, alongside their four. Their code has no
+organisation filter and no participant requirement, and their mapper handles
+NavMate's rows. Signed out, the same query returns **0 rows for everything**.
+
+So it is client-side on the command app, and the leading explanation is the one
+from the previous session: the stale NavMate service worker on
+`rescuegps.stationinsight.com` means they may not have reached the command app
+at all. The other two candidates are not signed in, or `VITE_SUPABASE_URL`
+unset on that deployment (their client has no fallback and goes to demo mode).
+Their console distinguishes all three — it prints
+`[supabase] incidents.list returned N incidents`.
+
+**Verification.** 618 tests, up from 602. The drift-clock rule and both leg
+refusals were each confirmed to **fail with their mechanism disabled** (the
+naive "always use time in water"; legs always measured from deploy; no noise
+floor). Drives green at 74, 44 and 15.
+
+**Still open.** The chart work has *still* never run in a browser carrying it —
+with deploys green, the next replot is the first real test of the relay, the
+failure reporting, the `f=json` fallback and the S-57 names together. And the
+datum screen's new refusals have only met a simulated receiver.
+
 ### 2026-09-14 — claude/charming-rubin-rlz3ks (Fahrenheit, S-57 names, and a deploy that was never happening)
 
 **The thing that reframes the last two sessions: nothing had been deploying.**

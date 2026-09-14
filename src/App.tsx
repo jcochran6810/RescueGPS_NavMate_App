@@ -106,7 +106,7 @@ export default function App() {
           section menu lives in the header's top corner. */}
       <main className="mx-auto max-w-3xl px-3 pt-3 pb-24">
         {tab === 'home' && <HomeTab onNavigate={setTab} />}
-        {tab === 'datum' && <DatumTab />}
+        {tab === 'datum' && <DatumTab onNavigate={setTab} />}
         {tab === 'search' && <SearchTab />}
         {tab === 'track' && <TrackTab />}
         {tab === 'eta' && <EtaTab />}

@@ -9,7 +9,7 @@
  */
 
 import type { Incident, SarRecord, CluePayload, DriftMarkerPayload, EnvironmentPayload, LkpPayload } from './types'
-import { canonicalObjectKey } from './sar'
+import { canonicalObjectKey, driftStartsAt } from './sar'
 import { NM_TO_KM } from './geo'
 
 /**
@@ -121,10 +121,20 @@ export function incidentHandoff(input: HandoffInput): string {
   const clues = inIncident.filter((r) => r.kind === 'clue')
 
   const lkpTime = incident.lkp_time ?? latestLkp?.recorded_at ?? null
-  const startTime = incident.incident_time ?? lkpTime
-  const hoursAdrift = startTime
-    ? Math.max(0, (Date.now() - new Date(startTime).getTime()) / 3_600_000)
-    : null
+  // The same rule the worksheet uses: drift runs from whichever is LATER, the
+  // LKP or the time in the water. `incident_time ?? lkpTime` took the entry
+  // time whenever it existed, which double-counts the drift an LKP taken
+  // later already contains — inflating the hours handed to command.
+  const startMs = lkpTime
+    ? driftStartsAt(
+        new Date(lkpTime).getTime(),
+        incident.incident_time ? new Date(incident.incident_time).getTime() : null,
+      )
+    : incident.incident_time
+      ? new Date(incident.incident_time).getTime()
+      : null
+  const hoursAdrift =
+    startMs != null ? Math.max(0, (Date.now() - startMs) / 3_600_000) : null
 
   return JSON.stringify(
     {
@@ -143,6 +153,7 @@ export function incidentHandoff(input: HandoffInput): string {
         lkp_time: lkpTime,
         lkp_source: incident.lkp_source ?? 'field_gps',
         incident_time: incident.incident_time,
+        time_last_alive: incident.time_last_alive,
         summary: incident.summary,
       },
       lkp_history: lkps.map((r) => ({

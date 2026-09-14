@@ -18,7 +18,7 @@
  * UI says so.
  */
 
-import { haversineNM, bearingDeg } from './geo'
+import { haversineNM, bearingDeg, NM_TO_METERS } from './geo'
 
 const RAD = Math.PI / 180
 const EARTH_RADIUS_NM = 3440.065
@@ -197,6 +197,89 @@ export function observedDrift(
   }
 }
 
+/** How long between drift readings off a marker still in the water. */
+export const DRIFT_SAMPLE_SECONDS = 300
+
+/**
+ * The last position a marker was fixed at — the point the next leg runs from.
+ */
+export function lastMarkerPoint(p: {
+  deploy: { lat: number; lon: number; time: string }
+  samples?: { lat: number; lon: number; time: string }[]
+}): { lat: number; lon: number; time: number } {
+  const last = p.samples?.length ? p.samples[p.samples.length - 1] : p.deploy
+  return { lat: last.lat, lon: last.lon, time: new Date(last.time).getTime() }
+}
+
+/**
+ * Is this leg long enough to be a measurement rather than receiver noise?
+ *
+ * Two fixes a few metres apart, taken five minutes apart, produce a confident
+ * set and a drift in hundredths of a knot — and both are invented. The set in
+ * particular is pure noise: a 10 m error on a 15 m leg swings the bearing by
+ * tens of degrees, and that number ends up in the datum through "Use as
+ * current". So a leg has to clear the accuracy of the fixes that made it.
+ *
+ * Refusing is the right failure here, the same refusal `coords.ts` makes about
+ * an ambiguous coordinate: slack water genuinely means "no usable reading
+ * yet", and saying so is more use than a decorated zero.
+ */
+export function driftLegIsMeaningful(
+  distanceNM: number,
+  accuracyM: number | null,
+): boolean {
+  const accM = accuracyM != null && Number.isFinite(accuracyM) ? accuracyM : 10
+  // Two fixes, each uncertain, so the combined uncertainty is the RSS — and a
+  // leg is only believable at a couple of times that.
+  const needM = 2 * Math.hypot(accM, accM)
+  return distanceNM * NM_TO_METERS > needM
+}
+
+/**
+ * Faster than any water moves. Above this the reading is a jumped fix or a
+ * position taken somewhere other than at the marker.
+ *
+ * Generous on purpose: a spring tide through a narrow cut runs 6–8 kn, and
+ * refusing a real reading is worse than accepting a fast one. 20 kn is past
+ * anything the sea does and short of anything a bad fix produces.
+ */
+export const MAX_PLAUSIBLE_DRIFT_KTS = 20
+
+/**
+ * Whether a drift reading can be believed, and why not when it cannot.
+ *
+ * Both refusals guard the same door: a drift marker reading reaches the datum
+ * through "Use as current", so a number invented here becomes a search area
+ * centred in the wrong place. Saying which way it failed is what lets a crew
+ * do something about it — wait longer, or take the fix at the marker.
+ */
+export function describeDriftLeg(
+  distanceNM: number,
+  driftKts: number,
+  accuracyM: number | null,
+): { ok: true } | { ok: false; why: string } {
+  if (!driftLegIsMeaningful(distanceNM, accuracyM)) {
+    const accM = Math.round(
+      accuracyM != null && Number.isFinite(accuracyM) ? accuracyM : 10,
+    )
+    return {
+      ok: false,
+      why:
+        `The marker has not moved further than the fix is accurate (±${accM} m), ` +
+        'so the set would be receiver noise. Leave it longer.',
+    }
+  }
+  if (!(driftKts <= MAX_PLAUSIBLE_DRIFT_KTS)) {
+    return {
+      ok: false,
+      why:
+        `${driftKts.toFixed(1)} kn is faster than any current runs. Take the ` +
+        'fix alongside the marker, not under way.',
+    }
+  }
+  return { ok: true }
+}
+
 /* -------------------------------------------------------------------------
  * The datum worksheet
  * ---------------------------------------------------------------------- */
@@ -231,6 +314,12 @@ export interface DatumInput {
   currentKts: number | null
   /** Initial LKP position error, NM. */
   lkpErrorNM: number
+  /**
+   * When the search object entered the water, epoch ms. Optional.
+   *
+   * See `driftStartsAt` for why this is not simply "the time drift runs from".
+   */
+  timeInWater?: number | null
 }
 
 export interface DatumResult {
@@ -269,8 +358,37 @@ export interface DatumResult {
  * the datum is the LKP and the radius is just the position errors — still a
  * real answer.
  */
+/**
+ * The moment drift starts running, given an LKP time and a time in water.
+ *
+ * **The later of the two, and that is not arbitrary.** Drift is computed
+ * *from the LKP position*, so the elapsed time has to be the time since the
+ * object was at that position — otherwise movement the LKP already accounts
+ * for gets counted twice.
+ *
+ * - Entered the water **before** the LKP (a witness saw them later, further
+ *   down): the LKP is the newer fact and already includes the earlier drift.
+ *   Run from the LKP time.
+ * - Entered the water **after** the LKP (a vessel's last position is known
+ *   and it sank an hour later): nothing was drifting in between. Run from
+ *   the time in water.
+ * - The usual case, seen going in: the two are the same and this is a no-op.
+ *
+ * Taking the earlier of the two instead would inflate the search radius and
+ * push the datum downwind of where the object actually is, which is the
+ * failure that loses a search.
+ */
+export function driftStartsAt(
+  lkpTimeMs: number,
+  timeInWaterMs?: number | null,
+): number {
+  if (timeInWaterMs == null || !Number.isFinite(timeInWaterMs)) return lkpTimeMs
+  return Math.max(lkpTimeMs, timeInWaterMs)
+}
+
 export function computeDatum(input: DatumInput): DatumResult {
-  const hours = Math.max(0, (input.at - input.lkp.time) / 3_600_000)
+  const start = driftStartsAt(input.lkp.time, input.timeInWater)
+  const hours = Math.max(0, (input.at - start) / 3_600_000)
 
   const current =
     input.currentTowardDeg !== null &&

@@ -60,6 +60,25 @@ export interface LkpPayload {
   /** RescueGPS leeway_type key. */
   object_type: string
   position_error_nm: number
+  /**
+   * When the search object entered the water (ISO). Maps to the command
+   * system's `incident_time`, whose documented meaning is exactly this.
+   *
+   * Distinct from `recorded_at`, which is when the object was at the LKP. The
+   * two coincide when someone was seen going in, and diverge when a vessel's
+   * last position is known but it sank later — and that gap is time the
+   * search object was drifting.
+   */
+  time_in_water?: string | null
+  /**
+   * When the search object was last confirmed **alive** (ISO). Maps to
+   * `time_last_alive`.
+   *
+   * Recorded and handed on, never fed into the survival arithmetic: the USCG
+   * table is driven by immersion time, and a later sighting says the person
+   * beat the estimate rather than that the estimate should move.
+   */
+  last_seen_alive?: string | null
 }
 
 export interface CluePayload {
@@ -73,6 +92,18 @@ export interface CluePayload {
     | 'other'
 }
 
+/** One drift reading taken off a marker still in the water. */
+export interface DriftSample {
+  lat: number
+  lon: number
+  time: string
+  /** Movement since the PREVIOUS point — deploy, or the sample before this. */
+  set_deg: number
+  drift_kts: number
+  distance_nm: number
+  hours: number
+}
+
 export interface DriftMarkerPayload {
   marker_type: 'orange' | 'smoke' | 'dye' | 'debris' | 'custom'
   deploy: { lat: number; lon: number; time: string }
@@ -82,6 +113,16 @@ export interface DriftMarkerPayload {
   drift_kts?: number
   distance_nm?: number
   hours?: number
+  /**
+   * Readings taken while the marker stays in the water, newest last.
+   *
+   * Each leg runs from the point before it, so a sample is the set and drift
+   * **right now** rather than the average since deploy — which is the whole
+   * point of taking them repeatedly. The average since deploy is what
+   * `retrieve` gives, and the two answer different questions: a tide that has
+   * turned shows up in the latest leg and is buried in the average.
+   */
+  samples?: DriftSample[]
 }
 
 export interface EnvironmentPayload {
@@ -163,6 +204,8 @@ export interface Incident {
   lkp_source: string | null
   /** When the person went into the water — drift time starts here. */
   incident_time: string | null
+  /** When the search object was last confirmed alive (their column name). */
+  time_last_alive: string | null
   summary: string
   created_by: string
   created_at: string
