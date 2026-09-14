@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useHeading, type HeadingReference } from '@/store/useHeading'
+import { headingNeedsTap, useHeading, type HeadingReference } from '@/store/useHeading'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useWaypoints } from '@/store/useWaypoints'
@@ -71,6 +71,25 @@ export function Compass({
       ),
     [all, activeTeamId],
   )
+
+  /**
+   * The compass runs as soon as the page is open.
+   *
+   * A dial behind a "Start compass" button is a step asked of someone who has
+   * opened the compass — they have already said what they want. The one place
+   * a tap is unavoidable is iOS, which only hands over the sensor from a real
+   * user gesture, so that is the only case that still shows a button, and it
+   * is worded as the permission prompt it is rather than as an on switch.
+   */
+  const needsTap = useMemo(() => headingNeedsTap(), [])
+  useEffect(() => {
+    if (!needsTap) void enable()
+  }, [needsTap, enable])
+
+  // Stopped on the way out. The sensor fires far faster than this card reads
+  // it, and a magnetometer left running behind another screen is battery spent
+  // on a number nobody is looking at.
+  useEffect(() => () => disable(), [disable])
 
   // Declination is a function of where you are, so the model needs the fix.
   // The store ignores a move too small to matter, so this can fire freely.
@@ -241,15 +260,11 @@ export function Compass({
         </ul>
       )}
 
-      {!listening ? (
+      {!listening && needsTap ? (
         <Button variant="primary" className="mt-3 w-full" onClick={() => void enable()}>
-          Start compass
+          {permission === 'denied' ? 'Allow motion access again' : 'Allow motion access'}
         </Button>
-      ) : (
-        <Button variant="ghost" className="mt-3 w-full" onClick={disable}>
-          Stop compass
-        </Button>
-      )}
+      ) : null}
 
       {calibration === 'poor' && (
         <Note tone="warn">

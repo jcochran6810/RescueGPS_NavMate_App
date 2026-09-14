@@ -310,6 +310,101 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-14 — claude/charming-rubin-rlz3ks (Fahrenheit, S-57 names, and a deploy that was never happening)
+
+**The thing that reframes the last two sessions: nothing had been deploying.**
+A parallel session found it — `vercel.json` carried a `"//"` comment key added
+during the ENC relay work, Vercel schema-validates that file, and a rejected
+file *fails the deployment* rather than falling back. Every production deploy
+from `ae40ebe` onward was ERROR. Production sat on `fb0ece7` throughout.
+
+So the report that closed the last session — "I replotted, still a straight
+line" — **was not evidence about the fix**. That plot ran against a build made
+before the ENC relay and before every chart change since. The giveaway is in
+the screenshot: its wording ("…has no charted depths for this area … expected
+outside US waters") does not exist anywhere in the current source. Worth
+recording as a rule rather than an anecdote: **before reading a field report as
+a verdict on a change, confirm the change is in the build being used.** Checking
+the Vercel deployment state is now a step in the end-session protocol's
+verification rather than an assumption.
+
+**The layer names, which is the strongest remaining explanation.** ENC is
+published from S-57, whose object classes are six-letter codes. `ROLE_PATTERNS`
+matched readable English only — and `WRECKS` reads as "wrecks", `BRIDGE` as
+"bridge", so those two matched *by accident* while `DEPARE`, `DRGARE`,
+`LNDARE`, `FAIRWY`, `OBSTRN` and `PILPNT` every one missed. Enough layers
+matched to clear the old `layers.length === 0` gate; not one of them carried a
+depth; the result came out as "no charted depths for this area" about the
+Houston Ship Channel.
+
+Both spellings match now. The gate also asks a better question: a layer
+catalogue is a property of the **service**, not of the water, so a catalogue
+with no recognisable depth layer is always NavMate's problem and never
+geography. The `no-layers` error now names every layer the service actually
+published, so one photograph of the screen ends this for good.
+
+**Water temperature reads in Fahrenheit.** The stored column stays
+`water_temp_c` and stays Celsius — it is a contract with the command system
+(incident handoff, `field_drift_data`, `simulate_drift_params`) — so `cToF` and
+`fToC` convert at the screen boundary only, on **read as well as write**.
+
+The read path is the whole risk. `DatumTab` seeded its box straight from
+`water_temp_c`, so under an °F label a record saved at 21 °C would have shown
+"21 °F" — shirtsleeves rendered as a survival window of minutes. And
+`SearchTab` had one variable, `temp`, carrying a typed value on one branch and
+a stored value on the other: two units under one name, which is how this
+happens. It is `tempF` now, converted once where the model is called. Eight
+tests fail with the conversion removed.
+
+**Jumper / long fall in, Jet ski out.** `incidents` is shared, so the **live
+CHECK constraint was read before the picker was touched** — it had no `jumper`,
+and offering a code the database refuses would have failed at sync and stalled
+the whole offline queue behind it, which is the failure mode CLAUDE.md warns
+about. Migration `20260914000000` widens the CHECK (widened, never narrowed: no
+existing row invalidated, no command-system path broken), applied and verified.
+`jetski` leaves the picker but stays in `RETIRED_TYPE_LABELS`, because the code
+is in rows already written on both sides — retiring a choice is a decision
+about what to offer next time, not about what happened last time.
+
+**"Choose on map" for the LKP.** A tap records the position as **estimated**
+(±2.5 NM), never `gps`: `position_error_nm` feeds the search radius, and
+calling a finger on a chart ±0.1 NM would shrink the area actually searched
+around a position nobody measured.
+
+**The compass is live on opening the page.** No Start button — a dial behind a
+button is a step asked of someone who has already said what they want. iOS
+keeps one tap because it only grants the sensor from a real user gesture;
+`headingNeedsTap()` tests for that gate rather than sniffing the user agent, and
+where it exists the control is worded as the permission prompt it is. The
+sensor stops on unmount, which is what the removed Stop button was for.
+
+**The domain question, answered and not a settings problem.** Verified against
+the Vercel API: `rescuegps.stationinsight.com` is on `rescuegps-navigator-pro`
+(production READY) and `navmate.stationinsight.com` is on `rescuegps-navmate`.
+Both correct. The old address serves NavMate because **NavMate's service worker
+is still registered on that origin** from when NavMate was served there, and a
+service worker serves its own cached shell regardless of what the server now
+returns. Neither repo can evict it — the command app never gets to run. Device
+-side cleanup (clear site data for that origin); a hard reload will not do it.
+This is the same lesson as `MovedNotice`, from the other direction: an origin
+move leaves state behind that nothing shipped afterwards can reach.
+
+**A premise of mine, corrected by the user's numbers** (carried from the
+previous session and worth keeping): the 5 ft stand-off is sub-cell against an
+8 m grid, so it was never closing the channel. That is what sent the search to
+`queryLayer` and then to the layer names.
+
+**Verification.** 602 tests, up from 594. The Fahrenheit conversion, the
+acronym matching and the depth-layer gate were each confirmed to **fail with
+their mechanism disabled**. Drives green at 74 (chart) and 44 (compass). The
+Datum and Search tabs have no browser drive, so the °F change rests on unit
+tests alone — stated rather than implied.
+
+**Still open.** The chart work has *still* never run in a browser that carried
+it. With deploys green again, the next replot is the first real test of the
+relay, the failure reporting, the `f=json` fallback and the S-57 names
+together.
+
 ### 2026-09-13 — claude/navmate-compass-feature-hf4h6z (the deploy had been failing for two sessions)
 
 Reported from the Vercel dashboard: `Build Failed — The 'vercel.json' schema

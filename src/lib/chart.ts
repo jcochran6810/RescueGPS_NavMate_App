@@ -101,8 +101,8 @@ export class ChartUnavailableError extends Error {
       kind === 'unreachable'
         ? `Could not reach the chart service for the ${band.id} band` +
           `${detail ? ` — ${detail}` : ''}`
-        : `The ${band.id} chart service answered, but none of its layers are ` +
-          'named the way this app expects',
+        : `The ${band.id} chart service answered, but ` +
+          `${detail ?? 'none of its layers are named the way this app expects'}`,
     )
     this.name = 'ChartUnavailableError'
     this.kind = kind
@@ -165,21 +165,95 @@ export type ChartRole =
  * by geometry (`..._area`), sometimes with spaces instead of underscores, so
  * the match is deliberately loose on separators and strict on the word.
  */
-const ROLE_PATTERNS: { role: ChartRole; test: RegExp; geometry: 'polygon' | 'point' | 'any' }[] = [
-  { role: 'depth', test: /depth[\s_]*area/i, geometry: 'polygon' },
-  { role: 'dredged', test: /dredged[\s_]*area/i, geometry: 'polygon' },
-  { role: 'fairway', test: /fairway/i, geometry: 'polygon' },
-  { role: 'land', test: /land[\s_]*area/i, geometry: 'polygon' },
-  { role: 'shoreline', test: /shoreline[\s_]*construction/i, geometry: 'polygon' },
-  { role: 'wreck', test: /wreck/i, geometry: 'any' },
-  { role: 'obstruction', test: /obstruction/i, geometry: 'any' },
-  { role: 'rock', test: /underwater[\s_]*rock|rock[\s_]*awash/i, geometry: 'any' },
-  // `[\W_]` rather than `\b`: an underscore IS a word character, so `\bpile`
-  // would miss `Harbor_Piles_point`, which is exactly the shape these names
-  // arrive in. The guards also stop it matching "compiled".
-  { role: 'pile', test: /(?:^|[\W_])piles?(?:[\W_]|$)/i, geometry: 'point' },
-  { role: 'bridge', test: /bridge/i, geometry: 'any' },
+/**
+ * A whole word, where an underscore counts as a separator.
+ *
+ * `\b` will not do: an underscore IS a word character, so `\bpile` misses
+ * `Harbor_Piles_point`, which is exactly the shape these names arrive in.
+ */
+function token(word: string): string {
+  return `(?:^|[\\W_])${word}(?:[\\W_]|$)`
+}
+
+/**
+ * The S-57 object class each role is, as a six-letter acronym.
+ *
+ * These are the names the data actually has. ENC is published from S-57, whose
+ * object classes are six-letter codes — `DEPARE` is a depth area, `LNDARE` is
+ * land — and a GIS service may expose either the code or a readable name, or
+ * both in one string. Matching only the readable form is a bet on a
+ * presentation choice, and losing it is silent: the depth layer simply is not
+ * found, no depth areas are collected, and the screen reports "no charted
+ * depths for this area" about water that is charted in detail.
+ *
+ * Note `WRECKS` reads as "wrecks" and `BRIDGE` as "bridge", so those two match
+ * either way — which is precisely why this went unnoticed. Enough layers
+ * matched to clear the "did we find anything" gate while every layer that
+ * carries a depth failed to.
+ */
+const ROLE_ACRONYMS: Record<ChartRole, string> = {
+  depth: 'DEPARE',
+  dredged: 'DRGARE',
+  fairway: 'FAIRWY',
+  land: 'LNDARE',
+  shoreline: 'SLCONS',
+  wreck: 'WRECKS',
+  obstruction: 'OBSTRN',
+  rock: 'UWTROC',
+  pile: 'PILPNT',
+  bridge: 'BRIDGE',
+}
+
+/** The readable name each role goes by, where a service spells it out. */
+const ROLE_WORDS: Record<ChartRole, string> = {
+  depth: 'depth[\\s_]*area',
+  dredged: 'dredged[\\s_]*area',
+  fairway: 'fairway',
+  land: 'land[\\s_]*area',
+  shoreline: 'shoreline[\\s_]*construction',
+  wreck: 'wreck',
+  obstruction: 'obstruction',
+  rock: 'underwater[\\s_]*rock|rock[\\s_]*awash',
+  pile: token('piles?'),
+  bridge: 'bridge',
+}
+
+const ROLE_GEOMETRY: Record<ChartRole, 'polygon' | 'point' | 'any'> = {
+  depth: 'polygon',
+  dredged: 'polygon',
+  fairway: 'polygon',
+  land: 'polygon',
+  shoreline: 'polygon',
+  wreck: 'any',
+  obstruction: 'any',
+  rock: 'any',
+  pile: 'point',
+  bridge: 'any',
+}
+
+/** Roles in match order — the first that fits a layer name wins. */
+const ROLE_ORDER: ChartRole[] = [
+  'depth',
+  'dredged',
+  'fairway',
+  'land',
+  'shoreline',
+  'wreck',
+  'obstruction',
+  'rock',
+  'pile',
+  'bridge',
 ]
+
+const ROLE_PATTERNS: { role: ChartRole; test: RegExp; geometry: 'polygon' | 'point' | 'any' }[] =
+  ROLE_ORDER.map((role) => ({
+    role,
+    test: new RegExp(`${ROLE_WORDS[role]}|${token(ROLE_ACRONYMS[role])}`, 'i'),
+    geometry: ROLE_GEOMETRY[role],
+  }))
+
+/** The roles that can carry a charted depth — without one, there is no route. */
+const DEPTH_ROLES: ChartRole[] = ['depth', 'dredged']
 
 export interface LayerRef {
   id: number
@@ -202,6 +276,15 @@ function geometryKind(esri: unknown): LayerRef['geometry'] | null {
  * Takes the parsed `MapServer/layers?f=json` body — one request for the whole
  * catalogue rather than one per layer, which matters on a cellular link.
  */
+/** Every layer name the service published, for saying what we were given. */
+export function publishedLayerNames(payload: unknown): string[] {
+  const layers = (payload as { layers?: unknown[] })?.layers
+  if (!Array.isArray(layers)) return []
+  return layers
+    .map((raw) => (raw as { name?: unknown }).name)
+    .filter((n): n is string => typeof n === 'string')
+}
+
 export function matchLayers(payload: unknown): LayerRef[] {
   const layers = (payload as { layers?: unknown[] })?.layers
   if (!Array.isArray(layers)) return []
@@ -532,6 +615,29 @@ export async function queryLayer(
 }
 
 /**
+ * What the service published, in the words it used.
+ *
+ * This exists because the sandbox this app is built in cannot reach NOAA and
+ * neither can it reach the deployment's own origin, so the only instrument
+ * left is the screen in front of the crew. Printing the names the service
+ * actually gave turns "it plots a straight line" into a fact that can be read
+ * off a phone in one photograph and fixed in one line.
+ */
+function describeCatalogue(payload: unknown, matched: LayerRef[]): string {
+  const names = publishedLayerNames(payload)
+  const shown = names.slice(0, 12).join(', ')
+  const more = names.length > 12 ? ` (+${names.length - 12} more)` : ''
+  const recognised = matched.length
+    ? matched.map((l) => `${l.name} as ${l.role}`).join(', ')
+    : 'nothing'
+  return (
+    `no layer here carries a charted depth. It published ${names.length} ` +
+    `layer${names.length === 1 ? '' : 's'}: ${shown}${more}. ` +
+    `Recognised: ${recognised}`
+  )
+}
+
+/**
  * Everything the router needs for one area.
  *
  * A dredged area is recorded twice, and that is the point rather than a
@@ -558,8 +664,10 @@ export async function fetchChartFeatures(
   // out as a straight line with no way to tell which. On the water that is the
   // difference between a bug and geography, so they throw now and say which.
   let layers: LayerRef[]
+  let layersPayload: unknown = null
   try {
     const payload = await fetcher(layersUrl(band.service))
+    layersPayload = payload
     // An error body at HTTP 200 would otherwise reach `matchLayers`, match
     // nothing, and be reported as "its layers are not named what we expect" —
     // blaming the naming for what is actually a service fault.
@@ -573,8 +681,24 @@ export async function fetchChartFeatures(
       e instanceof Error ? e.message : String(e),
     )
   }
-  if (layers.length === 0) {
-    throw new ChartUnavailableError('no-layers', band)
+  // The gate used to be `layers.length === 0` — "did we recognise anything?"
+  // That is the wrong question, and it is what let this fail quietly for
+  // weeks. `WRECKS` reads as "wrecks" and `BRIDGE` as "bridge", so those two
+  // matched on their acronyms by accident while DEPARE, DRGARE, LNDARE,
+  // FAIRWY, OBSTRN and PILPNT all missed. Enough layers matched to pass, not
+  // one of them carried a depth, and the result was reported as empty sea.
+  //
+  // A service's layer catalogue is a property of the service, not of the
+  // water, so "this catalogue publishes no depth layer we recognise" is always
+  // a NavMate problem and never geography. Only a depth layer that answers
+  // with no features is geography.
+  const hasDepth = layers.some((l) => DEPTH_ROLES.includes(l.role))
+  if (!hasDepth) {
+    throw new ChartUnavailableError(
+      'no-layers',
+      band,
+      describeCatalogue(layersPayload, layers),
+    )
   }
 
   const results = await Promise.all(

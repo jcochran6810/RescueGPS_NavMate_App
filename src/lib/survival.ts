@@ -85,12 +85,34 @@ const PHASE_LABELS: Record<ImmersionPhase, string> = {
  * The survival clock. `elapsedMinutes` is time since the person went in —
  * normally now minus the LKP time.
  */
+/**
+ * Celsius to Fahrenheit, and back.
+ *
+ * NavMate *stores* water temperature in Celsius and always will: `water_temp_c`
+ * is a contract with the RescueGPS command system — it rides the incident
+ * handoff, `field_drift_data` and `simulate_drift_params`, and the USCG
+ * survival table underneath this file is indexed in Fahrenheit either way. So
+ * these convert at the screen boundary only, in both directions, and the
+ * number in the record never changes meaning.
+ *
+ * Getting the direction wrong on the read path is the dangerous one: a record
+ * saved at 21 °C redisplayed as "21 °F" is the difference between shirtsleeves
+ * and a survival window measured in minutes.
+ */
+export function cToF(c: number): number {
+  return (c * 9) / 5 + 32
+}
+
+export function fToC(f: number): number {
+  return ((f - 32) * 5) / 9
+}
+
 export function survivalEstimate(input: {
   waterTempC: number
   elapsedMinutes: number
   pfd: PfdStatus
 }): SurvivalEstimate {
-  const waterTempF = (input.waterTempC * 9) / 5 + 32
+  const waterTempF = cToF(input.waterTempC)
   const coldWater = waterTempF < 77
 
   const row =
