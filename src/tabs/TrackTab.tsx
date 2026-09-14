@@ -15,6 +15,7 @@ import { ACCURACY_GATES, QUALITY_LABEL, fixQuality } from '@/lib/track'
 import { toDD, toDMS } from '@/lib/coords'
 import { download, trackToGPX } from '@/lib/transfer'
 import { toast } from '@/store/useToast'
+import { AddWaypointButton } from '@/components/AddWaypoint'
 import { Button, Card, Label, Segmented, Stat } from '@/components/ui'
 import {
   ARRIVAL_FT_CHOICES,
@@ -107,7 +108,12 @@ export function TrackTab() {
       )}
 
       <Card>
-        <Label>Map</Label>
+        <div className="flex items-center justify-between gap-2">
+          <Label>Map</Label>
+          {/* The waypoints are drawn on this map, so this is somewhere a
+              missing one gets noticed. */}
+          <AddWaypointButton label="Add waypoint" compact />
+        </div>
         <div className="mb-2">
           <Segmented label="Map view" value={view} options={VIEWS} onChange={setView} />
         </div>

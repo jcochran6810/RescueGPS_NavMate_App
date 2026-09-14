@@ -144,7 +144,13 @@ cannot overwrite each other.
   The live readout still follows every fix.
 - **Waypoints** — name, coordinates, notes and photos, all editable after the
   fact, including attaching photographs to a waypoint stamped earlier. Private
-  to your account by default, or shared with a team.
+  to your account by default, or shared with a team. **One can be added from
+  any screen that lists them** — Home, the compass bearings table and its
+  pointer, ETA, the live-tracking map and the chart plotter's destination
+  picker all carry an Add control, so noticing a gap in a list no longer means
+  leaving the screen that showed it to you. Either way of giving a position
+  works: type it in DD, DDM or DMS, or tap it on the map. It is saved into the
+  same scope the list beside it is showing.
 - **Teams** — create a team, share the 6-character join code, and everyone on
   it sees the same waypoints. Owner / admin / member roles.
 - **Data** — export JSON, GPX or CSV for the current scope or the whole

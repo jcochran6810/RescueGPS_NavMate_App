@@ -15,6 +15,7 @@ import {
 } from '@/lib/geo'
 import { describeTurn, normalizeDeg } from '@/lib/heading'
 import { formatDeclination, magneticFromTrue, WMM_NAME } from '@/lib/geomag'
+import { AddWaypointButton } from '@/components/AddWaypoint'
 import { Button, Card, Label } from '@/components/ui'
 
 /**
@@ -322,42 +323,53 @@ export function Compass({
         </Note>
       )}
 
-      {waypoints.length > 0 && (
-        <div className="mt-4">
+      <div className="mt-4">
+        <div className="flex items-center justify-between gap-2">
           <Label>Point to a waypoint</Label>
-          <select
-            value={targetId}
-            onChange={(e) => setTargetId(e.target.value)}
-            className="min-h-11 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 focus:border-sky-400/60 focus:outline-none"
-          >
-            <option value="">— none —</option>
-            {waypoints.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-          {leg && (
-            <p className="tnum mt-2 text-sm text-slate-300">
-              {leg.bearing === null
-                ? 'You are on it'
-                : formatBearing(leg.bearing)}{' '}
-              · {formatDistance(leg.distanceNM, 'nm')}
-              {leg.bearing !== null && shown !== null && (
-                <span className="text-slate-400">
-                  {' '}
-                  · {describeTurn(toDial(leg.bearing), shown)}
-                </span>
-              )}
-            </p>
-          )}
-          {target && lat === null && (
-            <p className="mt-2 text-xs text-slate-400">
-              Take a fix to get a bearing to it.
-            </p>
-          )}
+          {/* Offered even with nothing saved — an empty list is exactly when
+              a crew wants to put something on it. */}
+          <AddWaypointButton label="Add waypoint" compact />
         </div>
-      )}
+        {waypoints.length === 0 ? (
+          <p className="text-sm text-slate-300">
+            Nothing saved in this scope yet.
+          </p>
+        ) : (
+          <>
+            <select
+              value={targetId}
+              onChange={(e) => setTargetId(e.target.value)}
+              className="min-h-11 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 focus:border-sky-400/60 focus:outline-none"
+            >
+              <option value="">— none —</option>
+              {waypoints.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+            {leg && (
+              <p className="tnum mt-2 text-sm text-slate-300">
+                {leg.bearing === null
+                  ? 'You are on it'
+                  : formatBearing(leg.bearing)}{' '}
+                · {formatDistance(leg.distanceNM, 'nm')}
+                {leg.bearing !== null && shown !== null && (
+                  <span className="text-slate-400">
+                    {' '}
+                    · {describeTurn(toDial(leg.bearing), shown)}
+                  </span>
+                )}
+              </p>
+            )}
+            {target && lat === null && (
+              <p className="mt-2 text-xs text-slate-400">
+                Take a fix to get a bearing to it.
+              </p>
+            )}
+          </>
+        )}
+      </div>
     </Card>
   )
 }

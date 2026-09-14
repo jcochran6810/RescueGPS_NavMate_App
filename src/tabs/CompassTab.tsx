@@ -13,6 +13,7 @@ import {
   relativeBearing,
 } from '@/lib/geo'
 import { magneticFromTrue } from '@/lib/geomag'
+import { AddWaypointButton } from '@/components/AddWaypoint'
 import { Card, EmptyState, Label } from '@/components/ui'
 
 /**
@@ -81,7 +82,10 @@ export function CompassTab() {
       <Compass lat={lat} lon={lon} />
 
       <Card>
-        <Label>Bearings from here</Label>
+        <div className="flex items-center justify-between gap-2">
+          <Label>Bearings from here</Label>
+          <AddWaypointButton label="Add waypoint" compact />
+        </div>
         {legs.length === 0 ? (
           <EmptyState>
             {lat === null

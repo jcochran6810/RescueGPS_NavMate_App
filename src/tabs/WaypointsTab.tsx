@@ -16,11 +16,13 @@ import { toast } from '@/store/useToast'
 import { WaypointPhoto } from '@/components/WaypointPhoto'
 import { Button, Card, EmptyState, Input, Label, Spinner } from '@/components/ui'
 import { CoordInput } from '@/components/CoordInput'
+import { SatelliteMap } from '@/components/SatelliteMap'
 import type { Waypoint } from '@/lib/types'
 
 export function WaypointsTab() {
   const { visible, create, load, loading } = useWaypoints()
   const once = useTracker((s) => s.once)
+  const fix = useTracker((s) => s.fix)
   const { activeTeamId, teams, members, myRole } = useTeams()
   const userId = useAuth((s) => s.user?.id)
   const online = useOnline()
@@ -33,6 +35,8 @@ export function WaypointsTab() {
   const [note, setNote] = useState('')
   const [photos, setPhotos] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
+  /** True while the map below the boxes is open and waiting for a tap. */
+  const [picking, setPicking] = useState(false)
   const [filter, setFilter] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -102,6 +106,7 @@ export function WaypointsTab() {
       }
       setName('')
       setPos({ lat: NaN, lon: NaN })
+      setPicking(false)
       setNote('')
       setPhotos([])
       if (fileRef.current) fileRef.current.value = ''
@@ -140,8 +145,41 @@ export function WaypointsTab() {
           maxLength={200}
         />
         <div className="mt-2">
-          <CoordInput label="Waypoint" value={pos} onChange={setPos} />
+          <CoordInput
+            label="Waypoint"
+            value={pos}
+            onChange={setPos}
+            onUseFix={async () => {
+              const f = await once()
+              if (!f) {
+                toast(useTracker.getState().error ?? 'No fix', 'error')
+                return
+              }
+              setPicking(false)
+              setPos({ lat: f.lat, lon: f.lon })
+              toast('Location loaded', 'success')
+            }}
+            onPickOnMap={() => setPicking((p) => !p)}
+            picking={picking}
+          />
         </div>
+
+        {picking && (
+          <div className="mt-2">
+            <SatelliteMap
+              trail={[]}
+              fix={fix}
+              markers={
+                Number.isFinite(pos.lat) && Number.isFinite(pos.lon)
+                  ? [{ id: 'new', name: name.trim() || 'New waypoint', lat: pos.lat, lon: pos.lon }]
+                  : []
+              }
+              height={260}
+              onPick={setPos}
+              pickHint="Tap where the waypoint goes"
+            />
+          </div>
+        )}
         <textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -193,22 +231,8 @@ export function WaypointsTab() {
           )}
         </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button
-            variant="ghost"
-            onClick={async () => {
-              const fix = await once()
-              if (!fix) {
-                toast(useTracker.getState().error ?? 'No fix', 'error')
-                return
-              }
-              setPos({ lat: fix.lat, lon: fix.lon })
-              toast('Location loaded', 'success')
-            }}
-          >
-            Use my location
-          </Button>
-          <Button variant="primary" onClick={save} disabled={saving}>
+        <div className="mt-3">
+          <Button variant="primary" className="w-full" onClick={save} disabled={saving}>
             {saving && <Spinner />}
             Save waypoint
           </Button>
