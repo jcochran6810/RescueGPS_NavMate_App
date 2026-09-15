@@ -310,6 +310,82 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-14 — claude/navmate-compass-feature-hf4h6z (a waypoint can be added from wherever they are read)
+
+"Anywhere there are waypoints listed add a button to add another waypoint and
+give the option to input the coordinates (drop down menu for different
+formats) or choose on map."
+
+Every list of waypoints in this app is somewhere a crew is already thinking
+about one — the bearings table, the nearest-four on Home, the chart plotter's
+destination picker — and the only place one could be **made** was the Waypoints
+tab. Noticing a gap meant leaving the screen that showed you the gap and coming
+back to find your place again.
+
+`AddWaypointButton` (`src/components/AddWaypoint.tsx`) now sits on all six:
+Home, the compass bearings table, the compass pointer picker, ETA, the
+live-tracking map and the chart plotter's waypoint sheet. On the pointer picker
+it renders **even with nothing saved**, because an empty list is exactly when
+one is wanted.
+
+**Nothing in it is a new mechanism, and that is the point.** The typing is
+`CoordInput`, so the DD/DDM/DMS selector, the hemisphere rules and every
+refusal `parseCoord` makes still fire — there is no second parser, which
+`CLAUDE.md` has asked for since that control was built. The map is
+`SatelliteMap`'s own `onPick`, the one the chart plotter uses. The Waypoints
+tab already had a full creator, so what it gained is the map: its stand-alone
+"Use my location" moved **inside** `CoordInput` next to a new "Choose on map",
+which is how the LKP card and the chart already read.
+
+**The load-bearing detail is scope.** Every one of those lists filters on the
+active team, so a waypoint saved private while a team is selected would be
+created successfully and *not appear in the list it was added from* — which
+reads as a save that failed. The scope is read from the same store the lists
+read rather than passed in by the caller, so no call site can get it wrong.
+
+**A correction to the request worth recording:** the format chooser is the
+app's existing **segmented** control, not a dropdown. Making this one a
+dropdown would have made it the only coordinate field in NavMate that is one.
+Said to the user rather than silently substituted.
+
+**Verification is `scripts/drive-waypoint-add.mjs`, 29 checks**, because none
+of this is unit-testable — it is a control placed in six render trees and a
+sheet that writes to a store. It drives the button on every screen, types a
+position, has 95° of latitude refused, switches format and checks the value
+survives the switch, taps the map and checks the result is north **and** west
+of the fix (both axes: swapping them is the classic unprojection bug and a
+longitude-only test walks straight through it), and opens the sheet from
+*inside* the chart plotter's own sheet to prove Escape does not strand the
+crew.
+
+**Three of its own checks were wrong first, and each was caught by breaking the
+mechanism on purpose rather than by reading it.**
+
+1. `/Waypoints/i` as a menu regex matched **Home**, whose hint ends "…nearby
+   waypoints" — menu items are named by label *and* hint. Four sections were
+   silently testing Home. Every selector is anchored to the label now.
+2. "No map until it is asked for" was `count() >= 0`, which is true of
+   everything.
+3. The list-visibility check searched the whole page, and **passed with the
+   scope deliberately broken** — it was matching the success toast, which
+   carries the waypoint's name. Scoped to the list, it now goes red with the
+   scope wrong, which is the whole hazard the feature was designed against.
+
+A fourth was caught the same way: removing a button to falsify a check left an
+unused import, `npm run build` failed, and the drive ran green against a
+**stale `dist/`**. Same lesson as the deploy two sessions ago, in miniature:
+check that the thing you are testing is the thing you built.
+
+**Verification.** 618 tests (unchanged — this session added no pure functions),
+typecheck, lint, build clean, and four drives green: 29 (waypoints), 44
+(compass), 74 (chart), 15 (datum).
+
+**Not verified.** The sheet has only met a simulated receiver and stubbed
+tiles, like everything else here. One cosmetic note for whoever is next: the
+map inside the sheet carries `SatelliteMap`'s own "Save imagery for offline"
+button, which is off-task in a point picker. It is an explicit tap and clearly
+labelled, so it was left rather than given a new prop.
+
 ### 2026-09-14 — claude/charming-rubin-rlz3ks (two clocks, and a browser catching what 600 tests could not)
 
 **"Add a time in water and last seen alive to the search datum page. This is
