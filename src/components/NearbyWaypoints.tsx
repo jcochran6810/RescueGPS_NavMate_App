@@ -9,6 +9,7 @@ import {
   isAtPosition,
 } from '@/lib/geo'
 import { toDD } from '@/lib/coords'
+import { AddWaypointButton } from '@/components/AddWaypoint'
 import { Card, Label } from '@/components/ui'
 
 /**
@@ -63,14 +64,17 @@ export function NearbyWaypoints({
     <Card>
       <div className="flex items-center justify-between gap-2">
         <Label>{lat === null ? 'Waypoints' : 'Waypoints near me'}</Label>
-        {onSeeAll && (
-          <button
-            onClick={onSeeAll}
-            className="mb-1.5 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
-          >
-            See all {scoped.length > 0 ? `(${scoped.length})` : ''}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <AddWaypointButton label="Add" compact />
+          {onSeeAll && (
+            <button
+              onClick={onSeeAll}
+              className="mb-1.5 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
+            >
+              See all {scoped.length > 0 ? `(${scoped.length})` : ''}
+            </button>
+          )}
+        </div>
       </div>
 
       {nearest.length === 0 ? (

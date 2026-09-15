@@ -13,6 +13,7 @@ import {
   MPS_TO_KNOTS,
   type DistanceUnit,
 } from '@/lib/geo'
+import { AddWaypointButton } from '@/components/AddWaypoint'
 import { Card, Input, Label, Stat } from '@/components/ui'
 
 const UNITS: { id: DistanceUnit; label: string }[] = [
@@ -92,7 +93,10 @@ export function EtaTab() {
       )}
 
       <Card>
-        <Label>Waypoint</Label>
+        <div className="flex items-center justify-between gap-2">
+          <Label>Waypoint</Label>
+          <AddWaypointButton label="Add waypoint" compact />
+        </div>
         <select
           value={targetId}
           onChange={(e) => setTargetId(e.target.value)}

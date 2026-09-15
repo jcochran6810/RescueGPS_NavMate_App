@@ -35,6 +35,7 @@ import { formatTideClock, formatTideHeight, tideNow } from '@/lib/tides'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
+import { AddWaypointButton } from '@/components/AddWaypoint'
 import { Button, Card, EmptyState, Field, Label, Segmented, Spinner, Stat } from '@/components/ui'
 
 /**
@@ -747,7 +748,10 @@ export function ChartTab() {
             </>
           ) : (
             <>
-              <Label>Saved waypoints</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>Saved waypoints</Label>
+                <AddWaypointButton label="Add waypoint" compact />
+              </div>
               {waypoints.length === 0 ? (
                 <EmptyState>
                   No saved waypoints in this scope yet.
