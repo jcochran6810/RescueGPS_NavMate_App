@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useSarRecords } from '@/store/useSarRecords'
@@ -9,11 +10,13 @@ import { useNow } from '@/hooks/useNow'
 import { useGoTo } from '@/store/useGoTo'
 import type { TabId } from '@/components/NavMenu'
 import { toast } from '@/store/useToast'
+import { recordsForSearch } from '@/lib/incident'
 import { toDD, toDMS } from '@/lib/coords'
 import { CoordInput } from '@/components/CoordInput'
-import { cToF, fToC } from '@/lib/survival'
+import { TEMP_SUFFIX, tempIn, tempToCelsius } from '@/lib/units'
+import { useUnits } from '@/store/useUnits'
 import { SatelliteMap } from '@/components/SatelliteMap'
-import { formatBearing, formatDistance, formatDuration } from '@/lib/geo'
+import { formatBearing, formatDuration } from '@/lib/geo'
 import { download } from '@/lib/transfer'
 import {
   SEARCH_OBJECT_TYPES,
@@ -29,6 +32,7 @@ import {
 } from '@/lib/sar'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import { IncidentCard } from '@/components/IncidentCard'
+import { VictimCard } from '@/components/VictimCard'
 import type {
   CluePayload,
   DriftMarkerPayload,
@@ -69,14 +73,15 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
   }, [load])
 
   const all = visible()
-  // Same scoping rule as every other list: the team switcher in the header
-  // decides what this page is looking at.
+  /*
+   * The team switcher decides the scope, and the open incident decides the
+   * search. Both, not just the first: filtering by team alone left the
+   * previous search's LKP, conditions, markers and countdowns feeding this
+   * worksheet after a new incident was opened. See `recordsForSearch`.
+   */
   const records = useMemo(
-    () =>
-      all.filter((r) =>
-        activeTeamId ? r.team_id === activeTeamId : r.team_id === null,
-      ),
-    [all, activeTeamId],
+    () => recordsForSearch(all, activeTeamId, incident?.id ?? null),
+    [all, activeTeamId, incident?.id],
   )
 
   const lkp = records.find((r) => r.kind === 'lkp') ?? null
@@ -128,6 +133,14 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
       )}
 
       <IncidentCard />
+
+      {/* Who is being looked for. Under the incident because that is what it
+
+          belongs to — it writes the command system's `victims` table, keyed
+
+          on this incident, so nobody retypes it at the other end. */}
+
+      {incident && <VictimCard incidentId={incident.id} />}
 
       <LkpCard
         lkp={lkp}
@@ -730,6 +743,7 @@ function ConditionsCard({
   environment: SarRecord | null
   onSave: (payload: EnvironmentPayload, note: string) => Promise<void>
 }) {
+  const tempUnit = useUnits((s) => s.temp)
   const p = environment?.payload as EnvironmentPayload | undefined
   const [windFrom, setWindFrom] = useState('')
   const [windKts, setWindKts] = useState('')
@@ -744,10 +758,16 @@ function ConditionsCard({
       p?.current_toward_deg != null ? String(p.current_toward_deg) : '',
     )
     setCurrentKts(p?.current_kts != null ? String(p.current_kts) : '')
-    // Stored in Celsius, shown in Fahrenheit. Seeding the box with the raw
-    // stored number under an °F label would relabel 21 °C as 21 °F.
+    /*
+     * Stored in Celsius, shown in whatever the crew reads in. Seeding the box
+     * with the raw stored number under an °F label would relabel 21 °C as
+     * 21 °F — which is the difference between shirtsleeves and a survival
+     * window of minutes, and is why the conversion is on the read path too.
+     */
     setWaterTemp(
-      p?.water_temp_c != null ? String(Math.round(cToF(p.water_temp_c))) : '',
+      p?.water_temp_c != null
+        ? String(Math.round(tempIn(p.water_temp_c, tempUnit)))
+        : '',
     )
   }, [environment?.id])
 
@@ -818,14 +838,14 @@ function ConditionsCard({
       </div>
       <div className="mt-2">
         <span className="mb-1 block text-xs text-slate-300">
-          Water temp (°F, for the survival clock)
+          Water temp ({TEMP_SUFFIX[tempUnit]}, for the survival clock)
         </span>
         <Input
           value={waterTemp}
           onChange={(e) => setWaterTemp(e.target.value)}
           placeholder="optional"
           inputMode="decimal"
-          aria-label="Water temperature, Fahrenheit"
+          aria-label="Water temperature"
         />
       </div>
 
@@ -840,10 +860,11 @@ function ConditionsCard({
               current_toward_deg: deg(currentToward),
               current_kts: num(currentKts),
               water_temp_c: (() => {
-                // Typed in Fahrenheit, stored in Celsius — the column is a
-                // contract with the command system's drift engine.
-                const f = num(waterTemp)
-                return f == null ? null : fToC(f)
+                // Typed in whatever the crew reads in, stored in Celsius —
+                // the column is a contract with the command system's drift
+                // engine and never changes meaning with a setting.
+                const typed = num(waterTemp)
+                return typed == null ? null : tempToCelsius(typed, tempUnit)
               })(),
             },
             '',
@@ -1071,6 +1092,7 @@ function WorksheetCard({
   clues: SarRecord[]
   onNavigate?: (tab: TabId) => void
 }) {
+  const fmt = useFormat()
   const now = useNow(30_000)
   const create = useWaypoints((s) => s.create)
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -1213,16 +1235,16 @@ function WorksheetCard({
       <div className="mt-2 grid grid-cols-3 gap-2">
         <Stat
           label="Drifted"
-          value={formatDistance(result.driftDistanceNM, 'nm')}
+          value={fmt.length(result.driftDistanceNM)}
         />
         <Stat
           label="Radius"
-          value={formatDistance(result.searchRadiusNM, 'nm')}
+          value={fmt.length(result.searchRadiusNM)}
           hint="1.1 × total error"
         />
         <Stat
           label="Error"
-          value={formatDistance(result.totalErrorNM, 'nm')}
+          value={fmt.length(result.totalErrorNM)}
           hint="RSS, drift 30%"
         />
       </div>

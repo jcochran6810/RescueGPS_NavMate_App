@@ -8,6 +8,7 @@ import {
   formatTideHeight,
   formatTideClock,
   type TideExtreme,
+  tideHeightNow,
 } from './tides'
 
 const GALVESTON = {
@@ -220,5 +221,44 @@ describe('formatting', () => {
   it('renders unknown values as an em dash', () => {
     expect(formatTideHeight(Number.NaN)).toBe('—')
     expect(formatTideClock(null)).toBe('—')
+  })
+})
+
+describe('tideHeightNow', () => {
+  const at = (h: number) => new Date(Date.UTC(2026, 8, 19, h, 0, 0))
+  const extremes = [
+    { at: at(0), heightFt: 0.5, type: 'L' as const },
+    { at: at(6), heightFt: 4.5, type: 'H' as const },
+    { at: at(12), heightFt: 0.9, type: 'L' as const },
+  ]
+
+  it('is exact at each extreme', () => {
+    expect(tideHeightNow(at(0), extremes)!).toBeCloseTo(0.5, 6)
+    expect(tideHeightNow(at(6), extremes)!).toBeCloseTo(4.5, 6)
+  })
+
+  it('is the midpoint halfway between two extremes', () => {
+    // Half-cosine: cos(π/2) is zero, so the level is the mean of the pair.
+    expect(tideHeightNow(at(3), extremes)!).toBeCloseTo(2.5, 6)
+    expect(tideHeightNow(at(9), extremes)!).toBeCloseTo(2.7, 6)
+  })
+
+  it('rises through the flood and falls through the ebb', () => {
+    const early = tideHeightNow(at(1), extremes)!
+    const late = tideHeightNow(at(5), extremes)!
+    expect(early).toBeLessThan(late)
+    expect(tideHeightNow(at(7), extremes)!).toBeGreaterThan(
+      tideHeightNow(at(11), extremes)!,
+    )
+  })
+
+  /*
+   * Off the end of the predictions this would be extrapolation, and this
+   * number goes under a boat rather than on a table.
+   */
+  it('refuses to guess outside the predictions it holds', () => {
+    expect(tideHeightNow(at(13), extremes)).toBeNull()
+    expect(tideHeightNow(new Date(Date.UTC(2026, 8, 18)), extremes)).toBeNull()
+    expect(tideHeightNow(at(3), [])).toBeNull()
   })
 })

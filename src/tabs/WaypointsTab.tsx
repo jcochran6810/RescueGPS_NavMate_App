@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { toDD, toDMS } from '@/lib/coords'
 import {
   bearingDeg,
   formatBearing,
-  formatDistance,
   haversineNM,
   isAtPosition,
 } from '@/lib/geo'
@@ -13,6 +13,7 @@ import { useTeams } from '@/store/useTeams'
 import { useAuth } from '@/store/useAuth'
 import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
+import { useMapAction } from '@/store/useMapAction'
 import { WaypointPhoto } from '@/components/WaypointPhoto'
 import { Button, Card, EmptyState, Input, Label, Spinner } from '@/components/ui'
 import { CoordInput } from '@/components/CoordInput'
@@ -294,8 +295,10 @@ function WaypointCard({
   canEdit: boolean
   activeTeamId: string | null
 }) {
+  const fmt = useFormat()
   const update = useWaypoints((s) => s.update)
   const remove = useWaypoints((s) => s.remove)
+  const askMapAction = useMapAction((s) => s.ask)
   const addPhotos = useWaypoints((s) => s.addPhotos)
   const userId = useAuth((s) => s.user?.id)
   const online = useOnline()
@@ -470,7 +473,7 @@ function WaypointCard({
             answered on the home screen's nearest-four list. */}
         {relative && (
           <div className="tnum shrink-0 text-sm text-slate-300">
-            {formatDistance(relative.distanceNM, 'nm')}
+            {fmt.length(relative.distanceNM)}
             <span className="text-slate-400">
               {' · '}
               {isAtPosition(relative.distanceNM)
@@ -508,6 +511,19 @@ function WaypointCard({
           className={ACTION}
         >
           Copy
+        </button>
+        {/* Every waypoint, whoever made it. A teammate's sighting is exactly
+            the one a crew needs to get to, and until now the only way was to
+            copy the numbers and retype them into the plotter. Editing stays
+            gated by what the database will actually allow; going somewhere
+            is not a write and is nobody's to gate. */}
+        <button
+          onClick={() =>
+            askMapAction('navigate', { lat: w.lat, lon: w.lon, label: w.name })
+          }
+          className={ACTION}
+        >
+          Navigate
         </button>
         {canEdit && (
           <button onClick={beginEdit} className={ACTION}>

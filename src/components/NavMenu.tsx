@@ -20,6 +20,7 @@ export const TABS = [
   { id: 'waypoints', label: 'Waypoints', hint: 'Everything saved, with photos', group: 'Records' },
   { id: 'team', label: 'Team', hint: 'Members, join codes and roles', group: 'Records' },
   { id: 'data', label: 'Data', hint: 'Import, export and email', group: 'Records' },
+  { id: 'settings', label: 'Settings', hint: 'Units, coordinates and navigation', group: 'Support' },
   { id: 'help', label: 'Help / Contact', hint: 'Send the platform admin a request', group: 'Support' },
   // Only rendered for platform admins — and that is cosmetic; the database
   // enforces it whether or not the entry shows.

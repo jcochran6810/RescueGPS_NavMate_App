@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Fix } from '@/lib/types'
 import {
@@ -20,6 +21,11 @@ import {
   type TileSource,
 } from '@/lib/tiles'
 import type { PathMarker } from '@/components/TrackPath'
+import { formatPosition } from '@/lib/coords'
+import { bearingDeg, compassPoint, haversineNM } from '@/lib/geo'
+import { useCoordFormat } from '@/store/useCoordFormat'
+import { useMapAction } from '@/store/useMapAction'
+import { toast } from '@/store/useToast'
 
 const MIN_ZOOM = 3
 const MAX_ZOOM = 19
@@ -34,6 +40,8 @@ const SAVE_NOUN: Record<MapBase, string> = {
 const TAP_SLOP_PX = 6
 /** And a tap held longer than this is a press, not a pick. */
 const TAP_MS = 500
+/** How wide the press menu is allowed to be, so it can be kept on screen. */
+const MENU_W = 216
 
 /**
  * A satellite map with the track drawn on it.
@@ -59,6 +67,7 @@ export function SatelliteMap({
   trail,
   fix,
   markers = [],
+  units = [],
   route = [],
   routeUnverified = false,
   labels = false,
@@ -66,12 +75,28 @@ export function SatelliteMap({
   seamarks = false,
   onPick,
   pickHint,
+  longPress = 'full',
   height = 320,
   className = '',
 }: {
   trail: Fix[]
   fix: Fix | null
   markers?: PathMarker[]
+  /**
+   * The other boats on this search — where they are, which way they are
+   * pointing and how fast. Drawn differently from a waypoint on purpose: a
+   * waypoint is a place, a unit is somebody, and confusing the two on a
+   * screen is how two boats search the same water.
+   */
+  units?: {
+    id: string
+    name: string
+    lat: number
+    lon: number
+    heading: number | null
+    speedKn: number | null
+    stale: boolean
+  }[]
   /** A planned line to steer — a search pattern — drawn dashed, under the
    *  track, with a square at each turn point. Drawn from the coordinates
    *  like everything else, so it is exact even when imagery is not. */
@@ -96,6 +121,17 @@ export function SatelliteMap({
   onPick?: (p: { lat: number; lon: number }) => void
   /** One line shown over the map while it is pickable. */
   pickHint?: string
+  /**
+   * What a press and hold offers.
+   *
+   * `full` is every map in the app: the position under the finger, and the two
+   * things a crew does with a place they have just spotted — keep it, or go to
+   * it. `pick` is for a map that is already inside a picker, where "save a
+   * waypoint" would open a second sheet on top of the one being filled in;
+   * there the press offers the pick itself and the readout. `off` is for a map
+   * that is decoration.
+   */
+  longPress?: 'full' | 'pick' | 'off'
   height?: number
   className?: string
 }) {
@@ -124,6 +160,23 @@ export function SatelliteMap({
     null,
   )
   const [online, setOnline] = useState(() => navigator.onLine)
+  /**
+   * The map filling the screen.
+   *
+   * Deliberately not the Fullscreen API. iOS Safari does not implement
+   * `requestFullscreen` on anything but a video, which is most of the phones
+   * this app runs on, and a control that silently does nothing on the target
+   * platform is worse than no control. A fixed overlay works everywhere and
+   * keeps this the same React element, so the view, the tiles already fetched
+   * and a press menu left open all survive the change.
+   */
+  const [expanded, setExpanded] = useState(false)
+  /** An open press menu: where it was pressed, and the place underneath. */
+  const [menu, setMenu] = useState<
+    { x: number; y: number; lat: number; lon: number } | null
+  >(null)
+  const coordFormat = useCoordFormat((s) => s.format)
+  const askMapAction = useMapAction((s) => s.ask)
 
   const loaded = useRef(0)
 
@@ -137,6 +190,33 @@ export function SatelliteMap({
     setSize({ w: el.clientWidth, h: el.clientHeight })
     return () => ro.disconnect()
   }, [])
+
+  /**
+   * Escape leaves, in this order: the press menu first, then full screen.
+   * One key doing two jobs is fine as long as it never does both at once —
+   * dismissing the menu and the whole map on one press would look like the
+   * map closed itself.
+   */
+  useEffect(() => {
+    if (!expanded && !menu) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (menu) setMenu(null)
+      else setExpanded(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expanded, menu])
+
+  // The page behind must not scroll under a map that covers it.
+  useEffect(() => {
+    if (!expanded) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
+  }, [expanded])
 
   useEffect(() => {
     const on = () => setOnline(true)
@@ -192,6 +272,15 @@ export function SatelliteMap({
     [zoom, center.lat, center.lon, w, h],
   )
 
+  /**
+   * Read by the press timer, which fires half a second after the render it was
+   * armed in. A press cannot have panned the map — that cancels it — but the
+   * map may have moved under a stationary finger while following the boat, and
+   * the place the crew pressed is the place on the ground, not the pixel.
+   */
+  const unprojectRef = useRef(unproject)
+  unprojectRef.current = unproject
+
   /* ---------------------------------------------------------------- gestures
    * One finger pans, two pinch, the wheel zooms. All of it moves the same two
    * pieces of state — where the middle of the map is and how far in it is —
@@ -209,6 +298,19 @@ export function SatelliteMap({
   const tap = useRef<{ x: number; y: number; t: number; moved: boolean } | null>(
     null,
   )
+  /** The press-and-hold timer, armed on the way down and cancelled by a pan. */
+  const hold = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const cancelHold = useCallback(() => {
+    if (hold.current) {
+      clearTimeout(hold.current)
+      hold.current = null
+    }
+  }, [])
+
+  // A press timer outliving its map would fire a menu onto a screen that has
+  // moved on.
+  useEffect(() => cancelHold, [cancelHold])
 
   /** Where the map is looking right now, following the crew or not. */
   const from = useCallback(
@@ -294,10 +396,34 @@ export function SatelliteMap({
       pointers.current.size === 1
         ? { x: e.clientX, y: e.clientY, t: Date.now(), moved: false }
         : null
+    cancelHold()
+    setMenu(null)
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()]
       pinch.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom }
+      return
     }
+    if (longPress === 'off' || pointers.current.size !== 1) return
+    // Armed on the way down and cancelled by a pan, a second finger or a
+    // release — so the only way to reach it is to hold still, which is what a
+    // press is. The same TAP_MS that has always stopped a long hold counting
+    // as a pick: one threshold, so there is no gap between the two where a
+    // gesture does nothing at all.
+    const { clientX, clientY } = e
+    hold.current = setTimeout(() => {
+      hold.current = null
+      const r = boxRef.current?.getBoundingClientRect()
+      if (!r) return
+      const x = clientX - r.left
+      const y = clientY - r.top
+      const at = unprojectRef.current(x, y)
+      // A press that produced a menu must not also pan when the finger lifts.
+      tap.current = null
+      // Phones that can, say so — the press has no other feedback until the
+      // menu paints, and a crew in gloves needs to know the phone heard it.
+      navigator.vibrate?.(8)
+      setMenu({ x, y, lat: at.lat, lon: at.lon })
+    }, TAP_MS)
   }
 
   const onPointerMove = (e: ReactPointerEvent) => {
@@ -308,8 +434,13 @@ export function SatelliteMap({
       // A finger on a boat is never perfectly still: a few pixels of slop is
       // a tap, more than that is the start of a pan.
       const slop = Math.hypot(e.clientX - tap.current.x, e.clientY - tap.current.y)
-      if (slop > TAP_SLOP_PX) tap.current.moved = true
+      if (slop > TAP_SLOP_PX) {
+        tap.current.moved = true
+        cancelHold()
+      }
     }
+
+    if (pointers.current.size >= 2) cancelHold()
 
     if (pointers.current.size >= 2 && pinch.current) {
       const [a, b] = [...pointers.current.values()]
@@ -332,6 +463,7 @@ export function SatelliteMap({
 
   const endPointer = (e: ReactPointerEvent) => {
     pointers.current.delete(e.pointerId)
+    cancelHold()
     if (pointers.current.size < 2) pinch.current = null
   }
 
@@ -551,11 +683,25 @@ export function SatelliteMap({
   }
 
   return (
-    <div className={'space-y-1.5 ' + className}>
+    <div
+      className={
+        expanded
+          ? // Over everything, including a sheet (z-40) the map may be inside
+            // — a picker that expanded to half the screen would be worse than
+            // not expanding at all.
+            'safe-top safe-bottom fixed inset-0 z-50 flex flex-col gap-1.5 bg-navy-950 px-2'
+          : 'space-y-1.5 ' + className
+      }
+    >
       <div
         ref={boxRef}
-        className="relative touch-none overflow-hidden rounded-xl border border-white/10 bg-navy-950 select-none"
-        style={{ height }}
+        className={
+          'relative touch-none overflow-hidden rounded-xl border border-white/10 bg-navy-950 select-none ' +
+          // `min-h-0` or the box refuses to shrink inside the column and the
+          // attribution row is pushed off the bottom of the screen.
+          (expanded ? 'min-h-0 flex-1' : '')
+        }
+        style={expanded ? undefined : { height }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -595,7 +741,10 @@ export function SatelliteMap({
             'pointer-events-none absolute inset-0 ' + (placed ? '' : 'hidden')
           }
           role="img"
-          aria-label={`${baseLabel} map, ${trail.length} track points`}
+          aria-label={
+            `${baseLabel} map, ${trail.length} track points` +
+            (units.length > 0 ? `, ${units.length} other units on this search` : '')
+          }
         >
           {markers.map((m) => {
             const p = project(m.lat, m.lon)
@@ -618,6 +767,46 @@ export function SatelliteMap({
                   style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
                 >
                   {m.name}
+                </text>
+              </g>
+            )
+          })}
+
+          {units.map((u) => {
+            const p = project(u.lat, u.lon)
+            if (p.x < -40 || p.x > w + 40 || p.y < -20 || p.y > h + 20) return null
+            return (
+              <g key={u.id} opacity={u.stale ? 0.45 : 1}>
+                {u.heading != null ? (
+                  // A boat with a heading is drawn as one, pointing where it
+                  // is going — which is half of what the other crews need to
+                  // know from a glance at the chart.
+                  <path
+                    d="M0,-9 L5,7 L0,4 L-5,7 Z"
+                    className="fill-amber-300 stroke-navy-950"
+                    strokeWidth="1.5"
+                    transform={`translate(${p.x} ${p.y}) rotate(${u.heading})`}
+                  />
+                ) : (
+                  <circle
+                    cx={p.x}
+                    cy={p.y}
+                    r="5"
+                    className="fill-amber-300 stroke-navy-950"
+                    strokeWidth="1.5"
+                  />
+                )}
+                <text
+                  x={p.x + 9}
+                  y={p.y + 4}
+                  className="fill-amber-100 text-[11px] font-semibold"
+                  style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                >
+                  {u.name}
+                  {u.speedKn != null && u.speedKn >= 0.5
+                    ? ` ${u.speedKn.toFixed(1)} kn`
+                    : ''}
+                  {u.stale ? ' (no signal)' : ''}
                 </text>
               </g>
             )
@@ -766,6 +955,42 @@ export function SatelliteMap({
           >
             −
           </MapButton>
+          <MapButton
+            // Not "Full screen map": the From/To chips on the chart plotter
+            // are named "Map", and an accessible name is matched loosely in
+            // more places than a test — one that contains another control's
+            // whole name is a control that answers to it.
+            label={expanded ? 'Leave full screen' : 'Full screen'}
+            onClick={() => {
+              setMenu(null)
+              setExpanded((f) => !f)
+            }}
+            active={expanded}
+          >
+            {/* Corners pointing out, then in. A phone screen is small enough
+                that the map is the page, and this is the control that says so. */}
+            <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden>
+              <path
+                d={
+                  expanded
+                    ? 'M6.5 1.5v5h-5M9.5 14.5v-5h5'
+                    : 'M1.5 6.5v-5h5M14.5 9.5v5h-5'
+                }
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d={expanded ? 'M1.5 14.5l5-5M14.5 1.5l-5 5' : 'M1.5 1.5l5 5M14.5 14.5l-5-5'}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </MapButton>
         </div>
 
         <div
@@ -792,6 +1017,56 @@ export function SatelliteMap({
             {following ? 'Following' : 'Centre'}
           </MapButton>
         </div>
+
+        {menu && (
+          <PressMenu
+            at={menu}
+            w={w}
+            h={h}
+            format={coordFormat}
+            from={fix}
+            onClose={() => setMenu(null)}
+            actions={[
+              ...(onPick
+                ? [
+                    {
+                      key: 'use',
+                      label: 'Use this point',
+                      run: () => onPick({ lat: menu.lat, lon: menu.lon }),
+                    },
+                  ]
+                : []),
+              ...(longPress === 'full'
+                ? [
+                    {
+                      key: 'waypoint',
+                      label: 'Save as waypoint',
+                      run: () => askMapAction('waypoint', menu),
+                    },
+                    {
+                      key: 'navigate',
+                      label: 'Navigate here',
+                      run: () => askMapAction('navigate', menu),
+                    },
+                  ]
+                : []),
+              {
+                key: 'copy',
+                label: 'Copy position',
+                run: () => {
+                  const text = formatPosition(menu.lat, menu.lon, coordFormat)
+                  navigator.clipboard
+                    ?.writeText(text)
+                    .then(() => toast('Position copied', 'success'))
+                    // A clipboard needs a secure context and a permission, and
+                    // a refusal is silent otherwise — the crew would be left
+                    // pasting the last thing they copied.
+                    .catch(() => toast('Could not copy the position', 'error'))
+                },
+              },
+            ]}
+          />
+        )}
 
         {imagery !== 'ok' && imagery !== 'idle' && (
           // Stops short of the right edge so it never sits over the zoom
@@ -859,5 +1134,93 @@ function MapButton({
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * What a press and hold offers: where the finger is, and what can be done
+ * with it.
+ *
+ * Anchored to the press rather than to a corner of the map, because the point
+ * being talked about is under the finger and a menu somewhere else makes the
+ * crew hold two places in their head. Clamped so it cannot open off the edge,
+ * and flipped above the press when there is no room below.
+ *
+ * The readout is the crew's own coordinate format, and the range and bearing
+ * from the boat are there because that is the question actually being asked of
+ * a place spotted on a chart: how far, and which way.
+ */
+function PressMenu({
+  at,
+  w,
+  h,
+  format,
+  from,
+  actions,
+  onClose,
+}: {
+  at: { x: number; y: number; lat: number; lon: number }
+  w: number
+  h: number
+  format: 'dd' | 'ddm' | 'dms'
+  from: Fix | null
+  actions: { key: string; label: string; run: () => void }[]
+  onClose: () => void
+}) {
+  const fmt = useFormat()
+  const estimatedH = 86 + actions.length * 36
+  const left = Math.max(8, Math.min(at.x - MENU_W / 2, Math.max(8, w - MENU_W - 8)))
+  const below = at.y + 12
+  const top = below + estimatedH > h - 8 ? Math.max(8, at.y - estimatedH - 12) : below
+
+  const rangeNM = from ? haversineNM(from.lat, from.lon, at.lat, at.lon) : null
+  const bearing = from ? bearingDeg(from.lat, from.lon, at.lat, at.lon) : null
+
+  return (
+    <>
+      {/* A press dismisses the menu wherever it lands — but the map's own
+          handler would also unmount the menu before a tap on it became a
+          click, so the menu stops the event where it starts. */}
+      <div
+        className="absolute inset-0 z-20"
+        onPointerDown={(e) => {
+          e.stopPropagation()
+          onClose()
+        }}
+      />
+      <div
+        role="menu"
+        aria-label="Place on the map"
+        onPointerDown={(e) => e.stopPropagation()}
+        className="absolute z-20 overflow-hidden rounded-xl border border-white/15 bg-navy-950/95 shadow-xl shadow-black/50 backdrop-blur"
+        style={{ left, top, width: MENU_W }}
+      >
+        <div className="border-b border-white/10 px-3 py-2">
+          <p className="tnum text-xs leading-snug font-semibold text-slate-100">
+            {formatPosition(at.lat, at.lon, format)}
+          </p>
+          {rangeNM !== null && bearing !== null && (
+            <p className="tnum mt-0.5 text-[11px] text-slate-400">
+              {fmt.length(rangeNM)} · {Math.round(bearing)}°{' '}
+              {compassPoint(bearing)} from here
+            </p>
+          )}
+        </div>
+        {actions.map((a) => (
+          <button
+            key={a.key}
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              a.run()
+              onClose()
+            }}
+            className="block w-full px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/10"
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
+    </>
   )
 }

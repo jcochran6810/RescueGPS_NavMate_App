@@ -8,6 +8,47 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-19 — **Anyone signed in can insert themselves as a participant
+      of any incident.** `incident_participants`' INSERT policy is
+      `user_id = auth.uid() OR you are the IC`, which is the command system's
+      own policy and predates NavMate. `navmate_join_incident` is the honest
+      door — it checks the password in the database and files a request where
+      the incident wants approval — but a hand-made REST call can still bypass
+      it and self-insert. Narrowing that policy would be narrowing a shared
+      one, and their app inserts participants through it, so this is recorded
+      rather than changed. Same shape as the `profiles` and "org-scoped
+      incidents read" findings: their policy, their posture, NavMate does not
+      depend on it.
+
+- [ ] 2026-09-19 — **`victims` is readable and writable by every signed-in
+      user.** The command system's `victims_incident_scoped` policy is
+      effectively "the incident exists", on a table carrying medical
+      conditions, injuries and descriptions of named people. NavMate now
+      writes that table from the field, so more rows go into it. Not NavMate's
+      policy to tighten unilaterally — but worth raising with whoever owns the
+      command side, and the reason `useVictims` names its columns explicitly
+      rather than selecting `*`.
+
+- [ ] 2026-09-19 — **The tide-aware depth toggle has never rendered.** NOAA's
+      tide service is blocked from the build sandbox, so with no predictions
+      `tideHeightNow` returns null, the toggle does not appear and no drive has
+      exercised it. The arithmetic is unit-tested (exact at both extremes,
+      midpoint halfway, null outside the predictions); its appearance and
+      wording on a boat are not.
+
+- [ ] 2026-09-19 — **Live incident sharing has only met one device.** The
+      `asset_tracks` write path, the 20-second unit poll and the stale-unit
+      fading were verified in the database as two real accounts, but never
+      with two phones on two boats. Unknowns: whether the 15-second publish
+      interval is right for a search at speed, and how the buffer behaves
+      across a long period out of coverage.
+
+- [ ] 2026-09-19 — **Two screens still keep their own distance unit.** The
+      Live tracking and ETA tabs have their own NM/mi/km pickers that predate
+      the Settings section and now sit alongside it. They work, but a crew can
+      set one thing in two places — either wire them to `useUnits` or remove
+      them.
+
 - [ ] 2026-09-13 — **Nothing tells this repository whether a deploy actually
       succeeded.** The `vercel.json` schema failure was caught only because the
       user happened to look at the Vercel dashboard; twelve deployments had

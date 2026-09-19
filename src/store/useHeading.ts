@@ -29,7 +29,23 @@ import { declinationAt, modelValidity, trueFromMagnetic } from '@/lib/geomag'
  * ground is where the boat is going, not where the phone is aimed.
  */
 
-export type HeadingPermission = 'unknown' | 'granted' | 'denied' | 'unsupported'
+/**
+ * Where the sensor grant stands.
+ *
+ * `needs-gesture` is the one that earns its place. iOS will only answer
+ * `requestPermission()` from a real touch, and a call made outside one is
+ * *rejected* — which is indistinguishable, at the catch site, from a crew
+ * refusing the prompt. Conflating the two is what put a button on this screen:
+ * the refusal notice appeared before anyone had been asked, so something had
+ * to be tapped to ask properly. They are separate states now, and only
+ * `denied` means a person said no.
+ */
+export type HeadingPermission =
+  | 'unknown'
+  | 'granted'
+  | 'denied'
+  | 'needs-gesture'
+  | 'unsupported'
 
 /** What the user asked the dial to show. */
 export type HeadingReference = 'true' | 'magnetic'
@@ -154,6 +170,39 @@ function screenAngle(): number {
   return typeof angle === 'number' ? angle : 0
 }
 
+/**
+ * Turn the next touch anywhere on the page into the gesture iOS is holding
+ * out for.
+ *
+ * `pointerdown` and `touchend` both count as activation-triggering input, and
+ * both are listened for because a scroll produces the first and a tap the
+ * second. Capture phase, so a control that stops propagation cannot swallow
+ * it, and `once` on each so this costs one call and then nothing.
+ */
+const PRIMER_EVENTS = ['pointerdown', 'touchend', 'keydown'] as const
+let primer: (() => void) | null = null
+
+function armGesturePrimer(run: () => void): void {
+  if (primer || typeof window === 'undefined') return
+  const fire = () => {
+    clearGesturePrimer()
+    run()
+  }
+  for (const name of PRIMER_EVENTS) {
+    window.addEventListener(name, fire, { capture: true, once: true })
+  }
+  primer = () => {
+    for (const name of PRIMER_EVENTS) {
+      window.removeEventListener(name, fire, { capture: true })
+    }
+  }
+}
+
+function clearGesturePrimer(): void {
+  primer?.()
+  primer = null
+}
+
 export const useHeading = create<HeadingState>()(
   persist(
     (set, get) => ({
@@ -203,7 +252,9 @@ export const useHeading = create<HeadingState>()(
         }
 
         // iOS 13+ gates the sensor behind an explicit grant, and the request
-        // has to come from a real tap.
+        // is only answered inside a user gesture — or within the few seconds
+        // of transient activation that follow one, which is why asking on
+        // mount works at all: the tap that opened this screen is still live.
         const ctor = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
           requestPermission?: () => Promise<'granted' | 'denied'>
         }
@@ -211,14 +262,25 @@ export const useHeading = create<HeadingState>()(
           try {
             const result = await ctor.requestPermission()
             if (result !== 'granted') {
+              // A person was asked and said no. Nothing to retry on.
+              clearGesturePrimer()
               set({ permission: 'denied' })
               return
             }
           } catch {
-            set({ permission: 'denied' })
+            /*
+             * Rejected because there was no live gesture, not because anyone
+             * refused. So the next touch anywhere on the page becomes the
+             * gesture — the crew does not have to find a button, and by the
+             * time they have put a finger on the phone at all the sensor is
+             * running.
+             */
+            armGesturePrimer(() => void get().enable())
+            set({ permission: 'needs-gesture' })
             return
           }
         }
+        clearGesturePrimer()
 
         smoother.reset()
         recent = []
@@ -346,6 +408,7 @@ export const useHeading = create<HeadingState>()(
       },
 
       disable: () => {
+        clearGesturePrimer()
         if (handler) {
           for (const name of listeningTo) {
             window.removeEventListener(name, handler as EventListener)

@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker, INTERVAL_CHOICES } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { TrackPath } from '@/components/TrackPath'
 import { SatelliteMap } from '@/components/SatelliteMap'
 import {
   compassPoint,
   formatDistance,
   formatDuration,
-  formatSpeed,
   trailDistanceNM,
   type DistanceUnit,
 } from '@/lib/geo'
@@ -65,7 +66,10 @@ export function TrackTab() {
     arrivalFt,
     setArrivalFt,
   } = useTracker()
+  const fmt = useFormat()
   const waypoints = useWaypoints((s) => s.visible())
+  // Everyone else on this search, drawn on the map below.
+  const units = useIncidentUnits()
 
   const [unit, setUnit] = useState<DistanceUnit>('nm')
   const [view, setView] = useState<View>('satellite')
@@ -132,6 +136,7 @@ export function TrackTab() {
               trail={trail}
               fix={fix}
               markers={markers}
+              units={units}
               labels={view === 'hybrid'}
             />
             <p className="mt-1.5 text-xs text-slate-400">
@@ -159,7 +164,7 @@ export function TrackTab() {
         />
         <Stat
           label="Speed"
-          value={formatSpeed(fix?.speed)}
+          value={fmt.speed(fix?.speed)}
           hint={derived.speed ? 'from the track' : undefined}
         />
         <Stat

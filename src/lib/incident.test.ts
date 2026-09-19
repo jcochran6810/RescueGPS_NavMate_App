@@ -5,6 +5,7 @@ import {
   INCIDENT_TYPES,
   CLOSE_STATUSES,
   incidentTypeLabel,
+  recordsForSearch,
 } from './incident'
 import type { Incident, SarRecord } from './types'
 
@@ -202,5 +203,44 @@ describe('choice lists', () => {
         'found_alive', 'found_deceased', 'not_found', 'false_alarm', 'cancelled',
       ]).toContain(s.value)
     }
+  })
+})
+
+describe('recordsForSearch', () => {
+  const rec = (team: string | null, incident: string | null, id: string) => ({
+    id,
+    team_id: team,
+    incident_id: incident,
+  })
+
+  it('keeps the team scope every other list uses', () => {
+    const all = [rec('t1', null, 'a'), rec(null, null, 'b'), rec('t2', null, 'c')]
+    expect(recordsForSearch(all, 't1', null).map((r) => r.id)).toEqual(['a'])
+    expect(recordsForSearch(all, null, null).map((r) => r.id)).toEqual(['b'])
+  })
+
+  /*
+   * The bug this function exists for: a second search picking up the first
+   * one's LKP, conditions and drift markers — and the timers that run off
+   * them — because they were in the same team scope.
+   */
+  it('does not let a new incident inherit the last one’s records', () => {
+    const all = [
+      rec('t1', 'inc2', 'new'),
+      rec('t1', 'inc1', 'old'),
+      rec('t1', null, 'untagged'),
+    ]
+    expect(recordsForSearch(all, 't1', 'inc2').map((r) => r.id)).toEqual(['new'])
+  })
+
+  it('shows untagged records only while no incident is open', () => {
+    const all = [rec('t1', 'inc1', 'tagged'), rec('t1', null, 'untagged')]
+    // Stamped before anything was opened — the order this app is built around.
+    expect(recordsForSearch(all, 't1', null).map((r) => r.id)).toEqual(['untagged'])
+  })
+
+  it('leaves the worksheet empty once the search is closed', () => {
+    const all = [rec('t1', 'inc1', 'a'), rec('t1', 'inc1', 'b')]
+    expect(recordsForSearch(all, 't1', null)).toEqual([])
   })
 })

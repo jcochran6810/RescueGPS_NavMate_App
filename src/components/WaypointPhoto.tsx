@@ -20,9 +20,18 @@ export function WaypointPhoto({ path }: { path: string }) {
   }, [path, photoUrl])
 
   if (failed) {
+    /*
+     * "offline" was said for every failure, and it hid a real one: a teammate
+     * with full signal saw it on every photograph somebody else had taken,
+     * because the storage read policy could never match a shared waypoint.
+     * A signed-URL request for an object RLS hides comes back as an ordinary
+     * not-found, so the app had no way to tell the two apart — but the
+     * browser does know whether it has a connection, and saying which failure
+     * this is would have pointed straight at the policy.
+     */
     return (
-      <div className="grid size-16 place-items-center rounded-lg border border-white/10 bg-navy-950 text-[10px] text-slate-400">
-        offline
+      <div className="grid size-16 place-items-center rounded-lg border border-white/10 bg-navy-950 px-1 text-center text-[10px] text-slate-400">
+        {navigator.onLine ? 'no access' : 'offline'}
       </div>
     )
   }

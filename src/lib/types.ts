@@ -217,6 +217,71 @@ export type NewIncident = Pick<Incident, 'incident_type' | 'incident_name'> & {
   team_id?: string | null
 }
 
+/**
+ * A search someone else is already running, as `navmate_active_incidents()`
+ * describes it.
+ *
+ * Not an `Incident`: this is the outside of one, everything a crew needs to
+ * recognise the search and decide whether it is theirs, and nothing more. In
+ * particular there is no password and no hash — the function does not return
+ * them, and this app never holds one.
+ */
+export interface JoinableIncident {
+  id: string
+  incident_number: string
+  incident_name: string | null
+  incident_type: string
+  status: IncidentStatus
+  urgency_level: UrgencyLevel
+  lkp_lat: number | null
+  lkp_lng: number | null
+  lkp_time: string | null
+  incident_time: string | null
+  created_at: string
+  /** open = walk in, password = say the word, approval = the IC decides. */
+  join_policy: 'open' | 'password' | 'approval'
+  needs_password: boolean
+  /** Opened in the field rather than by the command system. */
+  is_field_created: boolean
+  participants: number
+  joined: boolean
+}
+
+/** What `navmate_join_incident()` says back. Never an exception. */
+export type JoinResult =
+  | 'joined'
+  | 'password_required'
+  | 'wrong_password'
+  | 'password_unset'
+  | 'request_pending'
+  | 'closed'
+  | 'not_found'
+  | 'offline'
+  | 'error'
+
+/** Another unit on the same search: where they are and what they answer to. */
+export interface IncidentUnit {
+  user_id: string
+  full_name: string | null
+  call_sign: string | null
+  lat: number
+  lng: number
+  heading_deg: number | null
+  speed_mps: number | null
+  accuracy_m: number | null
+  recorded_at: string
+}
+
+/** Who is on the search, whether or not they have reported a position. */
+export interface IncidentMember {
+  user_id: string
+  full_name: string | null
+  call_sign: string | null
+  participant_role: string
+  is_creator: boolean
+  joined_at: string
+}
+
 /* -------------------------------------------------------------------------
  * Platform admin
  * ---------------------------------------------------------------------- */

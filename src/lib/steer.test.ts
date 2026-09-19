@@ -5,6 +5,8 @@ import {
   FT_PER_NM,
   shouldAdvance,
   type SteerablePlan,
+  turnToward,
+  timeToRunHours,
 } from './steer'
 import { buildLegs, type LatLon } from './search'
 import { projectPosition } from './sar'
@@ -151,5 +153,49 @@ describe('a route and a pattern are the same thing to steer', () => {
     expect(p.legs).toHaveLength(p.points.length - 1)
     expect(p.legs[0].to).toEqual(p.points[1])
     expect(p.legs[0].courseDeg).toBeCloseTo(45, 1)
+  })
+})
+
+describe('turnToward', () => {
+  it('names the short way round, starboard positive', () => {
+    expect(turnToward(90, 80)).toBe(10)
+    expect(turnToward(80, 90)).toBe(-10)
+  })
+
+  /*
+   * The case that makes this worth a function: crossing north. A coxswain
+   * heading 350 told to steer 010 is turning 20° right, not 340° left.
+   */
+  it('crosses north the short way', () => {
+    expect(turnToward(10, 350)).toBe(20)
+    expect(turnToward(350, 10)).toBe(-20)
+  })
+
+  it('reports a reversal as starboard rather than ambiguously', () => {
+    expect(turnToward(180, 0)).toBe(180)
+    expect(turnToward(0, 180)).toBe(180)
+  })
+
+  it('has nothing to say without a heading to turn from', () => {
+    expect(turnToward(90, null)).toBeNull()
+    expect(turnToward(90, undefined)).toBeNull()
+    expect(turnToward(90, Number.NaN)).toBeNull()
+  })
+})
+
+describe('timeToRunHours', () => {
+  it('divides the distance by the speed being made good', () => {
+    // 10 kn is 5.144 m/s; 5 NM at 10 kn is half an hour.
+    expect(timeToRunHours(5, 5.144)!).toBeCloseTo(0.5, 2)
+  })
+
+  /*
+   * A boat drifting at a tenth of a knot is not approaching the mark, and
+   * "11 h" printed beside a turn point a mile away is arithmetic pretending
+   * to be information.
+   */
+  it('refuses to estimate from a drift', () => {
+    expect(timeToRunHours(1, 0.05)).toBeNull()
+    expect(timeToRunHours(1, null)).toBeNull()
   })
 })

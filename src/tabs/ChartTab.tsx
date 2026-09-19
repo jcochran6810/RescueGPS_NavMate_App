@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { useGoTo } from '@/store/useGoTo'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { useTeams } from '@/store/useTeams'
 import { useVessels } from '@/store/useVessels'
 import { useChartData } from '@/store/useChartData'
@@ -15,15 +17,12 @@ import { CoordInput } from '@/components/CoordInput'
 import { Sheet } from '@/components/Sheet'
 import {
   formatBearing,
-  formatDistance,
   formatDuration,
   formatEtaClock,
   haversineNM,
 } from '@/lib/geo'
 import { planRoute, routeBounds, type RoutePlan } from '@/lib/routing'
 import {
-  formatDepth,
-  formatFeet,
   fuelForHours,
   readVesselField,
   safeDepthM,
@@ -31,7 +30,13 @@ import {
   type NewVessel,
   type Vessel,
 } from '@/lib/vessel'
-import { formatTideClock, formatTideHeight, tideNow } from '@/lib/tides'
+import {
+  formatTideClock,
+  formatTideHeight,
+  tideHeightNow,
+  tideNow,
+} from '@/lib/tides'
+import { FEET_TO_M } from '@/lib/units'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
@@ -76,7 +81,10 @@ type SheetKind =
 const PLOT_DEBOUNCE_MS = 400
 
 export function ChartTab() {
+  const fmt = useFormat()
   const tracker = useTracker()
+  // Everyone else on this search, drawn on the map below.
+  const units = useIncidentUnits()
   const fix = tracker.fix
   const online = useOnline()
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -151,14 +159,25 @@ export function ChartTab() {
     // it was made in, and its own guard stops two runs overlapping.
   }, [start?.lat, start?.lon, dest?.lat, dest?.lon, boat?.id])
 
-  // A destination handed over from the Datum worksheet's "Take me there".
-  // Taken once — see useGoTo for why it is not read on every render.
+  /*
+   * A destination handed over by another screen — the Datum worksheet's "Take
+   * me there", or "Navigate here" from a long press on any map.
+   *
+   * Watched rather than read once on mount. A press on the plotter's own chart
+   * arrives while this component is already mounted, and a mount-only read
+   * would drop it on the floor — the one case where the crew is looking
+   * straight at the map they expect to update. Still taken exactly once: the
+   * store clears it, so a destination edited by hand afterwards is not
+   * overwritten on the next render.
+   */
+  const handed = useGoTo((s) => s.pending)
   useEffect(() => {
-    const handed = useGoTo.getState().take()
-    if (handed) {
-      setDest({ lat: handed.lat, lon: handed.lon, label: handed.label })
+    if (!handed) return
+    const place = useGoTo.getState().take()
+    if (place) {
+      setDest({ lat: place.lat, lon: place.lon, label: place.label })
     }
-  }, [])
+  }, [handed])
 
   /** Take a one-shot GPS fix and use it as the start point. */
   async function startHere() {
@@ -196,7 +215,7 @@ export function ChartTab() {
       setTargetIdx(null)
       if (next.source === 'charted') {
         toast(
-          `Course plotted — ${formatDistance(next.totalNM, 'nm')} in ${next.legs.length} leg${next.legs.length === 1 ? '' : 's'}`,
+          `Course plotted — ${fmt.length(next.totalNM)} in ${next.legs.length} leg${next.legs.length === 1 ? '' : 's'}`,
           'success',
         )
       }
@@ -244,6 +263,25 @@ export function ChartTab() {
     () => tideNow(new Date(), tides.extremes),
     [tides.extremes],
   )
+
+  /*
+   * The water over chart datum right now, and whether the crew wants it added
+   * to what they are reading.
+   *
+   * Display only, and the distinction is load-bearing: `routing.ts` plans at
+   * chart datum on purpose, because a route that depends on the tide being in
+   * is a grounding waiting for a delay, a wrong prediction or a northerly
+   * blowing the water out. So this changes the numbers on the card and never
+   * the ones the router used — and the card says which it is showing, every
+   * time, rather than leaving a crew to remember which way the toggle was set.
+   */
+  const [withTide, setWithTide] = useState(false)
+  const tideFt = useMemo(
+    () => tideHeightNow(new Date(), tides.extremes),
+    [tides.extremes],
+  )
+  const tideOffsetM = withTide && tideFt != null ? tideFt * FEET_TO_M : 0
+  const tideAvailable = tideFt != null
 
   /**
    * The passage at each speed the boat has.
@@ -299,7 +337,7 @@ export function ChartTab() {
                 <span className="font-semibold">{boat.name || 'Unnamed boat'}</span>
                 <span className="text-slate-300">
                   {' · needs '}
-                  {formatFeet(safeDepthM(boat))}
+                  {fmt.depth(safeDepthM(boat))}
                   {' · '}
                   {boat.cruise_speed_kn} kn
                 </span>
@@ -337,7 +375,7 @@ export function ChartTab() {
               >
                 {v.name || 'Unnamed boat'}
                 <span className="block font-normal text-slate-400">
-                  {formatFeet(v.draft_m)} draft
+                  {fmt.depth(v.draft_m)} draft
                 </span>
               </button>
             ))}
@@ -458,6 +496,7 @@ export function ChartTab() {
           seamarks={seamarks}
           route={plan?.points ?? []}
           routeUnverified={plan?.source === 'straight'}
+          units={units}
           markers={[
             ...(start
               ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]
@@ -564,7 +603,7 @@ export function ChartTab() {
         {plan && (
           <>
             <div className="mt-3 space-y-2">
-              <Stat label="Distance" value={formatDistance(plan.totalNM, 'nm')} />
+              <Stat label="Distance" value={fmt.length(plan.totalNM)} />
 
               {paces.length > 0 ? (
                 <div className="overflow-hidden rounded-xl border border-white/10">
@@ -634,9 +673,9 @@ export function ChartTab() {
                     {leg.n}. {formatBearing(leg.courseDeg)}
                   </span>
                   <span className="tnum text-xs text-slate-300">
-                    {formatDistance(leg.lengthNM, 'nm')}
+                    {fmt.length(leg.lengthNM)}
                     {leg.minChartedDepthM !== null
-                      ? ` · ${formatFeet(leg.minChartedDepthM)} least`
+                      ? ` · ${fmt.depth(leg.minChartedDepthM + tideOffsetM)} least`
                       : ' · not charted'}
                     {/* Null means nothing is marked in this area at all,
                         which is not the same as being outside the channel. */}
@@ -648,13 +687,50 @@ export function ChartTab() {
               ))}
             </div>
 
+            {tideAvailable && (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-white/10 px-3 py-2">
+                <span className="text-xs text-slate-300">
+                  Add the tide to these depths
+                  <span className="tnum block text-[11px] text-slate-400">
+                    {formatTideHeight(tideFt!)} over chart datum now
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={withTide}
+                  aria-label="Add the tide to the charted depths"
+                  onClick={() => setWithTide((v) => !v)}
+                  className={
+                    'min-h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold ' +
+                    (withTide
+                      ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200'
+                      : 'border-white/15 text-slate-200 hover:bg-white/5')
+                  }
+                >
+                  {withTide ? 'Tide added' : 'Chart datum'}
+                </button>
+              </div>
+            )}
+
             {tide.next && (
               <p className="mt-2 text-xs text-slate-400">
                 Tide {tide.trend} · next {tide.next.type === 'H' ? 'high' : 'low'}{' '}
                 {formatTideClock(tide.next.at)} at{' '}
-                {formatTideHeight(tide.next.heightFt)}. Depths above are at chart
-                datum, so there is normally more water than this — never less by
-                design, but wind can take it away.
+                {formatTideHeight(tide.next.heightFt)}.{' '}
+                {withTide ? (
+                  <span className="text-amber-200">
+                    Depths above are <strong>predicted for now</strong>, not
+                    charted — the course itself was planned at chart datum and
+                    has not changed. Wind can take the tide away.
+                  </span>
+                ) : (
+                  <>
+                    Depths above are at chart datum, so there is normally more
+                    water than this — never less by design, but wind can take it
+                    away.
+                  </>
+                )}
               </p>
             )}
 
@@ -934,6 +1010,7 @@ function VesselForm({
   onDone: () => void
 }) {
   const { addVessel, updateVessel, removeVessel } = useVessels()
+  const fmt = useFormat()
   const [form, setForm] = useState({
     name: vessel?.name ?? '',
     callsign: vessel?.callsign ?? '',
@@ -1067,7 +1144,7 @@ function VesselForm({
       />
       <p className="text-xs text-slate-400">
         Draft plus the under-keel margin is the depth the plotter will not go
-        below: {formatDepth(ft(form.draftFt, VESSEL_DEFAULTS.draft_m) + ft(form.marginFt, VESSEL_DEFAULTS.under_keel_margin_m))}.
+        below: {fmt.depthBoth(ft(form.draftFt, VESSEL_DEFAULTS.draft_m) + ft(form.marginFt, VESSEL_DEFAULTS.under_keel_margin_m))}.
         The stand-off is how far it keeps you off every charted hazard.
       </p>
       <div className="grid grid-cols-2 gap-2">

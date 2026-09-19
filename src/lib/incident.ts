@@ -97,6 +97,13 @@ export function newIncidentNumber(now = new Date(), seed?: string): string {
 export interface HandoffInput {
   incident: Incident
   records: SarRecord[]
+  /**
+   * Who is being looked for, already in `victims` column names. Optional
+   * because the handoff has always worked without it and an export that
+   * refuses to run for a missing description is worse than one that says
+   * nothing about it.
+   */
+  victim?: Record<string, unknown> | null
 }
 
 /**
@@ -156,6 +163,8 @@ export function incidentHandoff(input: HandoffInput): string {
         time_last_alive: incident.time_last_alive,
         summary: incident.summary,
       },
+      // Their table name, their column names — an insert, not a translation.
+      victims: input.victim ? [input.victim] : [],
       lkp_history: lkps.map((r) => ({
         lat: r.lat,
         lng: r.lon,
@@ -220,4 +229,34 @@ export function incidentHandoff(input: HandoffInput): string {
     null,
     2,
   )
+}
+
+/**
+ * The records that belong to the search being run right now.
+ *
+ * Team scope alone is not enough, and the gap was a real one: the datum
+ * worksheet filtered by team and nothing else, so the LKP, the conditions, the
+ * drift markers and their countdowns from the *previous* search kept feeding
+ * it after a new incident was opened. A crew would open a fresh incident and
+ * find a datum already computed, running off a set of numbers from a search
+ * that had finished.
+ *
+ * With an incident open, the answer is that incident's records. Untagged ones
+ * are included only while there is **no** incident — that is the LKP-first
+ * case this app is built around, where the position is stamped before anyone
+ * has opened anything, and `IncidentCard` adopts those records the moment one
+ * is opened. Once an incident exists, an untagged record is by definition from
+ * before it and has already had its chance to be adopted.
+ *
+ * Closing an incident therefore clears the worksheet, which is the intent: the
+ * search is over, and the next one starts from nothing.
+ */
+export function recordsForSearch<
+  T extends { team_id: string | null; incident_id: string | null },
+>(records: T[], teamId: string | null, incidentId: string | null): T[] {
+  return records.filter((r) => {
+    const inScope = teamId ? r.team_id === teamId : r.team_id === null
+    if (!inScope) return false
+    return incidentId ? r.incident_id === incidentId : r.incident_id === null
+  })
 }

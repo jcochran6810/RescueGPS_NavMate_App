@@ -310,6 +310,132 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-19 — claude/youthful-knuth-t4hzoo (a long list, and three bugs inside it)
+
+A session of requests arriving faster than they could be finished, so they were
+tracked and worked in order. Eleven of them; three turned out to be bugs
+wearing a feature's clothes.
+
+**Press and hold on any map, and a full-screen map.** Every map answers a press
+with the position under the finger — the crew's own coordinate format, range
+and bearing from the boat — and the two things anyone does with a place they
+have just spotted: keep it, or go to it. `MapActionHost` carries the request
+out because neither can be done from inside a map: the waypoint sheet contains
+a map, so importing it would be a cycle, and navigating changes the tab, which
+is `App`'s state. Full screen is a fixed overlay, deliberately **not** the
+Fullscreen API — iOS Safari implements it on video only, and a control that
+does nothing on the target platform is worse than none.
+
+**The compass starts itself, and the reason it did not is the interesting
+part.** `requestPermission()` rejects outside a user gesture, and that
+rejection was caught and stored as `denied` — the same state as a person
+refusing. So the screen showed a refusal before anyone had been asked, and
+needed a button to ask properly. `needs-gesture` is now its own state; the
+compass asks on mount, which normally lands inside the transient activation of
+the tap that opened the screen, and when it does not, the next touch anywhere
+is armed instead of putting a button on the screen.
+
+**Joining a search that is already running**, which `fix_list.md` had carried
+as "deliberately not built" since the tables merged. The list is sorted by how
+far the search is from the boat, because an incident 300 miles up the coast and
+the one in this bay are otherwise two identical lines of text. The password is
+checked in the database — `navmate_join_incident` compares inside a SECURITY
+DEFINER function and answers with one word, so the app never holds a password
+or a hash. An approval search files a request with the IC rather than refusing.
+
+**And everyone on a search can see everyone on it.** This boat's fixes go to
+`asset_tracks` — the command system's own telemetry table, so their dashboard
+gets them too — and the other units come back with the name they answer to on
+the radio, drawn on all three maps and listed with range and bearing on the
+incident card. A unit that stops reporting is faded and labelled rather than
+removed: a marker vanishing reads as "they have gone", when the truth is
+almost always "their phone lost signal". Positions are perishable, so the
+offline rule here is deliberately not the waypoint queue's — a bounded buffer
+that drops the oldest first and never blocks a capture.
+
+Reading a teammate's position was previously impossible for a field responder
+(`asset_tracks_select_scoped` allows your own rows plus command staff), which
+is why this needed a policy and not just a query. Migration `20260919000000`,
+additive only.
+
+**Three bugs, each found by following a complaint to its cause.**
+
+1. **A new incident inherited the last one's records.** The datum worksheet and
+   the pattern page filtered by team and nothing else, so the LKP, the
+   conditions, the drift markers and their countdowns carried into the next
+   search — a fresh incident opening onto a datum computed from a finished one.
+   `recordsForSearch` is the rule, with tests.
+2. **A teammate's waypoint photograph could never be read.** The storage
+   policy's team clause said `w.id::text = (storage.foldername(w.name))[2]` —
+   the waypoint's *title*, because inside that sub-select the bare `name`
+   resolves to the `waypoints` row and shadows `storage.objects.name`. A title
+   has no path separators, so the subscript is null and the policy collapsed to
+   "your own photographs only". Nothing reported it: a signed-URL request for
+   an object RLS hides comes back as an ordinary not-found, and the tile said
+   "offline" for every failure, so a crew with full signal saw "offline" on
+   every photograph somebody else had taken. The tile now says which failure it
+   is, which would have pointed straight at the policy.
+3. **The selected team reset on every refresh.** On the first render `session`
+   is null because auth has not restored yet — not because anyone signed out —
+   and treating that as a sign-out ran `useTeams.reset()`. The load that
+   followed found `activeTeamId` already null, decided the stored selection was
+   stale and **deleted it from localStorage**.
+
+**The rest, briefly.** Victim details write the command system's own `victims`
+table, keyed on the incident, with every option read off the live CHECK
+constraints first — `''` satisfies none of them, so a blank choice written as
+an empty string is an insert the database refuses, and a refused op stops the
+queue behind it. Teams within ten miles are listed from their own recent work,
+returning **a range and never a position**, and the six-character code is still
+required — the list is confirmation, not a way in. "Invite teammates" copies a
+link carrying the code and hands off to the phone's own Messages or Mail;
+`?join=CODE` is read once on open and stripped. The steering card gives an
+instruction — "come left 97°" with an arrow — and counts down the distance and
+time to the turn, with the whole remaining pattern available as a table
+measured from the boat. The survival clock is a footer banner on every screen,
+asking for nothing: water temperature from the conditions, time in the water
+from the LKP, life jacket from the victim description, and no banner at all
+when any of those is missing. And **Settings** now owns every unit — depth,
+distance, speed, temperature, height — converting at the screen boundary only,
+because `water_temp_c` and `draft_m` are contracts rather than preferences.
+The chart can add the predicted tide to its depths, saying every time it does
+that the route itself was planned at chart datum and has not changed.
+
+**Verification.** 658 tests, up from 618. Six drives green: 74 (chart), 44
+(compass), 29 (map menu), 29 (waypoints), 25 (search), 15 (datum). Two new
+drives, and **four of their own checks were wrong first**, each caught by
+reading a failure rather than the code:
+
+- the tracker map sits below the fold, so every press in the first version of
+  the map drive landed off screen and two "nothing happened" checks passed for
+  the wrong reason. It asserts the map is inside the viewport before pressing
+  anything now;
+- the Stat cards render their labels upper-cased, so `/Legs (\d+)/` matched
+  nothing and read exactly like a value that had not changed;
+- the re-plan check used a spacing change, which is clamped into a leg count
+  and can legitimately produce the same shape — a check that cannot tell "the
+  plan did not change" from "the steering did not follow it" is testing
+  nothing. It switches pattern type now, and fails with its mechanism removed;
+- the turn check passed on "Steady — on the leg", which is what the card says
+  when the boat happens to be pointing at the mark. The boat is walked across
+  its own leg now and the card has to name a side and a number of degrees.
+
+Everything touching the database was verified against it as real accounts,
+including the refusals: a wrong password leaves the requester a
+non-participant, B sees 0 of A's tracks before joining and 2 after, a track
+belonging to no incident is never shared, and the old photo predicate returns
+false where the fixed one returns true. **One check in that set was invalid and
+is recorded rather than counted**: the second test account is this project's
+platform admin, so "cannot read the teams table" was answered by the
+`platform admin read` policy rather than by a hole.
+
+**Still open**, in `fix_list.md`: `incident_participants` still allows a
+hand-made self-insert (their policy, not NavMate's); `victims` is readable by
+every signed-in user for the same reason; the tide toggle has never rendered
+because NOAA is blocked from this sandbox; live sharing has only met one
+device; and the Live tracking and ETA tabs still carry their own distance
+pickers alongside the new Settings.
+
 ### 2026-09-14 — claude/navmate-compass-feature-hf4h6z (a waypoint can be added from wherever they are read)
 
 "Anywhere there are waypoints listed add a button to add another waypoint and

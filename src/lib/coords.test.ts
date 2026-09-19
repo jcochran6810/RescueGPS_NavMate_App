@@ -8,6 +8,7 @@ import {
   latBand,
   utmZone,
   wrapLon,
+  formatPosition,
 } from './coords'
 
 describe('parseCoord', () => {
@@ -150,5 +151,33 @@ describe('wrapLon', () => {
     expect(wrapLon(190)).toBe(-170)
     expect(wrapLon(-190)).toBe(170)
     expect(wrapLon(0)).toBe(0)
+  })
+})
+
+describe('formatPosition', () => {
+  it('writes both axes in the style asked for', () => {
+    expect(formatPosition(29.3005, -94.82, 'dd')).toBe('29.300500, -94.820000')
+    expect(formatPosition(29.3005, -94.82, 'ddm')).toBe("29° 18.030' N  94° 49.200' W")
+    expect(formatPosition(29.3005, -94.82, 'dms')).toBe('29° 18\' 1.8" N  94° 49\' 12.0" W')
+  })
+
+  it('defaults to DDM, which is what a chart and a radio both use', () => {
+    expect(formatPosition(29.3005, -94.82)).toBe(formatPosition(29.3005, -94.82, 'ddm'))
+  })
+
+  /*
+   * A position that is not one prints nothing at all. The alternative is
+   * "NaN° NaN' N", which reads as a position with a fault in it rather than
+   * as no position — and on this screen the difference matters.
+   */
+  it('gives back nothing for a position that is not one', () => {
+    expect(formatPosition(Number.NaN, -94.82)).toBe('')
+    expect(formatPosition(29.3, Number.NaN)).toBe('')
+    expect(formatPosition(Number.POSITIVE_INFINITY, 0)).toBe('')
+  })
+
+  it('carries the rounding the same way the single-axis formatters do', () => {
+    // 29.99999° is 59' 59.996", which must carry rather than print 60.
+    expect(formatPosition(29.99999, -94, 'dms')).toBe('30° 0\' 0.0" N  94° 0\' 0.0" W')
   })
 })

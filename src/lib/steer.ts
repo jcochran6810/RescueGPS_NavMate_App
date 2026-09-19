@@ -59,6 +59,48 @@ export interface SteerFix extends LatLon {
   accuracy?: number | null
   /** Degrees true. */
   heading?: number | null
+  /** Metres per second over the ground, when the receiver or filter has one. */
+  speed?: number | null
+}
+
+/**
+ * Which way to turn, and by how much.
+ *
+ * A bearing alone is a number a coxswain has to do arithmetic on while
+ * steering; the useful form is "come right 40°". Positive is starboard,
+ * negative is port, and the answer is always the short way round — the whole
+ * point is to name the turn nobody has to think about.
+ *
+ * Null when the boat has no heading to turn *from*: course over ground needs
+ * movement, and a stationary boat pointing anywhere would be told to turn by
+ * a figure made of noise.
+ */
+export function turnToward(
+  courseDeg: number,
+  headingDeg: number | null | undefined,
+): number | null {
+  if (headingDeg == null || !Number.isFinite(headingDeg)) return null
+  const diff = (((courseDeg - headingDeg) % 360) + 540) % 360 - 180
+  // -180 and 180 are the same turn; reported as starboard so the sign is
+  // never ambiguous at the one bearing where both are true.
+  return diff === -180 ? 180 : diff
+}
+
+/**
+ * How long until the turn, in hours, at the speed actually being made good.
+ *
+ * Null below a knot: at a drift of a tenth of a knot the arithmetic says
+ * eleven hours to a mark a mile away, which is arithmetically true and
+ * useless. A crew that is not moving is not approaching anything.
+ */
+export function timeToRunHours(
+  distanceNM: number,
+  speedMps: number | null | undefined,
+): number | null {
+  if (speedMps == null || !Number.isFinite(speedMps)) return null
+  const kn = speedMps * 1.943844
+  if (kn < 1) return null
+  return distanceNM / kn
 }
 
 /**

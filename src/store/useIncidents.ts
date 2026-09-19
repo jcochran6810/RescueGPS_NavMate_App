@@ -3,7 +3,14 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
 import { newIncidentNumber } from '@/lib/incident'
-import type { Incident, IncidentStatus, NewIncident } from '@/lib/types'
+import type {
+  Incident,
+  IncidentStatus,
+  IncidentMember,
+  JoinableIncident,
+  JoinResult,
+  NewIncident,
+} from '@/lib/types'
 
 /**
  * Incidents, offline-first — the same queue discipline as waypoints and SAR
@@ -52,6 +59,16 @@ interface IncidentState {
   loading: boolean
   syncing: boolean
   ownerId: string | null
+  /**
+   * The search this crew is on, when it is not simply the newest one they
+   * opened themselves.
+   *
+   * A joined incident may belong to another team, or to no team at all if the
+   * command system opened it, so the team-scoped rule below would never find
+   * it. Persisted, because the crew is still on that search after the app is
+   * closed and re-opened — which on a phone happens constantly.
+   */
+  currentIncidentId: string | null
 
   /** Cache merged with the queue — what the UI renders. Newest first. */
   visible: () => Incident[]
@@ -67,6 +84,16 @@ interface IncidentState {
   retryFailed: () => Promise<void>
   discardFailed: () => void
   clearLocal: () => void
+
+  /** Searches that are running right now and can be asked to join. Online. */
+  listJoinable: () => Promise<JoinableIncident[]>
+  /** Ask to join one. Never throws on a refusal — the refusal is the answer. */
+  joinIncident: (id: string, password?: string) => Promise<JoinResult>
+  leaveIncident: (id: string) => Promise<void>
+  /** Who else is on it. Empty when offline or not a participant. */
+  roster: (id: string) => Promise<IncidentMember[]>
+  /** Protect an incident with a word, or clear it. Creator or IC only. */
+  setIncidentPassword: (id: string, password: string | null) => Promise<string>
 }
 
 const online = () => typeof navigator === 'undefined' || navigator.onLine
@@ -160,17 +187,35 @@ export const useIncidents = create<IncidentState>()(
       loading: false,
       syncing: false,
       ownerId: null,
+      currentIncidentId: null,
 
       visible: () => merge(get().cache, get().failed, get().pending),
 
-      activeIncident: (teamId) =>
-        get()
-          .visible()
-          .find(
+      /*
+       * The search being run right now.
+       *
+       * A joined incident wins over the team-scoped rule, because it is the
+       * one the crew said out loud they are on — and it may carry another
+       * team's id, or none at all when the command system opened it, so the
+       * scope test below would never find it. It still has to be open: a
+       * joined search that has since been closed falls back rather than
+       * pinning this crew to a finished incident.
+       */
+      activeIncident: (teamId) => {
+        const all = get().visible()
+        const current = get().currentIncidentId
+        if (current) {
+          const joined = all.find((i) => i.id === current)
+          if (joined && OPEN.includes(joined.status)) return joined
+        }
+        return (
+          all.find(
             (i) =>
               OPEN.includes(i.status) &&
               (teamId ? i.team_id === teamId : i.team_id === null),
-          ) ?? null,
+          ) ?? null
+        )
+      },
 
       pendingCount: () => get().pending.length,
 
@@ -194,7 +239,25 @@ export const useIncidents = create<IncidentState>()(
               .not('client_id', 'is', null)
               .order('created_at', { ascending: false })
             if (error) throw error
-            set({ cache: (data ?? []) as Incident[] })
+            let rows = (data ?? []) as Incident[]
+
+            /*
+             * A joined search is very often not one of those rows. The filter
+             * above is what keeps command-created incidents out of a field
+             * app that has no UI for them — but the moment a crew joins one,
+             * it is the search they are on, so it is fetched by id and merged
+             * in. One extra round trip, only while joined.
+             */
+            const current = get().currentIncidentId
+            if (current && !rows.some((r) => r.id === current)) {
+              const joined = await supabase
+                .from('incidents')
+                .select(INCIDENT_COLUMNS)
+                .eq('id', current)
+                .maybeSingle()
+              if (joined.data) rows = [joined.data as Incident, ...rows]
+            }
+            set({ cache: rows })
             if (flushSeq === seqBefore) break
           }
         } catch (e) {
@@ -301,6 +364,9 @@ export const useIncidents = create<IncidentState>()(
 
         set({
           ownerId: uid,
+          // Opening a search is saying you are on it, which matters when the
+          // last thing this crew did was join someone else's.
+          currentIncidentId: id,
           pending: [...get().pending, { kind: 'create', incident }],
         })
         await get().flush()
@@ -314,6 +380,79 @@ export const useIncidents = create<IncidentState>()(
 
       closeIncident: async (id, status) => {
         await get().updateIncident(id, { status })
+        if (get().currentIncidentId === id) set({ currentIncidentId: null })
+      },
+
+      listJoinable: async () => {
+        if (!online()) return []
+        const { data, error } = await supabase.rpc('navmate_active_incidents')
+        if (error) {
+          console.warn('joinable incidents failed', errorMessage(error))
+          return []
+        }
+        return (data ?? []) as JoinableIncident[]
+      },
+
+      /*
+       * Joining is online-only, and deliberately not queued.
+       *
+       * Everything else in this store is offline-first because capture must
+       * always succeed — but a join is a question asked of a search that is
+       * running somewhere else, and its answer (right password, wrong
+       * password, the IC will decide) cannot be guessed on the device. A
+       * queued join would tell a crew they were on a search they might not
+       * be, which is worse than telling them to wait for signal.
+       */
+      joinIncident: async (id, password) => {
+        if (!online()) return 'offline'
+        const { data, error } = await supabase.rpc('navmate_join_incident', {
+          p_incident_id: id,
+          p_password: password ?? null,
+        })
+        if (error) {
+          console.warn('join failed', errorMessage(error))
+          return 'error'
+        }
+        const result = (data ?? 'error') as JoinResult
+        if (result === 'joined') {
+          set({ currentIncidentId: id })
+          await get().load()
+        }
+        return result
+      },
+
+      leaveIncident: async (id) => {
+        if (get().currentIncidentId === id) set({ currentIncidentId: null })
+        if (!online()) return
+        const { error } = await supabase.rpc('navmate_leave_incident', {
+          p_incident_id: id,
+        })
+        if (error) console.warn('leave failed', errorMessage(error))
+      },
+
+      roster: async (id) => {
+        if (!online()) return []
+        const { data, error } = await supabase.rpc('navmate_incident_roster', {
+          p_incident_id: id,
+        })
+        if (error) {
+          console.warn('roster failed', errorMessage(error))
+          return []
+        }
+        return (data ?? []) as IncidentMember[]
+      },
+
+      setIncidentPassword: async (id, password) => {
+        if (!online()) return 'offline'
+        const { data, error } = await supabase.rpc('navmate_set_incident_password', {
+          p_incident_id: id,
+          p_password: password,
+        })
+        if (error) {
+          console.warn('set password failed', errorMessage(error))
+          return 'error'
+        }
+        return (data ?? 'error') as string
       },
 
       retryFailed: async () => {
@@ -332,7 +471,13 @@ export const useIncidents = create<IncidentState>()(
       discardFailed: () => set({ failed: [] }),
 
       clearLocal: () =>
-        set({ cache: [], pending: [], failed: [], ownerId: null }),
+        set({
+          cache: [],
+          pending: [],
+          failed: [],
+          ownerId: null,
+          currentIncidentId: null,
+        }),
     }),
     {
       name: 'navmate.incidents.v1',
@@ -342,6 +487,7 @@ export const useIncidents = create<IncidentState>()(
         pending: s.pending,
         failed: s.failed,
         ownerId: s.ownerId,
+        currentIncidentId: s.currentIncidentId,
       }),
     },
   ),

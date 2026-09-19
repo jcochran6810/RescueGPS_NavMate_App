@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useVessels } from '@/store/useVessels'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { toDD } from '@/lib/coords'
-import { formatDistance, formatDuration } from '@/lib/geo'
+import { formatDuration } from '@/lib/geo'
 import { computeDatum, searchObjectType } from '@/lib/sar'
+import { recordsForSearch } from '@/lib/incident'
 import {
   expandingSquare,
   expandingSquareLegsFor,
@@ -28,7 +32,9 @@ import {
   type SeaClass,
   type SearchPatternPlan,
 } from '@/lib/search'
-import { survivalEstimate, formatSurvivalMinutes, cToF, fToC, type PfdStatus } from '@/lib/survival'
+import { survivalEstimate, formatSurvivalMinutes, type PfdStatus } from '@/lib/survival'
+import { TEMP_SUFFIX, tempIn, tempToCelsius } from '@/lib/units'
+import { useUnits } from '@/store/useUnits'
 import { sunEvents } from '@/lib/sun'
 import { SatelliteMap } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
@@ -49,7 +55,10 @@ import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
  */
 
 export function SearchTab() {
+  const fmt = useFormat()
   const activeTeamId = useTeams((s) => s.activeTeamId)
+  // Everyone else on this search, drawn on the map below.
+  const units = useIncidentUnits()
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
   const { visible, load } = useSarRecords()
   const tracker = useTracker()
@@ -63,12 +72,13 @@ export function SearchTab() {
   }, [load])
 
   const all = visible()
+  // Team scope AND the open incident — the same rule the datum worksheet
+  // uses, and for the same reason: this page reads the LKP and the conditions
+  // to size a pattern, so a previous search's numbers here plan the wrong
+  // sweep. See `recordsForSearch`.
   const records = useMemo(
-    () =>
-      all.filter((r) =>
-        activeTeamId ? r.team_id === activeTeamId : r.team_id === null,
-      ),
-    [all, activeTeamId],
+    () => recordsForSearch(all, activeTeamId, incident?.id ?? null),
+    [all, activeTeamId, incident?.id],
   )
   const lkp = records.find((r) => r.kind === 'lkp') ?? null
   const lkpPayload = lkp?.payload as LkpPayload | undefined
@@ -143,10 +153,21 @@ export function SearchTab() {
     return Math.max(0.5, round2(2 * radiusNM))
   })()
 
-  const [speedStr, setSpeedStr] = useState('6')
+  /*
+   * Search speed, defaulting to the boat rather than to a number.
+   *
+   * It was hardcoded `6`, which meant the time, the ETA and the fuel implied
+   * by a pattern were all worked out for somebody else's boat. The vessel
+   * profile already knows this crew's cruise speed, so that is the default
+   * and an empty box follows the boat instead of a constant.
+   */
+  const vessel = useVessels((s) => s.active(activeTeamId))
+  const defaultSpeedKts =
+    vessel && vessel.cruise_speed_kn > 0 ? vessel.cruise_speed_kn : 6
+  const [speedStr, setSpeedStr] = useState('')
   const speedKts = (() => {
     const n = parseFloat(speedStr)
-    return Number.isFinite(n) && n > 0 ? n : 6
+    return Number.isFinite(n) && n > 0 ? n : defaultSpeedKts
   })()
 
   const plan: SearchPatternPlan | null = useMemo(() => {
@@ -189,6 +210,28 @@ export function SearchTab() {
     if (!running || !fix || !plan) return
     if (shouldAdvance(plan, targetIdx, fix, arrivalFt)) setTargetIdx(targetIdx + 1)
   }, [running, fix, plan, targetIdx, arrivalFt])
+
+  /*
+   * Change the pattern and the steering follows it.
+   *
+   * Everything on this page already recomputed from its inputs — the plan,
+   * the coverage, the POD, the time — but the steering did not: it held the
+   * point number it was on. Widen the spacing while running and the card kept
+   * counting to "point 9 of 6", and past the end of the new list the target
+   * was `undefined`, which is a steering card with nothing to steer to.
+   *
+   * A pattern that has been re-planned is a new pattern, so it starts at its
+   * first point. The shape is what decides — the code and how many points it
+   * has — rather than the object identity, which changes on every render of a
+   * plan that has not actually changed.
+   */
+  const planShape = plan ? `${plan.code}:${plan.points.length}` : ''
+  const lastShape = useRef(planShape)
+  useEffect(() => {
+    if (lastShape.current === planShape) return
+    lastShape.current = planShape
+    setTargetIdx((idx) => (idx === null ? null : 1))
+  }, [planShape])
 
   /* --------------------------------------------------------------- render */
 
@@ -346,6 +389,7 @@ export function SearchTab() {
                 <Input
                   value={speedStr}
                   onChange={(e) => setSpeedStr(e.target.value)}
+                  placeholder={String(defaultSpeedKts)}
                   inputMode="decimal"
                   aria-label="Search speed in knots"
                 />
@@ -367,7 +411,7 @@ export function SearchTab() {
                   <Stat label="Legs" value={String(plan.legs.length)} />
                   <Stat
                     label="Track"
-                    value={formatDistance(plan.totalNM, 'nm')}
+                    value={fmt.length(plan.totalNM)}
                   />
                   <Stat
                     label="Time"
@@ -446,6 +490,7 @@ export function SearchTab() {
                   ? [{ id: 'datum', name: 'DATUM', lat: result.datum.lat, lon: result.datum.lon }]
                   : []
               }
+              units={units}
               height={300}
             />
             <p className="mt-1.5 text-xs text-slate-400">
@@ -503,36 +548,39 @@ function SurvivalCard({
   const [pfdChoice, setPfdChoice] = useState<PfdStatus | null>(null)
   const pfd = pfdChoice ?? defaultPfd
 
+  const tempUnit = useUnits((s) => s.temp)
+
   /**
-   * Water temperature in **Fahrenheit**, which is what is typed and shown.
+   * Water temperature in **the crew's own unit**, which is what is typed and
+   * shown.
    *
    * The trap this shape used to set: `tempStr` is typed by the crew and
    * `waterTempC` comes out of the stored record, so one variable carried two
    * different units depending on which branch won. Named and converted now, so
    * the two cannot be confused — `survivalEstimate` is handed Celsius below.
    */
-  const tempF = (() => {
+  const shownTemp = (() => {
     const typed = parseFloat(tempStr)
     if (Number.isFinite(typed)) return typed
-    return waterTempC == null ? null : cToF(waterTempC)
+    return waterTempC == null ? null : tempIn(waterTempC, tempUnit)
   })()
 
-  if (!lkpTime || tempF == null) {
+  if (!lkpTime || shownTemp == null) {
     return (
       <Card>
         <Label>Survival clock</Label>
         <EmptyState>
           Needs the time the person went in (the LKP) and the water
           temperature (On-scene conditions in Search datum
-          {tempF == null ? ', or type it here' : ''}).
+          {shownTemp == null ? ', or type it here' : ''}).
         </EmptyState>
-        {tempF == null && (
+        {shownTemp == null && (
           <Input
             value={tempStr}
             onChange={(e) => setTempStr(e.target.value)}
-            placeholder="Water temp (°F)"
+            placeholder={`Water temp (${TEMP_SUFFIX[tempUnit]})`}
             inputMode="decimal"
-            aria-label="Water temperature, Fahrenheit"
+            aria-label="Water temperature"
             className="mt-2"
           />
         )}
@@ -544,7 +592,7 @@ function SurvivalCard({
   // The model wants Celsius; the screen speaks Fahrenheit. One conversion,
   // here, rather than a second unit travelling through the component.
   const est = survivalEstimate({
-    waterTempC: fToC(tempF),
+    waterTempC: tempToCelsius(shownTemp, tempUnit),
     elapsedMinutes: elapsedMin,
     pfd,
   })
@@ -610,7 +658,7 @@ function SurvivalCard({
               ? `${formatSurvivalMinutes(est.survivalMin)}–${formatSurvivalMinutes(est.survivalMax)}`
               : 'No limit'
           }
-          hint={`water ${tempF.toFixed(0)} °F`}
+          hint={`water ${shownTemp.toFixed(0)} ${TEMP_SUFFIX[tempUnit]}`}
         />
       </div>
 
