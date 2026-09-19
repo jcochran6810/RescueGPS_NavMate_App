@@ -310,6 +310,58 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-19 — claude/youthful-knuth-t4hzoo (a photograph of the real thing, twice)
+
+A second screenshot, this time of NavMate itself running on the phone, with
+two faults circled by the words: "Move the degree bearing read out to below
+the compass. It is blocking the users dot location and the range display.
+Also extend the range display to the edge of the screen."
+
+**The bearing was sitting on the crew.** Thirty-eight pixels of digits in the
+middle of the dial — and the middle of the dial is where they are standing, so
+it covered their own position marker and the nought of the range scale.
+`CompassRose` omits its centre digits and caption over a map now, and whoever
+placed the map there draws them underneath in ordinary text. Still the largest
+thing on the card, because it is the number that gets read out over a radio.
+
+**The scale stopped two-thirds of the way up.** Its length was
+`min(w, h) / 2` — half the smaller side of the map, which has nothing
+whatever to do with how far there is to go in the direction the crew is
+facing. `rulerLengthPx` is a ray-box intersection along that direction, with
+a margin that keeps the arrow head and the last label inside, and the
+graduations follow it out.
+
+That changed what a good spacing is. `pickRings` had taken the **coarsest**
+step that fitted three rings, which was right when the scale was three rings
+and wrong the moment it reached the screen edge: a long ruler divided into
+three is one nobody can interpolate on. It takes the finest readable step now,
+up to six graduations.
+
+**Three notes on the checking, because two of the three were failures of the
+checks rather than of the code.**
+
+1. The reach check was **worthless as first written**. Centred on this map,
+   half the smaller side happens to equal the distance to the top edge, so it
+   passed against the old formula too. It pans the boat 90 px down now, which
+   separates them: 19 px from the edge with the fix, **107 px short without**.
+2. A new test for the ray-box maths was wrong about its own geometry — from
+   the centre of a 300 × 260 box, 45° up and to the right reaches the *side*
+   first, not the top. The code was right and the test was corrected.
+3. Two existing ring tests encoded the old "exactly three" contract and were
+   rewritten rather than patched, because the contract itself had changed.
+
+**And the stale-`dist/` trap for the fourth time this session**, again during
+a falsification, again because the build failed on an unused import while the
+drive happily reported green against the previous bundle. Worth stating as a
+rule rather than an anecdote: **a drive that reports green after a failed
+build is reporting on the last good build.** Read the build output, not the
+drive's exit code.
+
+**Verification.** 681 tests, up from 675. The compass drive is 62 checks, up
+from 60, and both new ones fail with their mechanism removed. Drives green at
+74 (chart), 62 (compass), 35 (map menu), 29 (waypoints), 25 (search), 15
+(datum), 11 (mobile).
+
 ### 2026-09-19 — claude/youthful-knuth-t4hzoo (one north, and a photograph that settled it)
 
 "The map and the compass is just slightly off", with a screenshot of the app
