@@ -22,7 +22,12 @@ import {
 } from '@/lib/tiles'
 import type { PathMarker } from '@/components/TrackPath'
 import { formatPosition } from '@/lib/coords'
-import { alongForward, forwardScreenDeg, pickRings } from '@/lib/rings'
+import {
+  alongForward,
+  forwardScreenDeg,
+  pickRings,
+  rulerLengthPx,
+} from '@/lib/rings'
 import { useUnits } from '@/store/useUnits'
 import { bearingDeg, compassPoint, haversineNM } from '@/lib/geo'
 import { useCoordFormat } from '@/store/useCoordFormat'
@@ -793,14 +798,27 @@ export function SatelliteMap({
     if (!rangeRings || !here) return null
     return toScreenFrame(here.x, here.y)
   }, [rangeRings, here?.x, here?.y, toScreenFrame])
-  const rings = useMemo(
-    () =>
-      rangeRings && ringCenter
-        ? pickRings(mpp, Math.min(w, h) / 2 - 12, distanceUnit)
-        : [],
-    [rangeRings, ringCenter, mpp, w, h, distanceUnit],
-  )
   const forwardScreen = forwardScreenDeg(forwardDeg, rot)
+  /*
+   * How far the ruler can run before it leaves the box — measured along the
+   * way the crew is facing, not half the smaller side of the map.
+   *
+   * It used to be `min(w, h) / 2`, which on a head-up map stopped the scale
+   * well short of the top of the screen: the crew could see a thing at the
+   * edge and the ruler had nothing to say about it. Reported from a phone with
+   * the scale ending at 750 ft in the middle of the picture.
+   */
+  const rulerPx = useMemo(
+    () =>
+      rangeRings && ringCenter && forwardScreen !== null
+        ? rulerLengthPx(ringCenter.x, ringCenter.y, w, h, forwardScreen)
+        : 0,
+    [rangeRings, ringCenter, forwardScreen, w, h],
+  )
+  const rings = useMemo(
+    () => (rulerPx > 0 ? pickRings(mpp, rulerPx, distanceUnit) : []),
+    [rulerPx, mpp, distanceUnit],
+  )
   /** "0.0 mi" — the same unit the graduations use, so the scale reads as one. */
   const zeroLabel = rings.length > 0 ? `0 ${rings[0].label.split(' ')[1]}` : ''
 
@@ -1136,11 +1154,15 @@ export function SatelliteMap({
             <g>
               {(() => {
                 const far = rings[rings.length - 1]
-                const end = alongForward(forwardScreen, far.px)
+                // The line goes to the edge; the graduations go as far as they
+                // read. A scale that stops at its last number cannot measure
+                // the thing beyond it.
+                const lineLen = Math.max(rulerPx, far.px)
+                const end = alongForward(forwardScreen, lineLen)
                 const step = rings[0].px
                 // Five minor ticks to a step, as a rule is divided.
                 const minors = []
-                for (let i = 1; i * (step / 5) < far.px; i++) {
+                for (let i = 1; i * (step / 5) < lineLen; i++) {
                   const at = alongForward(forwardScreen, i * (step / 5))
                   const across = alongForward(forwardScreen + 90, 4)
                   minors.push(
@@ -1155,7 +1177,7 @@ export function SatelliteMap({
                     />,
                   )
                 }
-                const head = alongForward(forwardScreen, far.px + 12)
+                const head = alongForward(forwardScreen, lineLen)
                 const barbL = alongForward(forwardScreen + 150, 9)
                 const barbR = alongForward(forwardScreen - 150, 9)
                 return (

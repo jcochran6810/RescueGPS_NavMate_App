@@ -486,6 +486,24 @@ const solidDiscs = await page.evaluate(() => {
 })
 ok('no disc behind the dial or its digits — the ground shows through',
    solidDiscs === 0, `${solidDiscs} filled disc(s) of r > 20`)
+
+/*
+ * Reported from a phone: the 38 px bearing sat in the middle of the dial, on
+ * top of the crew's own position marker and the nought of the range scale.
+ * It belongs under the map. Checked by geometry — the readout must be BELOW
+ * the map box — because "it exists" was true before and after.
+ */
+const readoutPlace = await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  const out = document.querySelector('[data-heading]')
+  if (!box || !out) return null
+  const b = box.getBoundingClientRect()
+  const r = out.getBoundingClientRect()
+  return { below: r.top >= b.bottom - 1, insideSvg: !!out.closest('svg'), text: (out.textContent ?? '').trim() }
+})
+ok('the bearing is read out below the dial, not on top of the crew',
+   !!readoutPlace && readoutPlace.below && !readoutPlace.insideSvg,
+   readoutPlace ? `"${readoutPlace.text}" below=${readoutPlace.below} inSvg=${readoutPlace.insideSvg}` : 'no readout')
 ok('while the map under it still takes a gesture',
    await page.evaluate(() => {
      const layer = document.querySelector('div.touch-none .pointer-events-none.absolute.inset-0')
@@ -508,6 +526,49 @@ const scale = await page.evaluate(() => {
     arrowHeads: svg.querySelectorAll('polygon').length,
   }
 })
+/*
+ * And the scale has to reach the edge. It stopped at 750 ft in the middle of
+ * the photograph, because its length was half the smaller side of the map
+ * rather than the distance to the edge along the way the crew is facing.
+ */
+/*
+ * Measured with the boat pushed AWAY from the middle, because centred on this
+ * map half the smaller side happens to equal the distance to the top edge —
+ * so the check passed against the old formula too. Panning down separates
+ * them: the room ahead grows, and a ruler that reaches the edge grows with
+ * it while one fixed at half the map does not.
+ */
+const reachBox = await page.locator('div.touch-none').first().boundingBox()
+await page.mouse.move(reachBox.x + reachBox.width / 2, reachBox.y + reachBox.height / 2)
+await page.mouse.down()
+await page.mouse.move(reachBox.x + reachBox.width / 2, reachBox.y + reachBox.height / 2 + 90, { steps: 8 })
+await page.mouse.up()
+await page.waitForTimeout(600)
+
+const reach = await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  const svg = box ? box.querySelector('svg') : null
+  if (!box || !svg) return null
+  const b = box.getBoundingClientRect()
+  const head = svg.querySelector('polygon.fill-white')
+  if (!head) return null
+  const h = head.getBoundingClientRect()
+  const dot = svg.querySelector('circle.fill-emerald-400')
+  const d = dot ? dot.getBoundingClientRect() : null
+  return {
+    gapToTop: Math.round(h.top - b.top),
+    boatToTop: d ? Math.round(d.top - b.top) : null,
+    height: Math.round(b.height),
+  }
+})
+ok('the scale runs to the edge of the map, not to half of it',
+   !!reach && reach.gapToTop <= 26 && (reach.boatToTop ?? 0) - reach.gapToTop > 200,
+   reach ? `arrow ${reach.gapToTop}px from the top, boat ${reach.boatToTop}px down, box ${reach.height}px` : 'no arrow')
+
+// Back to following, so what comes next starts where it expects to.
+await page.getByRole('button', { name: /Centre on my position/i }).click()
+await page.waitForTimeout(600)
+
 ok('the range scale is a ruler ahead, not rings around',
    !!scale && scale.ringCircles === 0 && scale.arrowHeads > 0,
    scale ? `${scale.ringCircles} dashed circles, ${scale.arrowHeads} arrow head(s)` : 'no map svg')
@@ -519,7 +580,9 @@ ok('the range scale is a ruler ahead, not rings around',
  * true whenever there is ground under it, and the caption has to say so.
  */
 const dialCaption = await page.evaluate(() => {
-  const el = document.querySelector('svg[viewBox="-100 -100 200 200"] [data-caption]')
+  // Anywhere, not inside the dial: the caption follows the bearing readout,
+  // which moved below the map when it was found to be covering the crew.
+  const el = document.querySelector('[data-caption]')
   return el ? (el.textContent ?? '').trim() : null
 })
 ok('the dial reads true while the map is under it, so the two agree',

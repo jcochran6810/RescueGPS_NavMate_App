@@ -87,39 +87,90 @@ export interface RangeRing {
 }
 
 /**
- * Up to three rings that fit inside `maxRadiusPx`.
+ * How many graduations a ruler may carry before it stops being readable.
  *
- * The largest spacing whose outermost ring still fits, so the rings use the
- * space there is. Returns nothing at all when nothing fits, or when the
- * innermost would be too small to see — the same refusal the rest of this app
- * makes about a number it cannot stand behind.
+ * The scale runs to the edge of the screen, so the question is no longer "do
+ * three fit" but "how finely can it be divided and still be read at arm's
+ * length on a moving boat". Six is the ceiling; past that the labels start
+ * touching.
+ */
+const MAX_MARKS = 6
+
+/**
+ * The graduations of a ruler `lengthPx` long, from the boat outwards.
+ *
+ * The **finest** spacing off the ladder that still yields a readable number of
+ * marks — not the coarsest that fits three, which is what this did when the
+ * scale was three rings and the screen edge was not the limit. A ruler to the
+ * edge of the screen divided into three is a ruler nobody can interpolate on.
+ *
+ * Returns nothing when nothing fits, or when the first graduation would be too
+ * small to see — the same refusal the rest of this app makes about a number it
+ * cannot stand behind.
  */
 export function pickRings(
   metersPerPx: number,
-  maxRadiusPx: number,
+  lengthPx: number,
   unit: DistanceUnit,
-  count = 3,
+  maxMarks = MAX_MARKS,
 ): RangeRing[] {
-  if (!(metersPerPx > 0) || !(maxRadiusPx > 0) || count < 1) return []
+  if (!(metersPerPx > 0) || !(lengthPx > 0) || maxMarks < 1) return []
 
-  const step = [...ladder(unit)]
-    .reverse()
-    .find((s) => (s.meters * count) / metersPerPx <= maxRadiusPx)
-  if (!step) return []
-  // The innermost ring is the one at risk of vanishing, so it is the one
-  // checked.
-  if (step.meters / metersPerPx < MIN_RING_PX) return []
+  const fits = (stepMeters: number) => Math.floor(lengthPx / (stepMeters / metersPerPx))
 
+  const step = ladder(unit).find(
+    (s) =>
+      s.meters / metersPerPx >= MIN_RING_PX &&
+      fits(s.meters) >= 1 &&
+      fits(s.meters) <= maxMarks,
+  )
+  // Nothing fine enough is readable and nothing coarse enough divides it: fall
+  // back to the coarsest that fits at all, so a scale still appears.
+  const chosen =
+    step ??
+    [...ladder(unit)]
+      .reverse()
+      .find((s) => s.meters / metersPerPx >= MIN_RING_PX && fits(s.meters) >= 1)
+  if (!chosen) return []
+
+  const marks = Math.min(maxMarks, Math.max(1, fits(chosen.meters)))
   const rings: RangeRing[] = []
-  for (let i = 1; i <= count; i++) {
-    const meters = step.meters * i
+  for (let i = 1; i <= marks; i++) {
+    const meters = chosen.meters * i
     rings.push({
       meters,
       px: meters / metersPerPx,
-      label: `${trim(step.value * i)} ${step.suffix}`,
+      label: `${trim(chosen.value * i)} ${chosen.suffix}`,
     })
   }
   return rings
+}
+
+/**
+ * How far a ruler from `(cx, cy)` can run at `screenDeg` before it leaves a
+ * `w` × `h` box.
+ *
+ * The scale is meant to reach the edge of the screen — a ruler that stops
+ * two-thirds of the way up is a ruler that cannot measure the thing at the
+ * top of it. `margin` keeps the arrow head and the last label inside.
+ */
+export function rulerLengthPx(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  screenDeg: number,
+  margin = 18,
+): number {
+  const rad = (screenDeg * Math.PI) / 180
+  const dx = Math.sin(rad)
+  const dy = -Math.cos(rad)
+  let t = Math.max(w, h) * 2
+  if (dx > 1e-9) t = Math.min(t, (w - margin - cx) / dx)
+  if (dx < -1e-9) t = Math.min(t, (margin - cx) / dx)
+  if (dy > 1e-9) t = Math.min(t, (h - margin - cy) / dy)
+  if (dy < -1e-9) t = Math.min(t, (margin - cy) / dy)
+  return Math.max(0, t)
 }
 
 /** 0.50 → "0.5", 2.00 → "2". A trailing zero on a ring label is noise. */

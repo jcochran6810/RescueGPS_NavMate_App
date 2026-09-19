@@ -204,7 +204,8 @@ export function Compass({
       </div>
 
       {behind ? (
-        behind(
+        <>
+          {behind(
           /*
            * No forced square: the SVG letterboxes itself inside whatever space
            * there is (`preserveAspectRatio` defaults to centring), so the dial
@@ -224,7 +225,34 @@ export function Compass({
               overMap
             />
           </div>,
-        )
+          )}
+
+          {/*
+           * The bearing, below the dial rather than inside it.
+           *
+           * In the middle it was 38 px of digits sitting on the crew's own
+           * position marker and on the nought of the range scale — reported
+           * from a phone, and obvious in the photograph. Underneath it blocks
+           * nothing, and it is still the largest thing on the card because it
+           * is the number that gets read out over a radio.
+           */}
+          <div className="mt-2 flex items-baseline justify-center gap-2">
+            <span
+              data-heading=""
+              className="tnum text-4xl font-semibold text-slate-50"
+            >
+              {shown === null ? '—' : `${Math.round(normalizeDeg(shown))}°`}
+            </span>
+            {caption && (
+              <span
+                data-caption=""
+                className="text-xs font-semibold tracking-[0.12em] text-slate-300 uppercase"
+              >
+                {caption}
+              </span>
+            )}
+          </div>
+        </>
       ) : (
         <CompassRose
           heading={shown}
