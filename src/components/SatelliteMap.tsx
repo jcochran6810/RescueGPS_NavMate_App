@@ -912,19 +912,43 @@ export function SatelliteMap({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={endPointer}
+        /*
+         * And put it straight back if anything ever does scroll it. The clip
+         * above removes today's cause; this removes the class of it, because
+         * a map that has quietly slid inside its own frame is wrong in a way
+         * nothing on screen explains.
+         */
+        onScroll={(e) => {
+          e.currentTarget.scrollTop = 0
+          e.currentTarget.scrollLeft = 0
+        }}
       >
-        {/* The ground turns; the controls and the scale bar do not. */}
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={
-            rot === 0
-              ? undefined
-              : { transform: `rotate(${-rot}deg)`, transformOrigin: '50% 50%' }
-          }
-        >
-          {placed &&
-            baseSources.map((src, i) => layer(src, i === 0 ? 1 : HYBRID_BLEND))}
-          {placed && overlaySources.map((src) => layer(src, 0.9))}
+        {/*
+         * The ground turns; the controls and the scale bar do not.
+         *
+         * Clipped here, in screen space, rather than only by the box: a tile
+         * layer is deliberately larger than the map — that oversize is what
+         * keeps the corners covered when it turns — and overflow that reaches
+         * the box makes the box *scrollable*, hidden or not. Anything the
+         * browser scrolls into view inside it (a focused button, a
+         * `scrollIntoView`) then shifts the whole ground sideways and leaves
+         * it there: the dial, the boat and the scale all drawn off the map.
+         * The clip is outside the rotation so the corners still fill.
+         */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div
+            data-ground=""
+            className="absolute inset-0"
+            style={
+              rot === 0
+                ? undefined
+                : { transform: `rotate(${-rot}deg)`, transformOrigin: '50% 50%' }
+            }
+          >
+            {placed &&
+              baseSources.map((src, i) => layer(src, i === 0 ? 1 : HYBRID_BLEND))}
+            {placed && overlaySources.map((src) => layer(src, 0.9))}
+          </div>
         </div>
 
         {placed && onPick && pickHint ? (

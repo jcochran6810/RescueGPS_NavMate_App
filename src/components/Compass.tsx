@@ -31,6 +31,16 @@ import { Button, Card, Label } from '@/components/ui'
 /** Below this there is no course to speak of, only GPS noise. */
 const COURSE_MIN_KN = 1
 
+/**
+ * The strip kept clear above and below the dial when it is drawn on a map.
+ *
+ * Equal on both sides on purpose: the dial's middle is the crew's own
+ * position, so anything that reserves space asymmetrically walks the dial off
+ * the boat. The bearing is read out in the bottom strip, which leaves it clear
+ * of the map's scale bar and its button stack as well.
+ */
+const READOUT_STRIP_PX = 84
+
 export function Compass({
   behind,
   lat,
@@ -204,55 +214,72 @@ export function Compass({
       </div>
 
       {behind ? (
-        <>
-          {behind(
+        behind(
           /*
-           * No forced square: the SVG letterboxes itself inside whatever space
-           * there is (`preserveAspectRatio` defaults to centring), so the dial
-           * stays round and stays centred on the ground whatever shape the map
-           * box is. Forcing an aspect ratio here made the wrapper a few pixels
-           * wider than the box and shoved the dial off centre — which the
-           * drive measured before anyone believed it.
-           */
-          <div className="h-full w-full">
-            <CompassRose
-              heading={shown}
-              markers={markers}
-              level={usingSensor ? level : null}
-              tilt={usingSensor ? tilt : null}
-              caption={caption}
-              degraded={degraded}
-              overMap
-            />
-          </div>,
-          )}
-
-          {/*
-           * The bearing, below the dial rather than inside it.
+           * The dial and its bearing, both on the ground, in one column.
            *
-           * In the middle it was 38 px of digits sitting on the crew's own
-           * position marker and on the nought of the range scale — reported
-           * from a phone, and obvious in the photograph. Underneath it blocks
-           * nothing, and it is still the largest thing on the card because it
-           * is the number that gets read out over a radio.
-           */}
-          <div className="mt-2 flex items-baseline justify-center gap-2">
-            <span
-              data-heading=""
-              className="tnum text-4xl font-semibold text-slate-50"
+           * Inside the map window because that is where it was asked for, and
+           * below the dial because in the middle it sat on the crew's own
+           * position marker and on the nought of the range scale. So the strip
+           * under the dial is *reserved* rather than borrowed: the padding
+           * above and below the rose is equal, which shrinks the dial without
+           * moving its middle off the boat, and the bearing goes in the space
+           * that opens up — clear of the marker, the scale, the scale bar and
+           * the map's own buttons.
+           */
+          <div className="relative h-full w-full">
+            <div
+              className="absolute inset-0"
+              style={{
+                paddingTop: READOUT_STRIP_PX,
+                paddingBottom: READOUT_STRIP_PX,
+              }}
             >
-              {shown === null ? '—' : `${Math.round(normalizeDeg(shown))}°`}
-            </span>
-            {caption && (
+              {/*
+               * No forced square: the SVG letterboxes itself inside whatever
+               * space there is (`preserveAspectRatio` defaults to centring),
+               * so the dial stays round and stays centred on the ground
+               * whatever shape the map box is. Forcing an aspect ratio here
+               * made the wrapper a few pixels wider than the box and shoved
+               * the dial off centre — which the drive measured before anyone
+               * believed it.
+               */}
+              <CompassRose
+                heading={shown}
+                markers={markers}
+                level={usingSensor ? level : null}
+                tilt={usingSensor ? tilt : null}
+                caption={caption}
+                degraded={degraded}
+                overMap
+              />
+            </div>
+
+            {/* Shadowed rather than boxed: a panel behind it would be the
+                black disc the crew asked to have removed, in another place. */}
+            <div
+              className="absolute inset-x-0 bottom-0 flex items-start justify-center gap-2 pt-1"
+              style={{ height: READOUT_STRIP_PX }}
+            >
               <span
-                data-caption=""
-                className="text-xs font-semibold tracking-[0.12em] text-slate-300 uppercase"
+                data-heading=""
+                className="tnum text-3xl font-semibold text-slate-50"
+                style={{ textShadow: '0 1px 4px #06131f, 0 0 3px #06131f' }}
               >
-                {caption}
+                {shown === null ? '—' : `${Math.round(normalizeDeg(shown))}°`}
               </span>
-            )}
-          </div>
-        </>
+              {caption && (
+                <span
+                  data-caption=""
+                  className="pt-1.5 text-xs font-semibold tracking-[0.12em] text-slate-200 uppercase"
+                  style={{ textShadow: '0 1px 4px #06131f, 0 0 3px #06131f' }}
+                >
+                  {caption}
+                </span>
+              )}
+            </div>
+          </div>,
+        )
       ) : (
         <CompassRose
           heading={shown}
