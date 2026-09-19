@@ -143,7 +143,7 @@ export function CompassTab() {
               fix={fix}
               markers={markers}
               base={base}
-              height={340}
+              height={420}
               // Head-up needs a heading to be head-up *to*. Without one the
               // map stays north-up rather than freezing at the last reading,
               // which would be a map claiming a direction it does not have.

@@ -400,7 +400,11 @@ ok('and all three layers are offered',
 const groundDeg = async () => await page.evaluate(() => {
   const box = document.querySelector('div.touch-none')
   if (!box) return null
-  const layer = box.querySelector('div.pointer-events-none.absolute.inset-0')
+  // The ground layer by its own hook, not by its classes: it sits inside a
+  // clipping wrapper that shares them, and a check that grabs the wrapper
+  // reads 0° for every heading — which looks exactly like a map that will
+  // not turn.
+  const layer = box.querySelector('[data-ground]')
   if (!layer) return null
   const t = getComputedStyle(layer).transform
   if (!t || t === 'none') return 0
@@ -488,25 +492,57 @@ ok('no disc behind the dial or its digits — the ground shows through',
    solidDiscs === 0, `${solidDiscs} filled disc(s) of r > 20`)
 
 /*
- * Reported from a phone: the 38 px bearing sat in the middle of the dial, on
- * top of the crew's own position marker and the nought of the range scale.
- * It belongs under the map. Checked by geometry — the readout must be BELOW
- * the map box — because "it exists" was true before and after.
+ * Where the bearing goes, reported from a phone twice.
+ *
+ * In the middle of the dial it sat on the crew's own position marker and on
+ * the nought of the range scale. Moved out of the map card entirely it was
+ * off the ground: "the bearing display still needs to be on the map window,
+ * just not covering anything else. Place the bearing display readout directly
+ * below the compass." So it is checked as both at once — inside the map box,
+ * below the dial, and overlapping none of the four things that share that
+ * window: the boat, the range scale, the map's buttons and its scale bar.
  */
 const readoutPlace = await page.evaluate(() => {
   const box = document.querySelector('div.touch-none')
   const out = document.querySelector('[data-heading]')
-  if (!box || !out) return null
+  const rose = document.querySelector('svg[viewBox="-100 -100 200 200"]')
+  if (!box || !out || !rose) return null
   const b = box.getBoundingClientRect()
   const r = out.getBoundingClientRect()
-  return { below: r.top >= b.bottom - 1, insideSvg: !!out.closest('svg'), text: (out.textContent ?? '').trim() }
+  const d = rose.getBoundingClientRect()
+  const hits = (el) => {
+    if (!el) return false
+    const o = el.getBoundingClientRect()
+    return r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top
+  }
+  const svg = box.querySelector('svg')
+  const centre = [...document.querySelectorAll('button')].find((el) =>
+    /Centre on my position/i.test(el.getAttribute('aria-label') ?? ''))
+  return {
+    text: (out.textContent ?? '').trim(),
+    inside: r.left >= b.left - 1 && r.right <= b.right + 1
+      && r.top >= b.top - 1 && r.bottom <= b.bottom + 1,
+    belowDial: r.top >= d.top + d.height / 2,
+    onBoat: hits(svg ? svg.querySelector('circle.fill-emerald-400') : null),
+    onScale: hits(svg ? svg.querySelector('polygon.fill-white') : null),
+    onButtons: hits(centre ? centre.parentElement : null),
+    // The scale bar is the one piece of map chrome drawn inside the SVG; it
+    // is the last <g> in it, bottom left.
+    onScaleBar: hits(svg ? [...svg.querySelectorAll('g')].pop() : null),
+  }
 })
-ok('the bearing is read out below the dial, not on top of the crew',
-   !!readoutPlace && readoutPlace.below && !readoutPlace.insideSvg,
-   readoutPlace ? `"${readoutPlace.text}" below=${readoutPlace.below} inSvg=${readoutPlace.insideSvg}` : 'no readout')
+ok('the bearing is read out on the map, below the dial',
+   !!readoutPlace && readoutPlace.inside && readoutPlace.belowDial,
+   readoutPlace ? `"${readoutPlace.text}" inside=${readoutPlace.inside} belowDial=${readoutPlace.belowDial}` : 'no readout')
+ok('and it covers nothing else on that map',
+   !!readoutPlace && !readoutPlace.onBoat && !readoutPlace.onScale
+     && !readoutPlace.onButtons && !readoutPlace.onScaleBar,
+   readoutPlace
+     ? `boat=${readoutPlace.onBoat} scale=${readoutPlace.onScale} buttons=${readoutPlace.onButtons} bar=${readoutPlace.onScaleBar}`
+     : 'no readout')
 ok('while the map under it still takes a gesture',
    await page.evaluate(() => {
-     const layer = document.querySelector('div.touch-none .pointer-events-none.absolute.inset-0')
+     const layer = document.querySelector('div.touch-none [data-ground]')
      return !!layer
    }))
 
@@ -634,6 +670,33 @@ ok('and it reads 0, s, 2s, 3s from the boat outwards',
        && Math.abs(v[2] - v[1] * 2) < 1e-6 && Math.abs(v[3] - v[1] * 3) < 1e-6
    })(),
    ringLabels.join(' / '))
+
+/*
+ * The map must not be able to scroll *inside its own frame*.
+ *
+ * A tile layer is deliberately bigger than the map — that is what covers the
+ * corners when it turns — and overflow reaching the box makes the box
+ * scrollable even with `overflow-hidden`. The browser then scrolls it for its
+ * own reasons: bring a button inside it into view and the whole ground slides
+ * over and stays there, with the dial, the boat and the range scale drawn off
+ * the map. Found exactly that way — the map was below the fold, the drive
+ * scrolled to press a button, and the ground moved 114 px left and 146 px up.
+ */
+const boxScroll = await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  if (!box) return null
+  // Ask the browser to scroll it as far as it will go, then read back.
+  box.scrollTop = 9999
+  box.scrollLeft = 9999
+  return {
+    top: box.scrollTop,
+    left: box.scrollLeft,
+    over: [box.scrollWidth - box.clientWidth, box.scrollHeight - box.clientHeight],
+  }
+})
+ok('the map cannot slide inside its own frame',
+   !!boxScroll && boxScroll.top === 0 && boxScroll.left === 0,
+   boxScroll ? `scrolled to ${boxScroll.left}, ${boxScroll.top}; overflow ${boxScroll.over.join(' x ')}` : 'no map')
 
 /*
  * The gesture check, and the reason the frame transforms exist: with the map
