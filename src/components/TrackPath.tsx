@@ -12,6 +12,15 @@ export interface PathMarker {
   name: string
   lat: number
   lon: number
+  /**
+   * The waypoint this marker *is*, when it is one.
+   *
+   * Markers are also starts, destinations, datums and the point being placed
+   * right now, and none of those has a waypoint behind it to open. Carrying
+   * the id rather than assuming `id` is one keeps a tap on START from opening
+   * a sheet about nothing.
+   */
+  waypointId?: string
 }
 
 /**

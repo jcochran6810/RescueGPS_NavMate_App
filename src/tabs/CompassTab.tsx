@@ -3,6 +3,7 @@ import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { useHeading } from '@/store/useHeading'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useWaypointView } from '@/store/useWaypointView'
 import { useTeams } from '@/store/useTeams'
 import { Compass } from '@/components/Compass'
 import {
@@ -25,6 +26,7 @@ import { Card, EmptyState, Label } from '@/components/ui'
 export function CompassTab() {
   const { fix, watching, error, once } = useTracker()
   const fmt = useFormat()
+  const openWaypoint = useWaypointView((s) => s.open)
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const heading = useHeading((s) => s.heading)
@@ -96,10 +98,14 @@ export function CompassTab() {
         ) : (
           <ul className="divide-y divide-white/5">
             {legs.map(({ w, bearing, distanceNM }) => (
-              <li
-                key={w.id}
-                className="flex items-center justify-between gap-3 py-2"
-              >
+              <li key={w.id}>
+                {/* The row opens the waypoint. A crew reading a bearing to
+                    something is one step from wanting to be taken to it. */}
+                <button
+                  type="button"
+                  onClick={() => openWaypoint(w.id)}
+                  className="flex w-full items-center justify-between gap-3 py-2 text-left hover:bg-white/5"
+                >
                 <span className="min-w-0 flex-1 truncate text-sm text-slate-100">
                   {w.name}
                 </span>
@@ -127,6 +133,7 @@ export function CompassTab() {
                 <span className="tnum shrink-0 text-sm text-slate-300">
                   {fmt.length(distanceNM)}
                 </span>
+                </button>
               </li>
             ))}
           </ul>
