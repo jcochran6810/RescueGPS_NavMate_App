@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useTracker, INTERVAL_CHOICES } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { TrackPath } from '@/components/TrackPath'
 import { SatelliteMap } from '@/components/SatelliteMap'
 import {
@@ -66,6 +67,8 @@ export function TrackTab() {
     setArrivalFt,
   } = useTracker()
   const waypoints = useWaypoints((s) => s.visible())
+  // Everyone else on this search, drawn on the map below.
+  const units = useIncidentUnits()
 
   const [unit, setUnit] = useState<DistanceUnit>('nm')
   const [view, setView] = useState<View>('satellite')
@@ -132,6 +135,7 @@ export function TrackTab() {
               trail={trail}
               fix={fix}
               markers={markers}
+              units={units}
               labels={view === 'hybrid'}
             />
             <p className="mt-1.5 text-xs text-slate-400">

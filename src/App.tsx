@@ -13,6 +13,7 @@ import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
 import { MapActionHost } from '@/components/MapActionHost'
+import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
 import { Toast } from '@/components/Toast'
@@ -102,6 +103,10 @@ export default function App() {
 
   return (
     <div className="min-h-full">
+      {/* This boat's fixes go to the search, and the other units come back —
+          from here rather than from a map, because a crew reading the datum
+          worksheet is still a unit on the search. */}
+      <IncidentTelemetry />
       <Header active={tab} onChange={setTab} />
       {/* Clears the footer, which now carries only the stamp button — the
           section menu lives in the header's top corner. */}
@@ -138,4 +143,10 @@ export default function App() {
       <Toast />
     </div>
   )
+}
+
+/** Nothing to draw — it exists so the telemetry runs wherever the crew is. */
+function IncidentTelemetry() {
+  useIncidentTelemetry()
+  return null
 }

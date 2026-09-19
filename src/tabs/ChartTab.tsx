@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTracker } from '@/store/useTracker'
 import { useGoTo } from '@/store/useGoTo'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { useTeams } from '@/store/useTeams'
 import { useVessels } from '@/store/useVessels'
 import { useChartData } from '@/store/useChartData'
@@ -77,6 +78,8 @@ const PLOT_DEBOUNCE_MS = 400
 
 export function ChartTab() {
   const tracker = useTracker()
+  // Everyone else on this search, drawn on the map below.
+  const units = useIncidentUnits()
   const fix = tracker.fix
   const online = useOnline()
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -469,6 +472,7 @@ export function ChartTab() {
           seamarks={seamarks}
           route={plan?.points ?? []}
           routeUnverified={plan?.source === 'straight'}
+          units={units}
           markers={[
             ...(start
               ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]

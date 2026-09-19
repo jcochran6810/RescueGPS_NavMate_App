@@ -1,12 +1,21 @@
 import { useState } from 'react'
 import { useIncidents } from '@/store/useIncidents'
 import { useTeams } from '@/store/useTeams'
+import { useAuth } from '@/store/useAuth'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
+import { useTracker } from '@/store/useTracker'
+import {
+  bearingDeg,
+  compassPoint,
+  formatDistance,
+  formatDuration,
+  haversineNM,
+} from '@/lib/geo'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { download } from '@/lib/transfer'
-import { formatDuration } from '@/lib/geo'
 import {
   INCIDENT_TYPES,
   incidentTypeLabel,
@@ -15,6 +24,7 @@ import {
 } from '@/lib/incident'
 import type { LkpPayload, SarRecord } from '@/lib/types'
 import { Button, Card, Label } from '@/components/ui'
+import { JoinIncidentButton } from '@/components/JoinIncident'
 
 /**
  * The incident — the search this team is on. One card, three states: open a
@@ -34,6 +44,15 @@ export function IncidentCard() {
   const now = useNow(30_000)
 
   const incident = incidents.activeIncident(activeTeamId)
+  const me = useAuth((s) => s.user?.id ?? null)
+  /*
+   * A search this crew walked into rather than started. They are not the
+   * incident commander of it, so closing it is not theirs to do — the way out
+   * is to leave, and the search carries on without them.
+   */
+  const joined = !!incident && incident.created_by !== me
+  const units = useIncidentUnits()
+  const fix = useTracker((s) => s.fix)
 
   const [type, setType] = useState('piw')
   const [name, setName] = useState('')
@@ -116,8 +135,12 @@ export function IncidentCard() {
           />
         </div>
         <Button variant="primary" className="mt-2 w-full" onClick={() => void open()}>
-          Open search incident
+          Start New Search Incident
         </Button>
+        {/* The other way onto a search: one that is already running. A second
+            boat, or a unit arriving late, should not have to start a second
+            container for the same search. */}
+        <JoinIncidentButton />
       </Card>
     )
   }
@@ -154,6 +177,38 @@ export function IncidentCard() {
         </div>
       </div>
 
+      {/* Who else is on it, and where. The point of joining a search is that
+          everyone can see everyone — so it is said on the card, not only
+          drawn on a map the crew may not be looking at. */}
+      {units.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {units.map((u) => {
+            const nm = fix ? haversineNM(fix.lat, fix.lon, u.lat, u.lon) : null
+            const deg = fix ? bearingDeg(fix.lat, fix.lon, u.lat, u.lon) : null
+            return (
+              <li
+                key={u.id}
+                className={
+                  'flex items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-xs ' +
+                  (u.stale ? 'bg-white/5 text-slate-400' : 'bg-amber-500/10 text-amber-100')
+                }
+              >
+                <span className="font-semibold">{u.name}</span>
+                <span className="tnum">
+                  {nm != null && deg != null
+                    ? `${formatDistance(nm, 'nm')} ${compassPoint(deg)}`
+                    : '—'}
+                  {u.speedKn != null && u.speedKn >= 0.5
+                    ? ` · ${u.speedKn.toFixed(1)} kn`
+                    : ''}
+                  {u.stale ? ' · no signal' : ''}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+
       {!closing ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button
@@ -177,9 +232,21 @@ export function IncidentCard() {
           >
             Handoff to command
           </Button>
-          <Button variant="ghost" onClick={() => setClosing(true)}>
-            Close incident…
-          </Button>
+          {joined ? (
+            <Button
+              variant="ghost"
+              onClick={async () => {
+                await incidents.leaveIncident(incident.id)
+                toast(`Left ${incident.incident_number}`, 'success')
+              }}
+            >
+              Leave search
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={() => setClosing(true)}>
+              Close incident…
+            </Button>
+          )}
         </div>
       ) : (
         <div className="mt-3 space-y-2">

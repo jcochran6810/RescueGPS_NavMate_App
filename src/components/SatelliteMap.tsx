@@ -66,6 +66,7 @@ export function SatelliteMap({
   trail,
   fix,
   markers = [],
+  units = [],
   route = [],
   routeUnverified = false,
   labels = false,
@@ -80,6 +81,21 @@ export function SatelliteMap({
   trail: Fix[]
   fix: Fix | null
   markers?: PathMarker[]
+  /**
+   * The other boats on this search — where they are, which way they are
+   * pointing and how fast. Drawn differently from a waypoint on purpose: a
+   * waypoint is a place, a unit is somebody, and confusing the two on a
+   * screen is how two boats search the same water.
+   */
+  units?: {
+    id: string
+    name: string
+    lat: number
+    lon: number
+    heading: number | null
+    speedKn: number | null
+    stale: boolean
+  }[]
   /** A planned line to steer — a search pattern — drawn dashed, under the
    *  track, with a square at each turn point. Drawn from the coordinates
    *  like everything else, so it is exact even when imagery is not. */
@@ -724,7 +740,10 @@ export function SatelliteMap({
             'pointer-events-none absolute inset-0 ' + (placed ? '' : 'hidden')
           }
           role="img"
-          aria-label={`${baseLabel} map, ${trail.length} track points`}
+          aria-label={
+            `${baseLabel} map, ${trail.length} track points` +
+            (units.length > 0 ? `, ${units.length} other units on this search` : '')
+          }
         >
           {markers.map((m) => {
             const p = project(m.lat, m.lon)
@@ -747,6 +766,46 @@ export function SatelliteMap({
                   style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
                 >
                   {m.name}
+                </text>
+              </g>
+            )
+          })}
+
+          {units.map((u) => {
+            const p = project(u.lat, u.lon)
+            if (p.x < -40 || p.x > w + 40 || p.y < -20 || p.y > h + 20) return null
+            return (
+              <g key={u.id} opacity={u.stale ? 0.45 : 1}>
+                {u.heading != null ? (
+                  // A boat with a heading is drawn as one, pointing where it
+                  // is going — which is half of what the other crews need to
+                  // know from a glance at the chart.
+                  <path
+                    d="M0,-9 L5,7 L0,4 L-5,7 Z"
+                    className="fill-amber-300 stroke-navy-950"
+                    strokeWidth="1.5"
+                    transform={`translate(${p.x} ${p.y}) rotate(${u.heading})`}
+                  />
+                ) : (
+                  <circle
+                    cx={p.x}
+                    cy={p.y}
+                    r="5"
+                    className="fill-amber-300 stroke-navy-950"
+                    strokeWidth="1.5"
+                  />
+                )}
+                <text
+                  x={p.x + 9}
+                  y={p.y + 4}
+                  className="fill-amber-100 text-[11px] font-semibold"
+                  style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                >
+                  {u.name}
+                  {u.speedKn != null && u.speedKn >= 0.5
+                    ? ` ${u.speedKn.toFixed(1)} kn`
+                    : ''}
+                  {u.stale ? ' (no signal)' : ''}
                 </text>
               </g>
             )

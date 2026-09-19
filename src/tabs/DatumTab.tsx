@@ -9,6 +9,7 @@ import { useNow } from '@/hooks/useNow'
 import { useGoTo } from '@/store/useGoTo'
 import type { TabId } from '@/components/NavMenu'
 import { toast } from '@/store/useToast'
+import { recordsForSearch } from '@/lib/incident'
 import { toDD, toDMS } from '@/lib/coords'
 import { CoordInput } from '@/components/CoordInput'
 import { cToF, fToC } from '@/lib/survival'
@@ -69,14 +70,15 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
   }, [load])
 
   const all = visible()
-  // Same scoping rule as every other list: the team switcher in the header
-  // decides what this page is looking at.
+  /*
+   * The team switcher decides the scope, and the open incident decides the
+   * search. Both, not just the first: filtering by team alone left the
+   * previous search's LKP, conditions, markers and countdowns feeding this
+   * worksheet after a new incident was opened. See `recordsForSearch`.
+   */
   const records = useMemo(
-    () =>
-      all.filter((r) =>
-        activeTeamId ? r.team_id === activeTeamId : r.team_id === null,
-      ),
-    [all, activeTeamId],
+    () => recordsForSearch(all, activeTeamId, incident?.id ?? null),
+    [all, activeTeamId, incident?.id],
   )
 
   const lkp = records.find((r) => r.kind === 'lkp') ?? null

@@ -4,12 +4,14 @@ import { useTeams } from '@/store/useTeams'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { toDD } from '@/lib/coords'
 import { formatDistance, formatDuration } from '@/lib/geo'
 import { computeDatum, searchObjectType } from '@/lib/sar'
+import { recordsForSearch } from '@/lib/incident'
 import {
   expandingSquare,
   expandingSquareLegsFor,
@@ -50,6 +52,8 @@ import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
 
 export function SearchTab() {
   const activeTeamId = useTeams((s) => s.activeTeamId)
+  // Everyone else on this search, drawn on the map below.
+  const units = useIncidentUnits()
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
   const { visible, load } = useSarRecords()
   const tracker = useTracker()
@@ -63,12 +67,13 @@ export function SearchTab() {
   }, [load])
 
   const all = visible()
+  // Team scope AND the open incident — the same rule the datum worksheet
+  // uses, and for the same reason: this page reads the LKP and the conditions
+  // to size a pattern, so a previous search's numbers here plan the wrong
+  // sweep. See `recordsForSearch`.
   const records = useMemo(
-    () =>
-      all.filter((r) =>
-        activeTeamId ? r.team_id === activeTeamId : r.team_id === null,
-      ),
-    [all, activeTeamId],
+    () => recordsForSearch(all, activeTeamId, incident?.id ?? null),
+    [all, activeTeamId, incident?.id],
   )
   const lkp = records.find((r) => r.kind === 'lkp') ?? null
   const lkpPayload = lkp?.payload as LkpPayload | undefined
@@ -446,6 +451,7 @@ export function SearchTab() {
                   ? [{ id: 'datum', name: 'DATUM', lat: result.datum.lat, lon: result.datum.lon }]
                   : []
               }
+              units={units}
               height={300}
             />
             <p className="mt-1.5 text-xs text-slate-400">
