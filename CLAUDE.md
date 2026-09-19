@@ -310,6 +310,58 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-19 — claude/youthful-knuth-t4hzoo (the bearing goes back on the ground)
+
+"The bearing display still needs to be on the map window, just not covering
+anything else. Place the bearing display readout directly below the compass."
+
+The previous round had moved it out of the dial's middle — where it sat on the
+crew's own position marker — and put it under the map card entirely, which
+took it off the ground. It is back inside the map box now, in a strip that is
+**reserved rather than borrowed**: the padding above and below the rose is
+equal, so the dial shrinks without its middle leaving the boat, and the
+bearing goes in the space that opens up. Equal padding is the load-bearing
+part — anything that reserves space on one side only walks the dial off the
+position it is drawn around, and the drive's "centred on the map to within
+four pixels" check is what holds that. Shadowed rather than boxed, because a
+panel behind it would be the black disc that was asked to go, in another
+place. The map under the compass is 420 px to make room.
+
+**And a real fault, found only because the map got taller.** The map box could
+scroll *inside itself*. A tile layer is deliberately bigger than the map —
+that oversize is what covers the corners when it turns — and overflow reaching
+the box makes the box **scrollable, `overflow-hidden` or not**. With the map
+now below the fold, the drive scrolled the page to press a button, the browser
+scrolled the box as well, and the whole ground went 114 px left and 146 px up:
+the dial, the boat, the range scale and the scale bar all drawn off the map
+and left there, with nothing on screen to explain it. On a phone the same
+thing happens whenever anything inside the map takes focus.
+
+The ground layer is clipped in screen space now, in a wrapper *outside* the
+rotation so the corners still fill (clipping the rotated element instead would
+cut the corners it exists to cover), and the box puts its own scroll back if
+anything ever moves it.
+
+**Two notes on the checking.** The doubling in the drag check —
+"boat moved 0, 160 px for a drag of 0, 80" — was the symptom that led here,
+and it was almost dismissed as a drive artefact: the ground moved 80 px in the
+map's own frame, correctly, and 80 px more because the box had been scrolled
+under it. Reading both numbers rather than the verdict is what separated them.
+And `groundDeg` found the rotating layer **by its classes**, which the new
+clipping wrapper now shares — so it read 0° for every heading and two checks
+failed looking exactly like a map that would not turn. The layer carries
+`data-ground` now.
+
+**Verification.** 681 tests, typecheck, lint, build clean. The compass drive
+is 64 checks, up from 62: the readout is asserted inside the map box, below
+the dial, and overlapping none of the four things that share that window (the
+boat, the range scale, the map's buttons, the scale bar), and the box is told
+to scroll as far as it will go and has to stay put. All three fail with their
+mechanism removed — without the strip the readout sits on the boat, without
+the clip the box scrolls 237 × 311 and the drag doubles. Drives green at 74
+(chart), 64 (compass), 35 (map menu), 29 (waypoints), 25 (search), 15 (datum),
+11 (mobile).
+
 ### 2026-09-19 — claude/youthful-knuth-t4hzoo (a photograph of the real thing, twice)
 
 A second screenshot, this time of NavMate itself running on the phone, with
