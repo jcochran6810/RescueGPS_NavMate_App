@@ -79,7 +79,19 @@ export function AddWaypointButton({
 /** Blank means "not set" to `CoordInput`, and NaN is how it says so. */
 const UNSET = { lat: Number.NaN, lon: Number.NaN }
 
-function AddWaypointSheet({ onDismiss }: { onDismiss: () => void }) {
+/**
+ * The sheet on its own, exported because a long press on any map opens it
+ * through `MapActionHost` with the pressed position already in it — there is
+ * no button in that path, and no second creator either.
+ */
+export function AddWaypointSheet({
+  at,
+  onDismiss,
+}: {
+  /** Start with this position already filled in, from a press on a map. */
+  at?: { lat: number; lon: number }
+  onDismiss: () => void
+}) {
   const create = useWaypoints((s) => s.create)
   const all = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -87,7 +99,7 @@ function AddWaypointSheet({ onDismiss }: { onDismiss: () => void }) {
   const once = useTracker((s) => s.once)
 
   const [name, setName] = useState('')
-  const [pos, setPos] = useState<{ lat: number; lon: number }>(UNSET)
+  const [pos, setPos] = useState<{ lat: number; lon: number }>(at ?? UNSET)
   const [picking, setPicking] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -177,6 +189,7 @@ function AddWaypointSheet({ onDismiss }: { onDismiss: () => void }) {
                 : []
             }
             height={260}
+            longPress="pick"
             onPick={(p) => {
               setPos(p)
               // Closing the map on the tap would hide the boxes the position

@@ -74,18 +74,24 @@ export function Compass({
   )
 
   /**
-   * The compass runs as soon as the page is open.
+   * The compass runs as soon as the page is open. On every platform.
    *
-   * A dial behind a "Start compass" button is a step asked of someone who has
-   * opened the compass — they have already said what they want. The one place
-   * a tap is unavoidable is iOS, which only hands over the sensor from a real
-   * user gesture, so that is the only case that still shows a button, and it
-   * is worded as the permission prompt it is rather than as an on switch.
+   * A dial behind a button is a step asked of someone who has just opened the
+   * compass — they have already said what they want. iOS is the awkward one:
+   * it answers `requestPermission()` only inside a user gesture. But the tap
+   * that opened this screen *is* one, and the activation it grants lasts a
+   * few seconds, so asking here — on mount, in the same breath as the
+   * navigation — normally lands inside it and the system prompt appears with
+   * nothing tapped in the app.
+   *
+   * When it does not land inside one, the store arms the next touch anywhere
+   * on the page instead of putting a button here. See `needs-gesture` in
+   * `useHeading`.
    */
-  const needsTap = useMemo(() => headingNeedsTap(), [])
+  const gated = useMemo(() => headingNeedsTap(), [])
   useEffect(() => {
-    if (!needsTap) void enable()
-  }, [needsTap, enable])
+    void enable()
+  }, [enable])
 
   // Stopped on the way out. The sensor fires far faster than this card reads
   // it, and a magnetometer left running behind another screen is battery spent
@@ -261,10 +267,19 @@ export function Compass({
         </ul>
       )}
 
-      {!listening && needsTap ? (
+      {/* Only a real refusal gets a button. `needs-gesture` does not: the next
+          touch anywhere starts the sensor, so a control here would be one more
+          thing to find for something that is about to happen anyway. */}
+      {!listening && permission === 'denied' ? (
         <Button variant="primary" className="mt-3 w-full" onClick={() => void enable()}>
-          {permission === 'denied' ? 'Allow motion access again' : 'Allow motion access'}
+          Allow motion access again
         </Button>
+      ) : null}
+      {!listening && permission === 'needs-gesture' ? (
+        <p className="mt-3 text-center text-xs text-slate-400">
+          Touch the screen anywhere to start the compass — this device only
+          hands the sensor over on a touch.
+        </p>
       ) : null}
 
       {calibration === 'poor' && (
@@ -291,9 +306,11 @@ export function Compass({
       )}
       {permission === 'denied' && (
         <Note tone="warn">
-          Motion and orientation access was refused. Allow it in your browser
-          settings, or move at over {COURSE_MIN_KN} knot to read a GPS course
-          instead.
+          Motion and orientation access was refused.{' '}
+          {gated
+            ? 'Allow it above, or in Settings → Apps → Safari → Motion & Orientation Access if the prompt no longer appears.'
+            : 'Allow it in your browser settings.'}{' '}
+          Or move at over {COURSE_MIN_KN} knot to read a GPS course instead.
         </Note>
       )}
       {permission === 'unsupported' && (

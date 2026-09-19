@@ -151,14 +151,25 @@ export function ChartTab() {
     // it was made in, and its own guard stops two runs overlapping.
   }, [start?.lat, start?.lon, dest?.lat, dest?.lon, boat?.id])
 
-  // A destination handed over from the Datum worksheet's "Take me there".
-  // Taken once — see useGoTo for why it is not read on every render.
+  /*
+   * A destination handed over by another screen — the Datum worksheet's "Take
+   * me there", or "Navigate here" from a long press on any map.
+   *
+   * Watched rather than read once on mount. A press on the plotter's own chart
+   * arrives while this component is already mounted, and a mount-only read
+   * would drop it on the floor — the one case where the crew is looking
+   * straight at the map they expect to update. Still taken exactly once: the
+   * store clears it, so a destination edited by hand afterwards is not
+   * overwritten on the next render.
+   */
+  const handed = useGoTo((s) => s.pending)
   useEffect(() => {
-    const handed = useGoTo.getState().take()
-    if (handed) {
-      setDest({ lat: handed.lat, lon: handed.lon, label: handed.label })
+    if (!handed) return
+    const place = useGoTo.getState().take()
+    if (place) {
+      setDest({ lat: place.lat, lon: place.lon, label: place.label })
     }
-  }, [])
+  }, [handed])
 
   /** Take a one-shot GPS fix and use it as the start point. */
   async function startHere() {

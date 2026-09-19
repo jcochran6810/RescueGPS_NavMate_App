@@ -12,6 +12,7 @@ import { installErrorReporting } from '@/lib/errlog'
 import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
+import { MapActionHost } from '@/components/MapActionHost'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
 import { Toast } from '@/components/Toast'
@@ -120,6 +121,11 @@ export default function App() {
         {tab === 'help' && <HelpTab />}
         {tab === 'admin' && <AdminTab />}
       </main>
+
+      {/* What a long press on any map in the app asked for — the sheet it
+          opens, or the handover to the chart plotter. Here because both need
+          something no map can reach: the tab, and a sheet that contains a map. */}
+      <MapActionHost onNavigate={setTab} />
 
       {/* Stamping is the one action that can be urgent, so the button sits on
           every screen, in the same place, however far the page has scrolled. */}

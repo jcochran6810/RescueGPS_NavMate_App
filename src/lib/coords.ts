@@ -145,6 +145,33 @@ export function toDDM(dd: number, axis: Axis, minuteDigits = 3): string {
   return `${p.deg}° ${p.min.toFixed(minuteDigits)}' ${p.hemi}`
 }
 
+/**
+ * Which of the three ways a position can be written. Structurally the same as
+ * `CoordFormat` in `useCoordFormat`, declared here so the maths does not have
+ * to import a store to print a number.
+ */
+export type CoordStyle = 'dd' | 'ddm' | 'dms'
+
+/**
+ * A whole position, written the way this crew reads positions.
+ *
+ * One function rather than a pair of calls at each site, because a position is
+ * read as one thing — and because the two halves were being formatted
+ * independently in four places, which is how a latitude ends up in DDM beside
+ * a longitude in DD. Empty string for a position that is not one, so a caller
+ * with nothing to show gets nothing rather than "NaN° NaN".
+ */
+export function formatPosition(
+  lat: number,
+  lon: number,
+  style: CoordStyle = 'ddm',
+): string {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return ''
+  if (style === 'dd') return `${toDD(lat)}, ${toDD(lon)}`
+  if (style === 'dms') return `${toDMS(lat, 'lat')}  ${toDMS(lon, 'lon')}`
+  return `${toDDM(lat, 'lat')}  ${toDDM(lon, 'lon')}`
+}
+
 /** Normalise longitude into [-180, 180). */
 export function wrapLon(lon: number): number {
   return ((((lon + 180) % 360) + 360) % 360) - 180
