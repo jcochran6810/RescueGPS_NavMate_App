@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useTeams } from '@/store/useTeams'
 import { useAuth } from '@/store/useAuth'
 import { toast } from '@/store/useToast'
+import { TeamInvite } from '@/components/TeamInvite'
+import { NearbyTeams } from '@/components/NearbyTeams'
 import { Button, Card, EmptyState, Input, Label } from '@/components/ui'
 import type { TeamRole } from '@/lib/types'
 
@@ -98,6 +100,9 @@ export function TeamTab() {
               Anyone with this code can join and see the team's waypoints.
               {isAdmin && ' Rotate it if it gets out.'}
             </p>
+            {/* Every way a crew actually passes a code on, rather than only
+                the one that needs somebody to read out six characters. */}
+            <TeamInvite teamName={team.name} joinCode={team.join_code} />
             {isAdmin && (
               <Button
                 variant="ghost"
@@ -256,6 +261,7 @@ export function TeamTab() {
             Join
           </Button>
         </div>
+        <NearbyTeams />
       </Card>
 
       {activeTeamId === null && teams.length > 0 && (

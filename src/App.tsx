@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
+import { toast } from '@/store/useToast'
 import { useTides } from '@/store/useTides'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useIncidents } from '@/store/useIncidents'
@@ -84,6 +85,43 @@ export default function App() {
     void useIncidents.getState().load()
     void useVessels.getState().load()
     void useAdmin.getState().check()
+  }, [session, ready])
+
+  /*
+   * An invite link: `?join=ABC123`.
+   *
+   * The code is the credential, so following the link is the whole consent —
+   * asking again would be asking somebody to confirm the thing they just
+   * tapped. The parameter is removed as soon as it has been used, so a
+   * refresh does not replay it and the code does not sit in the address bar
+   * of a phone that gets passed round a boat.
+   *
+   * It runs only once there is a session, which is what lets the link survive
+   * the sign-in screen for somebody installing NavMate because of it.
+   */
+  useEffect(() => {
+    if (!ready || !session) return
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('join')
+    if (!code) return
+    params.delete('join')
+    const rest = params.toString()
+    window.history.replaceState(
+      {},
+      '',
+      window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash,
+    )
+    void (async () => {
+      const { team, error } = await useTeams.getState().joinTeam(code.trim())
+      if (error) {
+        toast(error, 'error')
+        return
+      }
+      if (team) {
+        useTeams.getState().setActiveTeam(team.id)
+        toast(`Joined ${team.name}`, 'success')
+      }
+    })()
   }, [session, ready])
 
   if (!ready) {
