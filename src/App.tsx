@@ -17,6 +17,7 @@ import { MapActionHost } from '@/components/MapActionHost'
 import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
+import { SurvivalBanner } from '@/components/SurvivalBanner'
 import { Toast } from '@/components/Toast'
 import { Spinner } from '@/components/ui'
 import { HomeTab } from '@/tabs/HomeTab'
@@ -184,6 +185,11 @@ export default function App() {
       {/* Stamping is the one action that can be urgent, so the button sits on
           every screen, in the same place, however far the page has scrolled. */}
       <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-navy-950/95 backdrop-blur">
+        {/* Above the stamp button, so the clock is read on the way to the one
+            control that is on every screen. It renders nothing at all unless
+            the search already knows the water temperature and when the person
+            went in. */}
+        <SurvivalBanner />
         <div className="mx-auto max-w-3xl pb-2">
           <StampWaypoint />
         </div>

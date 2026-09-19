@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useSarRecords } from '@/store/useSarRecords'
 import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useVessels } from '@/store/useVessels'
 import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
@@ -148,10 +149,21 @@ export function SearchTab() {
     return Math.max(0.5, round2(2 * radiusNM))
   })()
 
-  const [speedStr, setSpeedStr] = useState('6')
+  /*
+   * Search speed, defaulting to the boat rather than to a number.
+   *
+   * It was hardcoded `6`, which meant the time, the ETA and the fuel implied
+   * by a pattern were all worked out for somebody else's boat. The vessel
+   * profile already knows this crew's cruise speed, so that is the default
+   * and an empty box follows the boat instead of a constant.
+   */
+  const vessel = useVessels((s) => s.active(activeTeamId))
+  const defaultSpeedKts =
+    vessel && vessel.cruise_speed_kn > 0 ? vessel.cruise_speed_kn : 6
+  const [speedStr, setSpeedStr] = useState('')
   const speedKts = (() => {
     const n = parseFloat(speedStr)
-    return Number.isFinite(n) && n > 0 ? n : 6
+    return Number.isFinite(n) && n > 0 ? n : defaultSpeedKts
   })()
 
   const plan: SearchPatternPlan | null = useMemo(() => {
@@ -194,6 +206,28 @@ export function SearchTab() {
     if (!running || !fix || !plan) return
     if (shouldAdvance(plan, targetIdx, fix, arrivalFt)) setTargetIdx(targetIdx + 1)
   }, [running, fix, plan, targetIdx, arrivalFt])
+
+  /*
+   * Change the pattern and the steering follows it.
+   *
+   * Everything on this page already recomputed from its inputs — the plan,
+   * the coverage, the POD, the time — but the steering did not: it held the
+   * point number it was on. Widen the spacing while running and the card kept
+   * counting to "point 9 of 6", and past the end of the new list the target
+   * was `undefined`, which is a steering card with nothing to steer to.
+   *
+   * A pattern that has been re-planned is a new pattern, so it starts at its
+   * first point. The shape is what decides — the code and how many points it
+   * has — rather than the object identity, which changes on every render of a
+   * plan that has not actually changed.
+   */
+  const planShape = plan ? `${plan.code}:${plan.points.length}` : ''
+  const lastShape = useRef(planShape)
+  useEffect(() => {
+    if (lastShape.current === planShape) return
+    lastShape.current = planShape
+    setTargetIdx((idx) => (idx === null ? null : 1))
+  }, [planShape])
 
   /* --------------------------------------------------------------- render */
 
@@ -351,6 +385,7 @@ export function SearchTab() {
                 <Input
                   value={speedStr}
                   onChange={(e) => setSpeedStr(e.target.value)}
+                  placeholder={String(defaultSpeedKts)}
                   inputMode="decimal"
                   aria-label="Search speed in knots"
                 />
