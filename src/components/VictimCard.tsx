@@ -50,7 +50,7 @@ export function VictimCard({ incidentId }: { incidentId: string }) {
         {has && (
           <button
             onClick={() => setEditing(true)}
-            className="mb-1.5 shrink-0 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
+            className="mb-1.5 flex min-h-9 shrink-0 items-center rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5"
           >
             Edit
           </button>

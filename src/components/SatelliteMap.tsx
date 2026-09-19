@@ -300,6 +300,41 @@ export function SatelliteMap({
   )
   /** The press-and-hold timer, armed on the way down and cancelled by a pan. */
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Cancels the guard below, if one is armed. */
+  const swallow = useRef<(() => void) | null>(null)
+
+  /**
+   * Eat the click the browser makes up when a finger lifts.
+   *
+   * A touch that ends produces a compatibility mouse sequence —
+   * mousedown, mouseup, **click** — aimed at whatever is under the finger at
+   * that moment. The press menu opens *under the finger* by design, so the
+   * click lands on one of its own items and fires it: press and hold on a
+   * phone opened the menu and instantly chose "Save as waypoint" from it.
+   *
+   * A mouse never does this, which is why every drive in this repo missed it
+   * until one ran with touch input.
+   *
+   * So the first click after the menu opens is swallowed in the capture
+   * phase, before React sees it. The guard lifts on that click or after a
+   * moment, so a real tap on an item — which needs a new touch — still works.
+   */
+  const swallowNextClick = useCallback(() => {
+    swallow.current?.()
+    const eat = (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      done()
+    }
+    const done = () => {
+      document.removeEventListener('click', eat, true)
+      clearTimeout(timer)
+      swallow.current = null
+    }
+    const timer = setTimeout(done, 700)
+    document.addEventListener('click', eat, true)
+    swallow.current = done
+  }, [])
 
   const cancelHold = useCallback(() => {
     if (hold.current) {
@@ -309,8 +344,15 @@ export function SatelliteMap({
   }, [])
 
   // A press timer outliving its map would fire a menu onto a screen that has
-  // moved on.
-  useEffect(() => cancelHold, [cancelHold])
+  // moved on, and a swallow left armed would eat a click meant for whatever
+  // replaced it.
+  useEffect(
+    () => () => {
+      cancelHold()
+      swallow.current?.()
+    },
+    [cancelHold],
+  )
 
   /** Where the map is looking right now, following the crew or not. */
   const from = useCallback(
@@ -422,6 +464,7 @@ export function SatelliteMap({
       // Phones that can, say so — the press has no other feedback until the
       // menu paints, and a crew in gloves needs to know the phone heard it.
       navigator.vibrate?.(8)
+      swallowNextClick()
       setMenu({ x, y, lat: at.lat, lon: at.lon })
     }, TAP_MS)
   }
@@ -1088,7 +1131,7 @@ export function SatelliteMap({
         <button
           onClick={() => void saveArea()}
           disabled={!!saving || !online || !placed}
-          className="rounded-lg border border-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/5 disabled:opacity-50"
+          className="min-h-9 rounded-lg border border-white/10 px-2.5 text-[11px] font-semibold text-slate-300 hover:bg-white/5 disabled:opacity-50"
         >
           {saving
             ? `Saving ${saving.done}/${saving.total}…`

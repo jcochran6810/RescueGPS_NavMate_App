@@ -204,7 +204,7 @@ export function SteerCard({
         type="button"
         onClick={() => setShowTurns((v) => !v)}
         aria-expanded={showTurns}
-        className="mt-2 w-full rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+        className="mt-2 min-h-9 w-full rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5"
       >
         {showTurns ? 'Hide upcoming turns' : 'Show all upcoming turns'}
       </button>

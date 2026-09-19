@@ -70,7 +70,7 @@ export function NearbyWaypoints({
           {onSeeAll && (
             <button
               onClick={onSeeAll}
-              className="mb-1.5 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
+              className="mb-1.5 flex min-h-9 items-center rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5"
             >
               See all {scoped.length > 0 ? `(${scoped.length})` : ''}
             </button>

@@ -73,7 +73,7 @@ export function CompassTab() {
           <p>{error}</p>
           <button
             onClick={() => void once()}
-            className="mt-1.5 rounded-lg border border-red-400/30 px-2.5 py-1 text-xs hover:bg-red-500/10"
+            className="mt-1.5 min-h-9 rounded-lg border border-red-400/30 px-2.5 text-xs hover:bg-red-500/10"
           >
             Try again
           </button>
