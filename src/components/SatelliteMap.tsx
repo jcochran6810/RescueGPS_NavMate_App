@@ -22,6 +22,8 @@ import {
 } from '@/lib/tiles'
 import type { PathMarker } from '@/components/TrackPath'
 import { formatPosition } from '@/lib/coords'
+import { alongForward, forwardScreenDeg, pickRings } from '@/lib/rings'
+import { useUnits } from '@/store/useUnits'
 import { bearingDeg, compassPoint, haversineNM } from '@/lib/geo'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { useMapAction } from '@/store/useMapAction'
@@ -76,6 +78,9 @@ export function SatelliteMap({
   seamarks = false,
   onPick,
   pickHint,
+  rotationDeg = 0,
+  rangeRings = false,
+  forwardDeg = null,
   longPress = 'full',
   height = 320,
   className = '',
@@ -122,6 +127,20 @@ export function SatelliteMap({
   onPick?: (p: { lat: number; lon: number }) => void
   /** One line shown over the map while it is pickable. */
   pickHint?: string
+  /**
+   * Turn the ground under the boat, so the screen faces where the crew does.
+   *
+   * 0 is north up. Pass the heading and the map becomes head-up: what is
+   * ahead of the boat is ahead on the screen, which is the one thing a paper
+   * chart cannot do and the reason anybody asks for it. The rotation is
+   * **display only** — every position, bearing and distance underneath is
+   * worked from coordinates and is unaffected.
+   */
+  rotationDeg?: number
+  /** Draw range rings around the boat: how far away, read off the screen. */
+  rangeRings?: boolean
+  /** The direction the crew is facing, true, for the line ahead of them. */
+  forwardDeg?: number | null
   /**
    * What a press and hold offers.
    *
@@ -177,6 +196,7 @@ export function SatelliteMap({
     { x: number; y: number; lat: number; lon: number } | null
   >(null)
   const coordFormat = useCoordFormat((s) => s.format)
+  const distanceUnit = useUnits((s) => s.distance)
   const askMapAction = useMapAction((s) => s.ask)
   const openWaypoint = useWaypointView((s) => s.open)
 
@@ -262,6 +282,43 @@ export function SatelliteMap({
     [zoom, center.lat, center.lon, w, h],
   )
 
+  /*
+   * Two frames, once the map can turn.
+   *
+   * `project` and `unproject` work in the **map frame**: north up, the way the
+   * tiles are laid out. What a finger touches is in the **screen frame**,
+   * which is the map frame turned by `rotationDeg`. Every gesture therefore
+   * has to cross between them, and forgetting one is a tap that lands
+   * somewhere the crew did not point — so both directions live here, next to
+   * each other, and are the identity when the map is north up.
+   */
+  const rot = ((rotationDeg % 360) + 360) % 360
+  const spin = useCallback(
+    (x: number, y: number, deg: number) => {
+      if (deg === 0) return { x, y }
+      const rad = (deg * Math.PI) / 180
+      const cos = Math.cos(rad)
+      const sin = Math.sin(rad)
+      const dx = x - w / 2
+      const dy = y - h / 2
+      return {
+        x: w / 2 + dx * cos - dy * sin,
+        y: h / 2 + dx * sin + dy * cos,
+      }
+    },
+    [w, h],
+  )
+  /** A point the crew touched, in the frame the tiles are laid out in. */
+  const toMapFrame = useCallback(
+    (x: number, y: number) => spin(x, y, rot),
+    [spin, rot],
+  )
+  /** A projected point, in the frame the crew is looking at. */
+  const toScreenFrame = useCallback(
+    (x: number, y: number) => spin(x, y, -rot),
+    [spin, rot],
+  )
+
   /**
    * A pixel inside the map box back to a geographic position — the exact
    * inverse of `project`, and what turns a tap into a destination.
@@ -282,6 +339,8 @@ export function SatelliteMap({
    */
   const unprojectRef = useRef(unproject)
   unprojectRef.current = unproject
+  const toMapFrameRef = useRef(toMapFrame)
+  toMapFrameRef.current = toMapFrame
 
   /* ---------------------------------------------------------------- gestures
    * One finger pans, two pinch, the wheel zooms. All of it moves the same two
@@ -369,6 +428,15 @@ export function SatelliteMap({
 
   const panBy = useCallback(
     (dx: number, dy: number) => {
+      // A drag is measured on the screen; the map moves in its own frame, so
+      // the delta is turned before it is applied. Without this a head-up map
+      // slides sideways when the crew drags straight down.
+      if (rot !== 0) {
+        const rad = (rot * Math.PI) / 180
+        const cos = Math.cos(rad)
+        const sin = Math.sin(rad)
+        ;[dx, dy] = [dx * cos - dy * sin, dx * sin + dy * cos]
+      }
       setView((v) => {
         const c = from(v)
         return {
@@ -379,7 +447,7 @@ export function SatelliteMap({
         }
       })
     },
-    [from],
+    [from, rot],
   )
 
   /**
@@ -396,23 +464,22 @@ export function SatelliteMap({
         if (z === v.zoom) return v
         if (!v.manual && anchorRef.current) return { ...v, zoom: z }
         const c = from(v)
-        const lon = tileXToLon(
-          lonToTileX(c.lon, v.zoom) + (px - w / 2) / TILE_SIZE,
-          v.zoom,
-        )
-        const lat = tileYToLat(
-          latToTileY(c.lat, v.zoom) + (py - h / 2) / TILE_SIZE,
-          v.zoom,
-        )
+        // The finger is on the screen; the ground it is over is in the map
+        // frame.
+        const m = spin(px, py, rot)
+        const mx = m.x - w / 2
+        const my = m.y - h / 2
+        const lon = tileXToLon(lonToTileX(c.lon, v.zoom) + mx / TILE_SIZE, v.zoom)
+        const lat = tileYToLat(latToTileY(c.lat, v.zoom) + my / TILE_SIZE, v.zoom)
         return {
-          lat: tileYToLat(latToTileY(lat, z) - (py - h / 2) / TILE_SIZE, z),
-          lon: tileXToLon(lonToTileX(lon, z) - (px - w / 2) / TILE_SIZE, z),
+          lat: tileYToLat(latToTileY(lat, z) - my / TILE_SIZE, z),
+          lon: tileXToLon(lonToTileX(lon, z) - mx / TILE_SIZE, z),
           zoom: z,
           manual: true,
         }
       })
     },
-    [from, w, h],
+    [from, w, h, spin, rot],
   )
 
   useEffect(() => {
@@ -460,7 +527,8 @@ export function SatelliteMap({
       if (!r) return
       const x = clientX - r.left
       const y = clientY - r.top
-      const at = unprojectRef.current(x, y)
+      const m = toMapFrameRef.current(x, y)
+      const at = unprojectRef.current(m.x, m.y)
       // A press that produced a menu must not also pan when the finger lifts.
       tap.current = null
       // Phones that can, say so — the press has no other feedback until the
@@ -522,8 +590,9 @@ export function SatelliteMap({
     if (!t || t.moved || Date.now() - t.t > TAP_MS) return
     const r = boxRef.current?.getBoundingClientRect()
     if (!r) return
-    const x = e.clientX - r.left
-    const y = e.clientY - r.top
+    const screenX = e.clientX - r.left
+    const screenY = e.clientY - r.top
+    const { x, y } = toMapFrame(screenX, screenY)
 
     /*
      * A tap on a waypoint opens the waypoint.
@@ -579,8 +648,19 @@ export function SatelliteMap({
   const z = Math.max(baseZoom.min, Math.min(baseZoom.max, Math.round(zoom)))
   /** Between integer zooms the whole tile layer is scaled rather than refetched. */
   const scale = 2 ** (zoom - z)
-  const layerW = w / scale
-  const layerH = h / scale
+  /*
+   * A turned rectangle does not cover the box it came from: rotate a 390×320
+   * map 45° and its corners swing inside the frame, leaving four wedges of
+   * nothing. So the tile layer is grown to the bounding box of the rotation —
+   * exactly, rather than by a blanket √2 — which is the smallest amount of
+   * extra imagery that still fills the screen. At 0° it is the same size it
+   * always was and no extra tile is fetched.
+   */
+  const rad = (rot * Math.PI) / 180
+  const coverW = rot === 0 ? w : Math.abs(w * Math.cos(rad)) + Math.abs(h * Math.sin(rad))
+  const coverH = rot === 0 ? h : Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad))
+  const layerW = coverW / scale
+  const layerH = coverH / scale
 
   // Nothing is fetched until there is a position or a pan. A map that opens
   // on zoom 16 of the middle of the Atlantic costs a crew six tiles of
@@ -688,6 +768,25 @@ export function SatelliteMap({
   const here = fix ? project(fix.lat, fix.lon) : null
   const bar = pickScaleBar(mpp, Math.min(120, w * 0.4))
 
+  /*
+   * The rings hang off the boat, in the frame the crew is looking at — so the
+   * projected position is turned into the screen frame before anything is
+   * drawn around it. On a head-up map following the boat that is the middle
+   * of the screen; after a pan it is wherever the boat now sits.
+   */
+  const ringCenter = useMemo(() => {
+    if (!rangeRings || !here) return null
+    return toScreenFrame(here.x, here.y)
+  }, [rangeRings, here?.x, here?.y, toScreenFrame])
+  const rings = useMemo(
+    () =>
+      rangeRings && ringCenter
+        ? pickRings(mpp, Math.min(w, h) / 2 - 12, distanceUnit)
+        : [],
+    [rangeRings, ringCenter, mpp, w, h, distanceUnit],
+  )
+  const forwardScreen = forwardScreenDeg(forwardDeg, rot)
+
   const fitTrack = () => {
     if (trail.length === 0 && route.length === 0) return
     const pts = [...trail, ...route]
@@ -779,9 +878,19 @@ export function SatelliteMap({
         onPointerUp={onPointerUp}
         onPointerCancel={endPointer}
       >
-        {placed &&
-          baseSources.map((src, i) => layer(src, i === 0 ? 1 : HYBRID_BLEND))}
-        {placed && overlaySources.map((src) => layer(src, 0.9))}
+        {/* The ground turns; the controls and the scale bar do not. */}
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={
+            rot === 0
+              ? undefined
+              : { transform: `rotate(${-rot}deg)`, transformOrigin: '50% 50%' }
+          }
+        >
+          {placed &&
+            baseSources.map((src, i) => layer(src, i === 0 ? 1 : HYBRID_BLEND))}
+          {placed && overlaySources.map((src) => layer(src, 0.9))}
+        </div>
 
         {placed && onPick && pickHint ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-navy-950/70 px-3 py-1.5 text-center text-xs text-slate-200">
@@ -818,6 +927,16 @@ export function SatelliteMap({
             (units.length > 0 ? `, ${units.length} other units on this search` : '')
           }
         >
+          {/*
+           * Everything drawn from coordinates turns with the ground, so a
+           * track laid over the imagery still lies on the imagery. The scale
+           * bar, the range rings and the north arrow are outside this group:
+           * a ring is a circle either way, and a scale bar or a north arrow
+           * that turned with the map would be measuring nothing.
+           */}
+          <g
+            transform={rot === 0 ? undefined : `rotate(${-rot} ${w / 2} ${h / 2})`}
+          >
           {markers.map((m) => {
             const p = project(m.lat, m.lon)
             if (p.x < -40 || p.x > w + 40 || p.y < -20 || p.y > h + 20) {
@@ -835,6 +954,10 @@ export function SatelliteMap({
                 <text
                   x={p.x + 8}
                   y={p.y + 4}
+                  // Turned back the other way, so a name is readable with the
+                  // map facing any direction. Upside-down text on a screen
+                  // somebody is steering by is worse than no label.
+                  transform={rot === 0 ? undefined : `rotate(${rot} ${p.x + 8} ${p.y + 4})`}
                   className="fill-sky-200 text-[11px] font-semibold"
                   style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
                 >
@@ -871,6 +994,7 @@ export function SatelliteMap({
                 <text
                   x={p.x + 9}
                   y={p.y + 4}
+                  transform={rot === 0 ? undefined : `rotate(${rot} ${p.x + 9} ${p.y + 4})`}
                   className="fill-amber-100 text-[11px] font-semibold"
                   style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
                 >
@@ -972,6 +1096,90 @@ export function SatelliteMap({
                 className="fill-emerald-400 stroke-navy-950"
                 strokeWidth="2"
               />
+            </g>
+          )}
+
+          </g>
+
+          {/*
+           * Range rings: how far away a thing is, read off the screen without
+           * measuring it. Centred on the boat, because that is what the
+           * question is relative to — a ring around the middle of a map the
+           * crew has panned away from answers nothing.
+           *
+           * Drawn outside the rotating group on purpose. A circle is a circle
+           * at any rotation, and the labels have to stay upright.
+           */}
+          {rings.length > 0 && ringCenter && (
+            <g>
+              {rings.map((r) => (
+                <circle
+                  key={r.meters}
+                  cx={ringCenter.x}
+                  cy={ringCenter.y}
+                  r={r.px}
+                  fill="none"
+                  className="stroke-sky-300/35"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
+              ))}
+
+              {/* The line ahead, and the distances along it. With the map
+                  turned to the heading this is straight up the screen, which
+                  is the whole point of asking for a head-up map. */}
+              {forwardScreen !== null && (
+                <line
+                  x1={ringCenter.x}
+                  y1={ringCenter.y}
+                  x2={ringCenter.x + alongForward(forwardScreen, rings[rings.length - 1].px).dx}
+                  y2={ringCenter.y + alongForward(forwardScreen, rings[rings.length - 1].px).dy}
+                  className="stroke-sky-300/60"
+                  strokeWidth="1.5"
+                  strokeDasharray="6 4"
+                />
+              )}
+
+              {rings.map((r) => {
+                // On the forward line when there is one, so the numbers sit
+                // where the crew is already looking; due north of the boat
+                // otherwise.
+                const off = alongForward(forwardScreen ?? 0, r.px)
+                return (
+                  <text
+                    key={`l${r.meters}`}
+                    x={ringCenter.x + off.dx}
+                    y={ringCenter.y + off.dy - 4}
+                    textAnchor="middle"
+                    className="fill-sky-100 text-[10px] font-semibold"
+                    style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                  >
+                    {r.label}
+                  </text>
+                )
+              })}
+            </g>
+          )}
+
+          {/* Which way is north, once the map stops pointing that way itself.
+              A turned chart with nothing saying so is how a crew reads a
+              bearing backwards. */}
+          {rot !== 0 && (
+            <g transform={`translate(${w - 26} 26)`}>
+              <circle r="15" className="fill-navy-950/70 stroke-white/15" strokeWidth="1" />
+              <path
+                d="M0,-11 L4,3 L0,0.5 L-4,3 Z"
+                className="fill-red-400 stroke-navy-950"
+                strokeWidth="0.75"
+                transform={`rotate(${-rot})`}
+              />
+              <text
+                y="11"
+                textAnchor="middle"
+                className="fill-slate-200 text-[9px] font-semibold"
+              >
+                N
+              </text>
             </g>
           )}
 
