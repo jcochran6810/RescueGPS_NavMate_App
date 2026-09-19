@@ -310,6 +310,68 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-19 — claude/youthful-knuth-t4hzoo (one north, and a photograph that settled it)
+
+"The map and the compass is just slightly off", with a screenshot of the app
+to copy and the blue dot marked. Four corrections, and the first one explains
+the complaint.
+
+**The dial and the ground had different norths.** The map turns by the true
+heading, because the ground is laid out from coordinates; the dial kept
+whatever reference the crew had picked. With magnetic selected its N sat a
+declination away from the map's, and two norths a few degrees apart on one
+screen is what "slightly off" looks like from a boat.
+
+The previous session's entry argued this was *correct* — the tops agree, and
+a paper chart prints a magnetic rose inside a true one. That reasoning is
+sound about a paper chart and wrong about this screen: on paper the two roses
+are drawn as two rings and nobody mistakes one for the other; here they are
+one dial over one map, and the only way to read them is as one thing. So the
+dial reads **true whenever there is ground under it**, and the reference
+toggle is hidden rather than disabled in that mode — a control that is
+present and inert is a question a crew stops to answer. The toggle still
+governs the bearings table below, where there is no ground to disagree with.
+
+**The black circle behind the bearing is gone, and so is the dial's face.**
+Two discs were covering ground: the face and the hub the digits sat on.
+Legibility comes from outlining the marks now — white graduations, a dark
+stroke on every number — rather than from tinting what is underneath. The
+check counts filled discs inside the dial rather than inspecting one of them,
+so putting either back goes red.
+
+**Range rings became a ruler along the way the crew is facing**, as in the
+photograph: a graduated line from the boat, five minor ticks to a step, the
+distance beside each graduation, a nought at the boat and an arrow at the far
+end. Rings answer "how far is something in any direction", which is not the
+question anyone on a bearing is asking, and three circles drawn over a chart
+hide the chart. One line of ground covered instead of three rings of it.
+
+**Centre-on-me can be found and pressed.** The map's control stacks were
+underneath the dial's overlay. They sit above it now, and the button carries
+a crosshair as well as the word, because on a map with a rose drawn over it
+the shape is found faster than the label is read.
+
+**On asking rather than guessing.** The Play Store listing for the app to
+copy is blocked by this sandbox's egress proxy. Rather than build to a guess,
+the question went back with the options — and the answer ("the dial belongs
+on the map, not beside it") changed the shape of the page. The screenshot
+that followed settled four more things no amount of reasoning would have.
+
+**Verification.** 675 tests. The compass drive is 60 checks, up from 56, and
+each of the four new ones fails with its mechanism removed — the falsified
+dial reads "SSW · Magnetic" where the fixed one reads "S · True", which is
+the reported fault reproduced on demand. One older check was rewritten rather
+than kept: it counted three graduations and went red the moment the ruler
+gained its nought, the label that makes it a ruler rather than a set of
+rings. Drives green at 74 (chart), 60 (compass), 35 (map menu), 29
+(waypoints), 25 (search), 15 (datum), 11 (mobile).
+
+**Left deliberately different from the screenshot**, and said to the user
+rather than silently matched: their rose sits at the bottom of the screen with
+the position separate and higher up, where NavMate centres the dial on the
+boat so the dial and the ruler share an origin; and they print coordinates
+over the map, which NavMate already shows on Home and in the waypoint sheet.
+
 ### 2026-09-19 — claude/youthful-knuth-t4hzoo (a waypoint you can tap, and the dial on the ground)
 
 Three more rounds after the phone testing, each one arriving as a short
