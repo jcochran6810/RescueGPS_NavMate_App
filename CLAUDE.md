@@ -310,6 +310,95 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-19 — claude/youthful-knuth-t4hzoo (a waypoint you can tap, and the dial on the ground)
+
+Three more rounds after the phone testing, each one arriving as a short
+sentence and turning into a structural change.
+
+**"When looking at any waypoint the user should be able to click on it and
+have the option to navigate here."** A waypoint appeared in six places and
+meant something different in each: the Waypoints tab had the photographs, the
+nearest-four on Home had a range, the bearings table had a bearing, and the
+marker on the tracker map had nothing behind it at all. There is one sheet
+now and all four open it — position in the crew's format, range and bearing,
+who saved it, the note, the photographs, and **Navigate here** as the primary
+action.
+
+It opens **by id, not by value**, so a waypoint a teammate edits while it is
+open updates and one they delete closes the sheet rather than showing a copy
+of something gone. Navigate goes through the same seam a long press on the
+chart uses, so there is one route into the plotter. And a marker only opens a
+waypoint when it *is* one: `PathMarker` carries an optional `waypointId`
+rather than assuming its id is a waypoint, so a tap on START opens nothing —
+while a tap on the chart in pick mode still picks, because a crew part-way
+through choosing a destination means the place under their finger.
+
+**"Add a button to show the satellite, hybrid and chart maps under the
+compass, locked into the rotation of the compass… then range rings."**
+
+The map turns by the **true** heading, never the one on the dial. The dial can
+be showing magnetic if the crew asked for it, and the ground is laid out from
+coordinates. Turning a true map by a magnetic heading leaves it wrong by the
+declination — the exact error the compass work removed. The drive shows it:
+at heading 0 the ground sits at 14°, which *is* the local declination.
+
+**A turned map needs two frames and every gesture crosses between them.**
+`project`/`unproject` work north-up the way the tiles are laid out; a finger
+touches the screen frame. A drag is turned before it is applied, a pinch
+resolves the ground under the fingers through the rotation, and a tap comes
+back into the map frame before it becomes a position. The drive measures it
+by watching the boat: 0, 80 px for a drag of 0, 80 on a map turned 174°, and
+**-8, -80 with the rotation removed**. The tile layer grows to the exact
+bounding box of the rotation, because a turned rectangle leaves wedges of
+nothing in the corners of the one it came from; at 0° not one extra tile is
+fetched. The scale bar, the rings and a new north arrow stay outside the
+rotating group, and every label is turned back so it reads upright.
+
+**"Function needs to work like this app"**, with a Play Store link. That
+listing is blocked by the sandbox's egress proxy, so rather than guess at an
+app that could not be seen, the question went back with the options. The
+answer changed the shape of the page: **the dial belongs on the map, not
+beside it.**
+
+So `CompassRose` gained `overMap` (the opaque face becomes a wash — an opaque
+instrument over a chart is a lid), `Compass` gained `behind`, and
+`SatelliteMap` gained `overlay`. `behind` is a **function**, not a node: it
+hands the rose to whatever is behind it to place *inside* that thing's own
+box. The first version wrapped the map, so the rose centred itself on the
+whole component — attribution row included — and sat low and over the edges.
+The rose is no longer forced square either; the SVG letterboxes itself, which
+is what `preserveAspectRatio` does, and the forced square had been shoving the
+dial four pixels off centre.
+
+Worth recording because it looks like the thing CLAUDE.md warns about and is
+not: with magnetic selected there are two norths on the screen, the dial's and
+the map's, a declination apart. The **tops** agree, and the top is what
+"ahead" means. A paper chart prints a magnetic rose inside a true one for
+exactly this reason.
+
+**Two more things a browser caught that reading the code would not.** The
+range rings drew *nothing* at compass zoom: the smallest whole-unit step was a
+twentieth of a nautical mile — 278 m of screen for three rings where there is
+room for about 140. The ladder starts in feet now, metres for a crew reading
+kilometres, because at a hundred yards nobody says "0.05 nautical miles". And
+`pickRings` refuses when the innermost would be under 16 px, which its own
+"draws nothing rather than inventing a spacing" test found: zoomed far enough
+out every step fits, as a circle a fraction of a pixel across.
+
+**The stale-`dist/` trap appeared twice more** and was caught both times by
+reading the build output rather than the drive's exit: once on an unused
+symbol during a falsification, once on a JSX-style comment sitting in a
+JavaScript argument. A drive that reports green after a failed build is
+reporting on the previous build.
+
+**Verification.** 675 tests, up from 658 (`rings.ts` is the new pure
+function). Eight drives: 74 (chart), 56 (compass), 35 (map menu), 29
+(waypoints), 25 (search), 15 (datum), 11 (mobile). The new checks measure
+arrangements rather than assert elements exist — the rose is inside the map
+box and centred on it to within four pixels; the same waypoint opens from a
+list on one screen and from its marker on another, and the marker half fails
+with `waypointId` removed while the list half stays green.
+
 ### 2026-09-19 — claude/youthful-knuth-t4hzoo (the drives had never used a finger)
 
 Asked to test on a phone after the session had already merged. That is not
