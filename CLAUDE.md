@@ -310,6 +310,56 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-19 — claude/youthful-knuth-t4hzoo (the drives had never used a finger)
+
+Asked to test on a phone after the session had already merged. That is not
+something this environment can do — there is no device here, and an installed
+PWA belongs to the person holding it — so the nearest honest thing was done
+instead: the shipped build driven under **real touch input**, dispatched
+through CDP the way Chrome does on a device, with `isMobile`, a pixel ratio of
+3 and an iOS user agent.
+
+It immediately broke the feature this session opened with.
+
+**Press and hold was unusable on a touch screen.** A touch that ends produces
+a compatibility mouse sequence — mousedown, mouseup, **click** — aimed at
+whatever is under the finger at that moment. The press menu opens *under the
+finger* by design, so the click landed on one of its own items and fired it.
+The event log shows the menu opening, "Save as waypoint" firing on release,
+and the next tap landing in the sheet it had opened. On a phone a crew would
+press the chart and get a waypoint sheet, never a menu.
+
+**Every check on that feature had passed** — 29 of them — because a mouse does
+not generate that click. That is the lesson worth keeping from this round: a
+drive at phone width with a mouse tests layout and logic, and says nothing
+whatever about a gesture. `scripts/drive-mobile.mjs` exists now so the next
+gesture gets tested as one.
+
+The fix swallows the first click after the menu opens, in the capture phase,
+before React sees it; the guard lifts on that click or after a moment, so a
+real tap on an item — which needs a new touch — still works. Both touch checks
+fail with it removed. That falsification was itself wrong the first time: the
+build failed on an unused symbol, the drive ran against a **stale `dist/`**
+and reported green. Same trap the log records from two sessions ago, caught by
+reading the build output rather than the drive's exit code.
+
+**Fourteen controls were too small for a thumb** — Add waypoint, Refresh, See
+all, Save imagery for offline, the waypoint card's actions, Show all upcoming
+turns — all 26–27 px tall. They are 36 px now. iOS asks for 44 pt; 36 is what
+these layouts hold without pushing the content a crew came to read off the
+screen.
+
+Also checked, and fine: no section scrolls sideways at phone size, nothing
+tappable sits under the home indicator (the stamp button clears it by 16 px,
+the full-screen map by 73), a few pixels of hand-wobble during a press is
+still a press, and a drag is still a pan.
+
+**Stated plainly: this is emulation, not a phone.** Four things remain
+unanswerable here and are in `fix_list.md` — the magnetometer, iOS Safari's
+own `requestPermission` gate, the service worker's offline path, and the tide
+toggle, which has still never rendered because NOAA is blocked from this
+sandbox.
+
 ### 2026-09-19 — claude/youthful-knuth-t4hzoo (a long list, and three bugs inside it)
 
 A session of requests arriving faster than they could be finished, so they were

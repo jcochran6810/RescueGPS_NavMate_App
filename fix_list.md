@@ -8,6 +8,15 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-19 — **Four things can only be answered on a real phone.** The
+      build is now driven under touch emulation (`scripts/drive-mobile.mjs`),
+      which caught the press-menu click-through, but emulation stops short of:
+      the compass against a real magnetometer; whether iOS Safari's motion
+      prompt now appears on opening the Compass page with no button to press;
+      the service worker's offline path (Playwright route stubs do not
+      intercept SW fetches, so every drive blocks service workers); and
+      whether a 500 ms press feels right to a thumb in wet gloves.
+
 - [ ] 2026-09-19 — **Anyone signed in can insert themselves as a participant
       of any incident.** `incident_participants`' INSERT policy is
       `user_id = auth.uid() OR you are the IC`, which is the command system's
