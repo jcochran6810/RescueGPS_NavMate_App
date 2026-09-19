@@ -27,7 +27,13 @@ export function MapActionHost({ onNavigate }: { onNavigate: (tab: TabId) => void
 
   useEffect(() => {
     if (request?.kind !== 'navigate') return
-    goTo({ lat: request.lat, lon: request.lon, label: 'Dropped pin' })
+    goTo({
+      lat: request.lat,
+      lon: request.lon,
+      // A press on the chart has no name; a waypoint asked for by name keeps
+      // it, so the plotter says where the crew is going rather than "pin".
+      label: request.label ?? 'Dropped pin',
+    })
     onNavigate('chart')
     // Cleared here rather than by the plotter: this request is finished the
     // moment it has been handed on, and `useGoTo` has its own consumed-once

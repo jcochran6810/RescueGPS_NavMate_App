@@ -57,6 +57,17 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    /*
+     * Wait for auth to have an answer before acting on the lack of a session.
+     *
+     * On the first render `session` is null because it has not been restored
+     * yet, not because anyone signed out — and treating that as a sign-out
+     * ran `useTeams.reset()`, which cleared the selected team. The load that
+     * followed then found `activeTeamId` already null, decided the stored
+     * selection was stale and **deleted it from localStorage**, so every
+     * refresh dropped the crew back to "Private — only me" for good.
+     */
+    if (!ready) return
     if (!session) {
       useTeams.getState().reset()
       // The waypoint cache is deliberately NOT cleared here — it may hold an
@@ -73,7 +84,7 @@ export default function App() {
     void useIncidents.getState().load()
     void useVessels.getState().load()
     void useAdmin.getState().check()
-  }, [session])
+  }, [session, ready])
 
   if (!ready) {
     return (

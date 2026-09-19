@@ -97,6 +97,13 @@ export function newIncidentNumber(now = new Date(), seed?: string): string {
 export interface HandoffInput {
   incident: Incident
   records: SarRecord[]
+  /**
+   * Who is being looked for, already in `victims` column names. Optional
+   * because the handoff has always worked without it and an export that
+   * refuses to run for a missing description is worse than one that says
+   * nothing about it.
+   */
+  victim?: Record<string, unknown> | null
 }
 
 /**
@@ -156,6 +163,8 @@ export function incidentHandoff(input: HandoffInput): string {
         time_last_alive: incident.time_last_alive,
         summary: incident.summary,
       },
+      // Their table name, their column names — an insert, not a translation.
+      victims: input.victim ? [input.victim] : [],
       lkp_history: lkps.map((r) => ({
         lat: r.lat,
         lng: r.lon,

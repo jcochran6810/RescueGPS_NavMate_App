@@ -25,6 +25,15 @@ import {
 import type { LkpPayload, SarRecord } from '@/lib/types'
 import { Button, Card, Label } from '@/components/ui'
 import { JoinIncidentButton } from '@/components/JoinIncident'
+import { VictimSheet } from '@/components/VictimCard'
+import { useVictims } from '@/store/useVictims'
+import {
+  EMPTY_VICTIM,
+  victimIsEmpty,
+  victimRow,
+  victimSummary,
+  type VictimDraft,
+} from '@/lib/victim'
 
 /**
  * The incident — the search this team is on. One card, three states: open a
@@ -57,6 +66,14 @@ export function IncidentCard() {
   const [type, setType] = useState('piw')
   const [name, setName] = useState('')
   const [closing, setClosing] = useState(false)
+  /*
+   * The description of who is being looked for, collected while the incident
+   * is being opened rather than after. It is held here until the incident has
+   * an id — `victims` is keyed on one — and written the moment it does, so
+   * the crew types it once, at the moment they are being told it.
+   */
+  const [victim, setVictim] = useState<VictimDraft | null>(null)
+  const [describing, setDescribing] = useState(false)
   const [closeAs, setCloseAs] = useState(CLOSE_STATUSES[0].value)
 
   async function open() {
@@ -94,6 +111,11 @@ export function IncidentCard() {
         lkp_source: lkpSourceOf(lkp),
         incident_time: lkp.recorded_at,
       })
+    }
+
+    if (victim && !victimIsEmpty(victim)) {
+      await useVictims.getState().save(created.id, victim)
+      setVictim(null)
     }
 
     setName('')
@@ -134,6 +156,29 @@ export function IncidentCard() {
             className="min-h-11 w-full min-w-0 rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => setDescribing(true)}
+          className="mt-2 w-full rounded-xl border border-white/10 px-3 py-2 text-left text-xs text-slate-300 hover:bg-white/5"
+        >
+          <span className="font-semibold text-slate-200">
+            {victim && !victimIsEmpty(victim)
+              ? 'Victim details ✓'
+              : 'Victim details (optional)'}
+          </span>
+          <span className="mt-0.5 block text-slate-400">
+            {victim && !victimIsEmpty(victim)
+              ? victimSummary(victim)
+              : 'Clothing colour, life jacket, build — what searchers scan for.'}
+          </span>
+        </button>
+        {describing && (
+          <VictimSheet
+            initial={victim ?? EMPTY_VICTIM}
+            onSave={(draft) => setVictim(draft)}
+            onDismiss={() => setDescribing(false)}
+          />
+        )}
         <Button variant="primary" className="mt-2 w-full" onClick={() => void open()}>
           Start New Search Incident
         </Button>
@@ -214,9 +259,14 @@ export function IncidentCard() {
           <Button
             variant="ghost"
             onClick={() => {
+              const saved = useVictims.getState().drafts[incident.id] ?? null
               const report = incidentHandoff({
                 incident,
                 records: sar.visible(),
+                victim:
+                  saved && !victimIsEmpty(saved)
+                    ? victimRow(saved, incident.id)
+                    : null,
               })
               const stamp = new Date().toISOString().slice(0, 16).replace(':', '')
               download(

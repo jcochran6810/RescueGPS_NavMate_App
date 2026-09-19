@@ -30,6 +30,7 @@ import {
 } from '@/lib/sar'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import { IncidentCard } from '@/components/IncidentCard'
+import { VictimCard } from '@/components/VictimCard'
 import type {
   CluePayload,
   DriftMarkerPayload,
@@ -130,6 +131,14 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
       )}
 
       <IncidentCard />
+
+      {/* Who is being looked for. Under the incident because that is what it
+
+          belongs to — it writes the command system's `victims` table, keyed
+
+          on this incident, so nobody retypes it at the other end. */}
+
+      {incident && <VictimCard incidentId={incident.id} />}
 
       <LkpCard
         lkp={lkp}

@@ -23,12 +23,14 @@ export interface MapActionRequest {
   kind: MapActionKind
   lat: number
   lon: number
+  /** What to call the place once it gets there. */
+  label?: string
 }
 
 interface MapActionState {
   request: MapActionRequest | null
   /** Ask for something to be done with the position under the press. */
-  ask: (kind: MapActionKind, at: { lat: number; lon: number }) => void
+  ask: (kind: MapActionKind, at: { lat: number; lon: number; label?: string }) => void
   clear: () => void
 }
 
@@ -36,7 +38,7 @@ export const useMapAction = create<MapActionState>()((set) => ({
   request: null,
   ask: (kind, at) => {
     if (!Number.isFinite(at.lat) || !Number.isFinite(at.lon)) return
-    set({ request: { kind, lat: at.lat, lon: at.lon } })
+    set({ request: { kind, lat: at.lat, lon: at.lon, label: at.label } })
   },
   clear: () => set({ request: null }),
 }))
