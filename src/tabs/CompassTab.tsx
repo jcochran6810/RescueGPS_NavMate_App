@@ -53,6 +53,18 @@ export function CompassTab() {
   const lat = fix?.lat ?? null
   const lon = fix?.lon ?? null
 
+  const [showMap, setShowMap] = useState(false)
+  const [base, setBase] = useState<MapBase>('satellite')
+  const [headUp, setHeadUp] = useState(true)
+  /*
+   * The map turns by the true heading and falls back to course over ground,
+   * which is true as well. The dial above it may be showing magnetic if the
+   * crew asked for that — and the two disagree by the declination, which is
+   * not a fault: a paper chart prints a magnetic rose inside a true one for
+   * exactly this reason. What matters is that the top of both is ahead.
+   */
+  const mapHeading = trueHeading ?? fix?.heading ?? null
+
   /** The saved waypoints, for the map under the dial. */
   const markers = useMemo(
     () =>
@@ -110,13 +122,39 @@ export function CompassTab() {
         </div>
       )}
 
-      <Compass lat={lat} lon={lon} />
+      <CompassMapControls
+        show={showMap}
+        onShow={setShowMap}
+        base={base}
+        onBase={setBase}
+        headUp={headUp}
+        onHeadUp={setHeadUp}
+        heading={mapHeading}
+      />
 
-      <CompassMap
+      <Compass
         lat={lat}
         lon={lon}
-        heading={trueHeading ?? fix?.heading ?? null}
-        markers={markers}
+        behind={
+          showMap
+            ? (rose) => (
+            <SatelliteMap
+              trail={[]}
+              fix={fix}
+              markers={markers}
+              base={base}
+              height={340}
+              // Head-up needs a heading to be head-up *to*. Without one the
+              // map stays north-up rather than freezing at the last reading,
+              // which would be a map claiming a direction it does not have.
+              rotationDeg={headUp && mapHeading !== null ? mapHeading : 0}
+              rangeRings
+              forwardDeg={mapHeading}
+              overlay={rose}
+            />
+              )
+            : undefined
+        }
       />
 
       <Card>
@@ -184,42 +222,32 @@ export function CompassTab() {
 }
 
 /**
- * The ground under the dial, turned to face the way the crew is.
+ * The controls for the map behind the dial.
  *
- * A compass says which way you are pointing; this says what is that way. The
- * two together are what a hand-bearing compass and a chart do on a table, and
- * the reason the map has to turn is that nobody can hold a chart at a bearing
- * and read it at the same time.
- *
- * **It is off until asked for.** Imagery is the most expensive thing this app
- * fetches and the compass is useful without it — a crew out of coverage with
- * a dead link still has a dial. So the map is a button, and the button says
- * what it is about to do.
- *
- * **Head-up is the default, and north-up is one tap away.** A turned map is
- * what the request was for, but a chart read against a printed one has to be
- * north-up or the two disagree, so both are offered and the north arrow says
- * which is which.
+ * Above the compass rather than below it, because they are about what the
+ * crew is looking *at* — and off by default: imagery is the most expensive
+ * thing this app fetches, and a crew out of coverage still has a dial.
  */
-function CompassMap({
-  lat,
-  lon,
+function CompassMapControls({
+  show,
+  onShow,
+  base,
+  onBase,
+  headUp,
+  onHeadUp,
   heading,
-  markers,
 }: {
-  lat: number | null
-  lon: number | null
+  show: boolean
+  onShow: (v: boolean) => void
+  base: MapBase
+  onBase: (b: MapBase) => void
+  headUp: boolean
+  onHeadUp: (v: boolean) => void
   heading: number | null
-  markers: { id: string; name: string; lat: number; lon: number; waypointId: string }[]
 }) {
-  const [show, setShow] = useState(false)
-  const [base, setBase] = useState<MapBase>('satellite')
-  const [headUp, setHeadUp] = useState(true)
-  const fix = useTracker((s) => s.fix)
-
   if (!show) {
     return (
-      <Button variant="ghost" className="w-full" onClick={() => setShow(true)}>
+      <Button variant="ghost" className="w-full" onClick={() => onShow(true)}>
         Show the map under the compass
       </Button>
     )
@@ -228,16 +256,16 @@ function CompassMap({
   return (
     <Card>
       <div className="flex items-center justify-between gap-2">
-        <Label>Map</Label>
+        <Label>Map under the dial</Label>
         <button
-          onClick={() => setShow(false)}
+          onClick={() => onShow(false)}
           className="mb-1.5 flex min-h-9 items-center rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5"
         >
           Hide map
         </button>
       </div>
 
-      <div className="mb-2 space-y-1.5">
+      <div className="space-y-1.5">
         <Segmented
           label="Map layer"
           value={base}
@@ -246,42 +274,25 @@ function CompassMap({
             { id: 'hybrid' as MapBase, label: 'Hybrid', hint: 'The chart blended over the imagery' },
             { id: 'chart' as MapBase, label: 'Chart', hint: 'The NOAA chart alone' },
           ]}
-          onChange={setBase}
+          onChange={onBase}
         />
         <Segmented
           label="Map orientation"
           value={headUp ? 'head' : 'north'}
           options={[
-            { id: 'head', label: 'Head up', hint: 'The map turns with you' },
-            { id: 'north', label: 'North up', hint: 'The map stays put, like a printed chart' },
+            { id: 'head', label: 'Head up', hint: 'The ground turns with you' },
+            { id: 'north', label: 'North up', hint: 'The ground stays put, like a printed chart' },
           ]}
-          onChange={(v) => setHeadUp(v === 'head')}
+          onChange={(v) => onHeadUp(v === 'head')}
         />
       </div>
-
-      <SatelliteMap
-        trail={[]}
-        fix={fix}
-        markers={markers}
-        base={base}
-        height={300}
-        // Head-up needs a heading to be head-up *to*. Without one the map
-        // stays north-up rather than freezing at whatever the last reading
-        // was, which would be a map claiming a direction it does not have.
-        rotationDeg={headUp && heading !== null ? heading : 0}
-        rangeRings
-        forwardDeg={heading}
-      />
 
       <p className="mt-1.5 text-xs text-slate-400">
         {headUp
           ? heading === null
-            ? 'Waiting for a heading — the map stays north up until there is one.'
-            : 'The map is turned to your heading, so straight up the screen is straight ahead. The rings are distance from you.'
+            ? 'Waiting for a heading — the ground stays north up until there is one.'
+            : 'The ground is turned to your heading, so straight up the dial is straight ahead. The rings are distance from you.'
           : 'North is up, as on a printed chart. The dashed line is the way you are facing.'}
-        {lat === null || lon === null
-          ? ' Take a position fix and the map will open where you are.'
-          : ''}
       </p>
     </Card>
   )

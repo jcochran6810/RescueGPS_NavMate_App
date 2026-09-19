@@ -444,6 +444,38 @@ ok('and turns the right way — the heading comes to the top of the screen',
    `+90° of heading moved the ground ${Math.round(delta(at90, at0))}°, ` +
    `+110° moved it ${Math.round(delta(at200, at90))}°`)
 
+/*
+ * The arrangement the crew asked for: one view, dial on the ground, not a
+ * picture beside one. Checked by geometry rather than by the presence of two
+ * elements — the rose has to sit *inside* the map box and be centred on it,
+ * which is what makes it a rose on a chart.
+ */
+const overlay = await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  const rose = document.querySelector('svg[viewBox="-100 -100 200 200"]')
+  if (!box || !rose) return null
+  const b = box.getBoundingClientRect()
+  const r = rose.getBoundingClientRect()
+  return {
+    inside: r.left >= b.left - 2 && r.right <= b.right + 2 && r.top >= b.top - 2 && r.bottom <= b.bottom + 2,
+    centred: Math.abs((r.left + r.right) / 2 - (b.left + b.right) / 2) < 4
+      && Math.abs((r.top + r.bottom) / 2 - (b.top + b.bottom) / 2) < 4,
+    facePaint: (() => {
+      const face = rose.querySelector('circle')
+      return face ? face.getAttribute('fill') : null
+    })(),
+  }
+})
+ok('the dial is drawn on the map, centred on it', !!overlay && overlay.inside && overlay.centred,
+   overlay ? `inside ${overlay.inside}, centred ${overlay.centred}` : 'rose or map missing')
+ok('and its face is see-through, so it does not hide the ground',
+   !!overlay && /rgba/.test(overlay.facePaint ?? ''), overlay?.facePaint ?? 'none')
+ok('while the map under it still takes a gesture',
+   await page.evaluate(() => {
+     const layer = document.querySelector('div.touch-none .pointer-events-none.absolute.inset-0')
+     return !!layer
+   }))
+
 ok('a north arrow says which way north went',
    await page.locator('svg text').filter({ hasText: /^N$/ }).count() > 0)
 

@@ -81,6 +81,7 @@ export function SatelliteMap({
   rotationDeg = 0,
   rangeRings = false,
   forwardDeg = null,
+  overlay,
   longPress = 'full',
   height = 320,
   className = '',
@@ -141,6 +142,20 @@ export function SatelliteMap({
   rangeRings?: boolean
   /** The direction the crew is facing, true, for the line ahead of them. */
   forwardDeg?: number | null
+  /**
+   * Something drawn on top of the ground, inside the map box.
+   *
+   * Inside, because that is the whole difference between an instrument laid
+   * over a chart and a picture sitting next to one — and because the box is
+   * the only element that knows where the ground actually is. The map's own
+   * attribution and save-for-offline row sit outside it, so an overlay
+   * positioned against the component as a whole ends up low and too tall,
+   * which is exactly what the first version did.
+   *
+   * Deaf to touch, so the map underneath still pans, pinches and answers a
+   * press.
+   */
+  overlay?: ReactNode
   /**
    * What a press and hold offers.
    *
@@ -1347,6 +1362,12 @@ export function SatelliteMap({
             ]}
           />
         )}
+
+        {overlay ? (
+          <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center p-2">
+            {overlay}
+          </div>
+        ) : null}
 
         {imagery !== 'ok' && imagery !== 'idle' && (
           // Stops short of the right edge so it never sits over the zoom

@@ -77,6 +77,7 @@ export const CompassRose = memo(function CompassRose({
   tilt,
   caption,
   degraded = false,
+  overMap = false,
 }: {
   /** Degrees, or null when there is no reading and the rose sits north-up. */
   heading: number | null
@@ -88,6 +89,16 @@ export const CompassRose = memo(function CompassRose({
   caption?: string
   /** Draw it as untrustworthy — the reading is there but should not be used. */
   degraded?: boolean
+  /**
+   * Drawn over a map rather than on the page.
+   *
+   * The face goes: a dial is an instrument laid over the ground, and an opaque
+   * one hides the thing it is pointing at. What stays is everything that
+   * carries information — the graduations, the digits, the north arm, the
+   * index — over a barely-there wash that keeps them legible against bright
+   * imagery without hiding it.
+   */
+  overMap?: boolean
 }) {
   const roseRef = useRef<SVGGElement>(null)
   /** The drawn angle, unwrapped, which is why it is not React state. */
@@ -235,7 +246,9 @@ export const CompassRose = memo(function CompassRose({
   return (
     <svg
       viewBox="-100 -100 200 200"
-      className="mx-auto block w-full max-w-[19rem]"
+      className={
+        'mx-auto block ' + (overMap ? 'h-full w-full' : 'w-full max-w-[19rem]')
+      }
       role="img"
       aria-label={
         heading === null
@@ -256,10 +269,23 @@ export const CompassRose = memo(function CompassRose({
         </linearGradient>
       </defs>
 
-      {/* Bezel. */}
-      <circle r="97" fill="url(#rose-face)" />
-      <circle r="97" fill="none" stroke="url(#rose-rim)" strokeWidth="2.5" />
-      <circle r="74" fill="none" className="stroke-white/5" strokeWidth="1" />
+      {/* Bezel. Over a map the face is a wash rather than a lid: enough to
+          hold the graduations against bright imagery, not enough to hide the
+          ground the dial is pointing at. */}
+      <circle
+        r="97"
+        fill={overMap ? 'rgba(6,19,31,0.28)' : 'url(#rose-face)'}
+      />
+      <circle
+        r="97"
+        fill="none"
+        stroke="url(#rose-rim)"
+        strokeWidth="2.5"
+        opacity={overMap ? 0.85 : 1}
+      />
+      {!overMap && (
+        <circle r="74" fill="none" className="stroke-white/5" strokeWidth="1" />
+      )}
 
       {/* `data-rose` is how the headless drive reads the drawn angle back out
           — the one thing about this dial that cannot be checked from a

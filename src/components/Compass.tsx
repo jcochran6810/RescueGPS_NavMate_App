@@ -32,9 +32,23 @@ import { Button, Card, Label } from '@/components/ui'
 const COURSE_MIN_KN = 1
 
 export function Compass({
+  behind,
   lat,
   lon,
 }: {
+  /**
+   * Something to draw the dial on top of — the map, in practice.
+   *
+   * The dial is an instrument laid over the ground; given a map it stops
+   * being a picture beside one and becomes a rose on a chart, which is the
+   * arrangement every paper chart has used for four hundred years.
+   *
+   * A function rather than a node: it is handed the rose to place *inside*
+   * its own box, which is the only element that knows where the ground is.
+   * This component keeps knowing nothing about tiles, layers or what the crew
+   * chose to look at.
+   */
+  behind?: (rose: React.ReactNode) => React.ReactNode
   lat: number | null
   lon: number | null
 }) {
@@ -167,14 +181,38 @@ export function Compass({
         />
       </div>
 
-      <CompassRose
-        heading={shown}
-        markers={markers}
-        level={usingSensor ? level : null}
-        tilt={usingSensor ? tilt : null}
-        caption={caption}
-        degraded={degraded}
-      />
+      {behind ? (
+        behind(
+          /*
+           * No forced square: the SVG letterboxes itself inside whatever space
+           * there is (`preserveAspectRatio` defaults to centring), so the dial
+           * stays round and stays centred on the ground whatever shape the map
+           * box is. Forcing an aspect ratio here made the wrapper a few pixels
+           * wider than the box and shoved the dial off centre — which the
+           * drive measured before anyone believed it.
+           */
+          <div className="h-full w-full">
+            <CompassRose
+              heading={shown}
+              markers={markers}
+              level={usingSensor ? level : null}
+              tilt={usingSensor ? tilt : null}
+              caption={caption}
+              degraded={degraded}
+              overMap
+            />
+          </div>,
+        )
+      ) : (
+        <CompassRose
+          heading={shown}
+          markers={markers}
+          level={usingSensor ? level : null}
+          tilt={usingSensor ? tilt : null}
+          caption={caption}
+          degraded={degraded}
+        />
+      )}
 
       <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
         <Stat label="Source">
