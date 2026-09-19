@@ -54,6 +54,7 @@ export function Compass({
 }) {
   const {
     heading: sensorHeading,
+    trueHeading,
     shownReference,
     reference,
     declination,
@@ -136,8 +137,23 @@ export function Compass({
    * from positions and has no magnetic version.
    */
   const usingSensor = sensorHeading !== null
-  const shown = usingSensor ? sensorHeading : gpsCourse
-  const dialReference: HeadingReference = usingSensor ? shownReference : 'true'
+  /*
+   * With the map under it the dial reads TRUE, whatever the crew picked.
+   *
+   * The ground is laid out from coordinates, so the map turns by the true
+   * heading; a dial showing magnetic beside it puts its N a declination away
+   * from the map's north, and the two being a few degrees apart is exactly
+   * what "the map and the compass is just slightly off" looks like. One
+   * screen, one north. The toggle still governs the bearings table below,
+   * where there is no ground to disagree with.
+   */
+  const dialReference: HeadingReference =
+    !usingSensor || behind ? 'true' : shownReference
+  const shown = usingSensor
+    ? dialReference === 'true'
+      ? trueHeading
+      : sensorHeading
+    : gpsCourse
 
   /** A true bearing, put into whatever the dial is showing. */
   const toDial = (trueDeg: number): number =>
@@ -174,11 +190,17 @@ export function Compass({
     <Card>
       <div className="mb-3 flex items-center justify-between gap-3">
         <Label>Compass</Label>
-        <ReferenceToggle
-          value={reference}
-          onChange={setReference}
-          disabled={declination === null}
-        />
+        {/* Hidden while the map is under the dial, because in that mode it
+            does nothing: one screen, one north. It is not merely disabled —
+            a control that is present and inert is a question a crew stops to
+            answer. */}
+        {!behind && (
+          <ReferenceToggle
+            value={reference}
+            onChange={setReference}
+            disabled={declination === null}
+          />
+        )}
       </div>
 
       {behind ? (

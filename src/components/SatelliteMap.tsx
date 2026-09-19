@@ -801,6 +801,8 @@ export function SatelliteMap({
     [rangeRings, ringCenter, mpp, w, h, distanceUnit],
   )
   const forwardScreen = forwardScreenDeg(forwardDeg, rot)
+  /** "0.0 mi" — the same unit the graduations use, so the scale reads as one. */
+  const zeroLabel = rings.length > 0 ? `0 ${rings[0].label.split(' ')[1]}` : ''
 
   const fitTrack = () => {
     if (trail.length === 0 && route.length === 0) return
@@ -1117,62 +1119,118 @@ export function SatelliteMap({
           </g>
 
           {/*
-           * Range rings: how far away a thing is, read off the screen without
-           * measuring it. Centred on the boat, because that is what the
-           * question is relative to — a ring around the middle of a map the
-           * crew has panned away from answers nothing.
+           * The range scale: a ruler laid along the way the crew is facing,
+           * graduated in the unit they read.
            *
-           * Drawn outside the rotating group on purpose. A circle is a circle
-           * at any rotation, and the labels have to stay upright.
+           * Rings came first and were wrong for this screen. A ring tells you
+           * how far something is *in any direction*, which is a question
+           * nobody on a bearing is asking — and three circles drawn over a
+           * chart hide the chart. A ruler ahead answers the question actually
+           * being asked, "how far is that", and covers one line of ground
+           * instead of three rings of it.
+           *
+           * Drawn outside the rotating group: it hangs off the boat in the
+           * frame the crew is looking at, and its labels have to stay upright.
            */}
-          {rings.length > 0 && ringCenter && (
+          {rings.length > 0 && ringCenter && forwardScreen !== null && (
             <g>
-              {rings.map((r) => (
-                <circle
-                  key={r.meters}
-                  cx={ringCenter.x}
-                  cy={ringCenter.y}
-                  r={r.px}
-                  fill="none"
-                  className="stroke-sky-300/35"
-                  strokeWidth="1"
-                  strokeDasharray="4 4"
-                />
-              ))}
-
-              {/* The line ahead, and the distances along it. With the map
-                  turned to the heading this is straight up the screen, which
-                  is the whole point of asking for a head-up map. */}
-              {forwardScreen !== null && (
-                <line
-                  x1={ringCenter.x}
-                  y1={ringCenter.y}
-                  x2={ringCenter.x + alongForward(forwardScreen, rings[rings.length - 1].px).dx}
-                  y2={ringCenter.y + alongForward(forwardScreen, rings[rings.length - 1].px).dy}
-                  className="stroke-sky-300/60"
-                  strokeWidth="1.5"
-                  strokeDasharray="6 4"
-                />
-              )}
-
-              {rings.map((r) => {
-                // On the forward line when there is one, so the numbers sit
-                // where the crew is already looking; due north of the boat
-                // otherwise.
-                const off = alongForward(forwardScreen ?? 0, r.px)
+              {(() => {
+                const far = rings[rings.length - 1]
+                const end = alongForward(forwardScreen, far.px)
+                const step = rings[0].px
+                // Five minor ticks to a step, as a rule is divided.
+                const minors = []
+                for (let i = 1; i * (step / 5) < far.px; i++) {
+                  const at = alongForward(forwardScreen, i * (step / 5))
+                  const across = alongForward(forwardScreen + 90, 4)
+                  minors.push(
+                    <line
+                      key={i}
+                      x1={ringCenter.x + at.dx - across.dx}
+                      y1={ringCenter.y + at.dy - across.dy}
+                      x2={ringCenter.x + at.dx + across.dx}
+                      y2={ringCenter.y + at.dy + across.dy}
+                      className="stroke-white/70"
+                      strokeWidth="1"
+                    />,
+                  )
+                }
+                const head = alongForward(forwardScreen, far.px + 12)
+                const barbL = alongForward(forwardScreen + 150, 9)
+                const barbR = alongForward(forwardScreen - 150, 9)
                 return (
-                  <text
-                    key={`l${r.meters}`}
-                    x={ringCenter.x + off.dx}
-                    y={ringCenter.y + off.dy - 4}
-                    textAnchor="middle"
-                    className="fill-sky-100 text-[10px] font-semibold"
-                    style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
-                  >
-                    {r.label}
-                  </text>
+                  <g style={{ paintOrder: 'stroke' }}>
+                    <line
+                      x1={ringCenter.x}
+                      y1={ringCenter.y}
+                      x2={ringCenter.x + end.dx}
+                      y2={ringCenter.y + end.dy}
+                      stroke="#06131f"
+                      strokeOpacity="0.55"
+                      strokeWidth="4"
+                    />
+                    <line
+                      x1={ringCenter.x}
+                      y1={ringCenter.y}
+                      x2={ringCenter.x + end.dx}
+                      y2={ringCenter.y + end.dy}
+                      className="stroke-white"
+                      strokeWidth="1.5"
+                      strokeDasharray="5 4"
+                    />
+                    {minors}
+                    {/* The arrow at the far end says which way this is read. */}
+                    <polygon
+                      points={
+                        `${ringCenter.x + head.dx},${ringCenter.y + head.dy} ` +
+                        `${ringCenter.x + head.dx + barbL.dx},${ringCenter.y + head.dy + barbL.dy} ` +
+                        `${ringCenter.x + head.dx + barbR.dx},${ringCenter.y + head.dy + barbR.dy}`
+                      }
+                      className="fill-white stroke-navy-950"
+                      strokeWidth="1"
+                    />
+                  </g>
+                )
+              })()}
+
+              {/* A graduation at each step, with the distance beside it —
+                  beside, not on, so the number never sits on the line it is
+                  labelling. */}
+              {rings.map((r) => {
+                const at = alongForward(forwardScreen, r.px)
+                const across = alongForward(forwardScreen + 90, 7)
+                const label = alongForward(forwardScreen + 90, 13)
+                return (
+                  <g key={r.meters}>
+                    <line
+                      x1={ringCenter.x + at.dx - across.dx}
+                      y1={ringCenter.y + at.dy - across.dy}
+                      x2={ringCenter.x + at.dx + across.dx}
+                      y2={ringCenter.y + at.dy + across.dy}
+                      className="stroke-white"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x={ringCenter.x + at.dx + label.dx}
+                      y={ringCenter.y + at.dy + label.dy + 4}
+                      className="fill-white text-[12px] font-semibold"
+                      style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3.5 }}
+                    >
+                      {r.label}
+                    </text>
+                  </g>
                 )
               })}
+
+              {/* Nought, at the boat — the end a ruler is measured from. */}
+              <text
+                x={ringCenter.x + alongForward(forwardScreen + 90, 13).dx}
+                y={ringCenter.y + alongForward(forwardScreen + 90, 13).dy + 4}
+                className="fill-white text-[12px] font-semibold"
+                style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3.5 }}
+              >
+                {zeroLabel}
+              </text>
             </g>
           )}
 
@@ -1234,7 +1292,10 @@ export function SatelliteMap({
 
         <div
           className={
-            'absolute top-2 right-2 flex flex-col gap-1 ' +
+            // Above the overlay: with a compass rose drawn on the ground, a
+            // control stack underneath it is a control stack the crew cannot
+            // find.
+            'absolute top-2 right-2 z-20 flex flex-col gap-1 ' +
             (placed ? '' : 'hidden')
           }
         >
@@ -1290,7 +1351,7 @@ export function SatelliteMap({
 
         <div
           className={
-            'absolute right-2 bottom-2 flex gap-1 ' + (placed ? '' : 'hidden')
+            'absolute right-2 bottom-2 z-20 flex gap-1 ' + (placed ? '' : 'hidden')
           }
         >
           {(trail.length > 1 || route.length > 1) && (
@@ -1309,6 +1370,18 @@ export function SatelliteMap({
             active={following}
             disabled={!anchor}
           >
+            {/* A crosshair as well as the word: this is the control a crew
+                reaches for after panning, and on a map with a dial drawn over
+                it the shape is found faster than the label is read. */}
+            <svg viewBox="0 0 16 16" className="mr-1 h-3.5 w-3.5" aria-hidden>
+              <circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+              <path
+                d="M8 0.5v3M8 12.5v3M0.5 8h3M12.5 8h3"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
             {following ? 'Following' : 'Centre'}
           </MapButton>
         </div>

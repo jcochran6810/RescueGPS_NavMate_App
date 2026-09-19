@@ -180,8 +180,12 @@ export const CompassRose = memo(function CompassRose({
               t.deg === 0
                 ? 'stroke-red-400'
                 : t.kind === 'minor'
-                  ? 'stroke-slate-500/50'
-                  : 'stroke-slate-300/70'
+                  ? overMap
+                    ? 'stroke-white/70'
+                    : 'stroke-slate-500/50'
+                  : overMap
+                    ? 'stroke-white'
+                    : 'stroke-slate-300/70'
             }
           />
         ))}
@@ -194,7 +198,14 @@ export const CompassRose = memo(function CompassRose({
             transform={`rotate(${deg}) rotate(${-deg} 0 -66)`}
             textAnchor="middle"
             dominantBaseline="middle"
-            className="fill-slate-400 text-[11px] font-medium"
+            className={
+              overMap ? 'fill-white text-[11px] font-medium' : 'fill-slate-400 text-[11px] font-medium'
+            }
+            style={
+              overMap
+                ? { paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }
+                : undefined
+            }
           >
             {deg}
           </text>
@@ -208,7 +219,14 @@ export const CompassRose = memo(function CompassRose({
             transform={`rotate(${c.deg}) rotate(${-c.deg} 0 -64)`}
             textAnchor="middle"
             dominantBaseline="middle"
-            className="fill-slate-400 text-[10px] font-semibold tracking-wide"
+            className={
+              overMap ? 'fill-white text-[10px] font-semibold tracking-wide' : 'fill-slate-400 text-[10px] font-semibold tracking-wide'
+            }
+            style={
+              overMap
+                ? { paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }
+                : undefined
+            }
           >
             {c.label}
           </text>
@@ -224,7 +242,12 @@ export const CompassRose = memo(function CompassRose({
             dominantBaseline="middle"
             className={
               'text-[17px] font-bold ' +
-              (c.label === 'N' ? 'fill-red-400' : 'fill-slate-200')
+              (c.label === 'N' ? 'fill-red-400' : overMap ? 'fill-white' : 'fill-slate-200')
+            }
+            style={
+              overMap
+                ? { paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3.5 }
+                : undefined
             }
           >
             {c.label}
@@ -238,7 +261,7 @@ export const CompassRose = memo(function CompassRose({
         <polygon points="0,-52 -6.5,-36 0,-41 6.5,-36" className="fill-red-400/90" />
       </>
     ),
-    [],
+    [overMap],
   )
 
   const bubble = level && tilt != null ? bubbleFor(level, tilt) : null
@@ -269,13 +292,11 @@ export const CompassRose = memo(function CompassRose({
         </linearGradient>
       </defs>
 
-      {/* Bezel. Over a map the face is a wash rather than a lid: enough to
-          hold the graduations against bright imagery, not enough to hide the
-          ground the dial is pointing at. */}
-      <circle
-        r="97"
-        fill={overMap ? 'rgba(6,19,31,0.28)' : 'url(#rose-face)'}
-      />
+      {/* Bezel. Over a map there is no face at all — the dial is a ring of
+          graduations laid on the ground, and anything behind it is ground the
+          crew cannot see. Legibility comes from outlining the marks rather
+          than from tinting what is underneath. */}
+      {!overMap && <circle r="97" fill="url(#rose-face)" />}
       <circle
         r="97"
         fill="none"
@@ -334,9 +355,16 @@ export const CompassRose = memo(function CompassRose({
         strokeWidth="2"
       />
 
-      {/* The hub the number sits on, over the turning face. */}
-      <circle r="32" fill="url(#rose-face)" />
-      <circle r="32" fill="none" className="stroke-white/10" strokeWidth="1" />
+      {/* The hub the number sits on. Not over a map: a filled disc in the
+          middle of the dial covers the one piece of ground the crew is
+          standing on and asking about. The number keeps its own outline
+          instead. */}
+      {!overMap && (
+        <>
+          <circle r="32" fill="url(#rose-face)" />
+          <circle r="32" fill="none" className="stroke-white/10" strokeWidth="1" />
+        </>
+      )}
 
       {/* The number, which is what actually gets read out over a radio. It
           stays upright while everything behind it turns. */}
@@ -347,6 +375,11 @@ export const CompassRose = memo(function CompassRose({
         textAnchor="middle"
         dominantBaseline="middle"
         className="tnum fill-slate-50 text-[38px] font-semibold"
+        style={
+          overMap
+            ? { paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 6 }
+            : undefined
+        }
       >
         {heading === null ? '—' : `${Math.round(normalizeDeg(heading))}°`}
       </text>
@@ -358,6 +391,11 @@ export const CompassRose = memo(function CompassRose({
           textAnchor="middle"
           dominantBaseline="middle"
           className="fill-slate-300 text-[10px] font-semibold tracking-[0.12em] uppercase"
+          style={
+            overMap
+              ? { paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 4 }
+              : undefined
+          }
         >
           {caption}
         </text>

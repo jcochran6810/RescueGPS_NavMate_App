@@ -468,13 +468,80 @@ const overlay = await page.evaluate(() => {
 })
 ok('the dial is drawn on the map, centred on it', !!overlay && overlay.inside && overlay.centred,
    overlay ? `inside ${overlay.inside}, centred ${overlay.centred}` : 'rose or map missing')
-ok('and its face is see-through, so it does not hide the ground',
-   !!overlay && /rgba/.test(overlay.facePaint ?? ''), overlay?.facePaint ?? 'none')
+/*
+ * Reported from the field: "the black circle behind the bearing read out
+ * needs to be gone to view the map better". There were two discs — the dial's
+ * face and the hub the digits sat on — and both covered ground. Checked by
+ * counting filled circles inside the dial rather than by looking at one of
+ * them, so putting either back goes red.
+ */
+const solidDiscs = await page.evaluate(() => {
+  const rose = document.querySelector('svg[viewBox="-100 -100 200 200"]')
+  if (!rose) return -1
+  return [...rose.querySelectorAll('circle')].filter((c) => {
+    const f = c.getAttribute('fill')
+    const r = parseFloat(c.getAttribute('r') ?? '0')
+    return r > 20 && f && f !== 'none' && !/rgba\(.*0(\.\d+)?\)/.test(f)
+  }).length
+})
+ok('no disc behind the dial or its digits — the ground shows through',
+   solidDiscs === 0, `${solidDiscs} filled disc(s) of r > 20`)
 ok('while the map under it still takes a gesture',
    await page.evaluate(() => {
      const layer = document.querySelector('div.touch-none .pointer-events-none.absolute.inset-0')
      return !!layer
    }))
+
+/*
+ * The range scale is a ruler along the way the crew is facing, not rings:
+ * one line of ground covered instead of three circles of it. Checked as
+ * "graduations on a line", which rings cannot satisfy.
+ */
+const scale = await page.evaluate(() => {
+  const svg = document.querySelector('div.touch-none svg')
+  if (!svg) return null
+  const dashed = [...svg.querySelectorAll('circle')].filter(
+    (c) => c.getAttribute('stroke-dasharray') && c.getAttribute('fill') === 'none',
+  ).length
+  return {
+    ringCircles: dashed,
+    arrowHeads: svg.querySelectorAll('polygon').length,
+  }
+})
+ok('the range scale is a ruler ahead, not rings around',
+   !!scale && scale.ringCircles === 0 && scale.arrowHeads > 0,
+   scale ? `${scale.ringCircles} dashed circles, ${scale.arrowHeads} arrow head(s)` : 'no map svg')
+
+/*
+ * "The map and the compass is just slightly off." They were: the dial kept
+ * whatever reference the crew picked while the ground turned by true, so the
+ * two Norths sat a declination apart. One screen, one north — the dial reads
+ * true whenever there is ground under it, and the caption has to say so.
+ */
+const dialCaption = await page.evaluate(() => {
+  const el = document.querySelector('svg[viewBox="-100 -100 200 200"] [data-caption]')
+  return el ? (el.textContent ?? '').trim() : null
+})
+ok('the dial reads true while the map is under it, so the two agree',
+   /TRUE/i.test(dialCaption ?? ''), dialCaption ?? 'no caption')
+ok('and the reference toggle is gone rather than left inert',
+   await page.getByRole('radio', { name: /^Magnetic$/i }).count() === 0)
+
+/* The control a crew reaches for after panning has to be on top of the dial. */
+const centreOnTop = await page.evaluate(() => {
+  const btn = [...document.querySelectorAll('button')].find((b) =>
+    /Centre on my position/i.test(b.getAttribute('aria-label') ?? ''))
+  if (!btn) return null
+  const stack = btn.parentElement
+  const rose = document.querySelector('svg[viewBox="-100 -100 200 200"]')
+  const overlay = rose ? rose.closest('div.z-10') : null
+  const zStack = stack ? Number(getComputedStyle(stack).zIndex) || 0 : 0
+  const zOverlay = overlay ? Number(getComputedStyle(overlay).zIndex) || 0 : 0
+  return { zStack, zOverlay, visible: !!btn.offsetParent }
+})
+ok('centre-on-me sits above the dial, where it can be found and pressed',
+   !!centreOnTop && centreOnTop.visible && centreOnTop.zStack > centreOnTop.zOverlay,
+   centreOnTop ? `control z${centreOnTop.zStack} over dial z${centreOnTop.zOverlay}` : 'no button')
 
 ok('a north arrow says which way north went',
    await page.locator('svg text').filter({ hasText: /^N$/ }).count() > 0)
@@ -484,15 +551,24 @@ const ringLabels = await page.evaluate(() =>
   [...document.querySelectorAll('svg text')]
     .map((t) => t.textContent ?? '')
     .filter((t) => /^[\d.]+ (NM|km|mi|ft|m)$/.test(t)))
-ok('range rings are drawn with distances on them', ringLabels.length >= 3,
-   ringLabels.slice(0, 4).join(', '))
-ok('and the rings step evenly outwards',
+ok('the scale is graduated with distances on it', ringLabels.length >= 4,
+   ringLabels.slice(0, 5).join(', '))
+ok('and it reads 0, s, 2s, 3s from the boat outwards',
    (() => {
-     // The scale bar shares this format, so only the ring labels are compared
-     // — three of them, evenly spaced, with the same suffix.
-     const rings = ringLabels.filter((t, i, a) => a.filter((x) => x.endsWith(t.split(' ')[1])).length >= 3)
-     const v = rings.map((t) => parseFloat(t)).filter(Number.isFinite).sort((a, b) => a - b)
-     return v.length >= 3 && Math.abs(v[1] - v[0] * 2) < 1e-6 && Math.abs(v[2] - v[0] * 3) < 1e-6
+     /*
+      * The map's own scale bar shares this label format, so only graduations
+      * whose unit appears four times are compared — nought at the boat and
+      * three steps out. The first version of this check counted three and
+      * went red the moment the ruler gained its nought, which is the label
+      * that makes it a ruler rather than a set of rings.
+      */
+     const unit = (t) => t.split(' ')[1]
+     const graduations = ringLabels.filter(
+       (t, _i, a) => a.filter((x) => unit(x) === unit(t)).length >= 4,
+     )
+     const v = graduations.map((t) => parseFloat(t)).filter(Number.isFinite).sort((a, b) => a - b)
+     return v.length >= 4 && v[0] === 0
+       && Math.abs(v[2] - v[1] * 2) < 1e-6 && Math.abs(v[3] - v[1] * 3) < 1e-6
    })(),
    ringLabels.join(' / '))
 
