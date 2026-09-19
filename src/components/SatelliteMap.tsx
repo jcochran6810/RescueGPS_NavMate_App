@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Fix } from '@/lib/types'
 import {
@@ -21,7 +22,7 @@ import {
 } from '@/lib/tiles'
 import type { PathMarker } from '@/components/TrackPath'
 import { formatPosition } from '@/lib/coords'
-import { bearingDeg, compassPoint, formatDistance, haversineNM } from '@/lib/geo'
+import { bearingDeg, compassPoint, haversineNM } from '@/lib/geo'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { useMapAction } from '@/store/useMapAction'
 import { toast } from '@/store/useToast'
@@ -1166,6 +1167,7 @@ function PressMenu({
   actions: { key: string; label: string; run: () => void }[]
   onClose: () => void
 }) {
+  const fmt = useFormat()
   const estimatedH = 86 + actions.length * 36
   const left = Math.max(8, Math.min(at.x - MENU_W / 2, Math.max(8, w - MENU_W - 8)))
   const below = at.y + 12
@@ -1199,7 +1201,7 @@ function PressMenu({
           </p>
           {rangeNM !== null && bearing !== null && (
             <p className="tnum mt-0.5 text-[11px] text-slate-400">
-              {formatDistance(rangeNM, 'nm')} · {Math.round(bearing)}°{' '}
+              {fmt.length(rangeNM)} · {Math.round(bearing)}°{' '}
               {compassPoint(bearing)} from here
             </p>
           )}

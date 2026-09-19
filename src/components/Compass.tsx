@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { headingNeedsTap, useHeading, type HeadingReference } from '@/store/useHeading'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
@@ -8,7 +9,6 @@ import {
   bearingDeg,
   compassPoint,
   formatBearing,
-  formatDistance,
   haversineNM,
   isAtPosition,
   MPS_TO_KNOTS,
@@ -57,6 +57,7 @@ export function Compass({
     setReference,
     setPosition,
   } = useHeading()
+  const fmt = useFormat()
   const fix = useTracker((s) => s.fix)
   const all = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -370,7 +371,7 @@ export function Compass({
                 {leg.bearing === null
                   ? 'You are on it'
                   : formatBearing(leg.bearing)}{' '}
-                · {formatDistance(leg.distanceNM, 'nm')}
+                · {fmt.length(leg.distanceNM)}
                 {leg.bearing !== null && shown !== null && (
                   <span className="text-slate-400">
                     {' '}

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker, INTERVAL_CHOICES } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useIncidentUnits } from '@/hooks/useIncidentUnits'
@@ -8,7 +9,6 @@ import {
   compassPoint,
   formatDistance,
   formatDuration,
-  formatSpeed,
   trailDistanceNM,
   type DistanceUnit,
 } from '@/lib/geo'
@@ -66,6 +66,7 @@ export function TrackTab() {
     arrivalFt,
     setArrivalFt,
   } = useTracker()
+  const fmt = useFormat()
   const waypoints = useWaypoints((s) => s.visible())
   // Everyone else on this search, drawn on the map below.
   const units = useIncidentUnits()
@@ -163,7 +164,7 @@ export function TrackTab() {
         />
         <Stat
           label="Speed"
-          value={formatSpeed(fix?.speed)}
+          value={fmt.speed(fix?.speed)}
           hint={derived.speed ? 'from the track' : undefined}
         />
         <Stat

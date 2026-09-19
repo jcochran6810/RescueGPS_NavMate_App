@@ -1,9 +1,9 @@
 import { useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { Button, Card, EmptyState, Label } from '@/components/ui'
 import {
   bearingDeg,
   formatBearing,
-  formatDistance,
   formatDuration,
   formatEtaClock,
   haversineNM,
@@ -43,6 +43,7 @@ export function SteerCard({
   lastLabel?: string
   footnote?: string
 }) {
+  const fmt = useFormat()
   const arrivalFt = useTracker((s) => s.arrivalFt)
   const target = plan.points[targetIdx]
   const last = targetIdx >= plan.points.length - 1
@@ -119,7 +120,7 @@ export function SteerCard({
               {course !== null ? formatBearing(course) : 'Here'}
             </span>
             <span className="tnum text-lg text-slate-200">
-              {distNM !== null ? formatDistance(distNM, 'nm') : '—'}
+              {distNM !== null ? fmt.length(distNM) : '—'}
             </span>
           </div>
           {/* Which way, and how far round. The arrow is the instruction; the
@@ -171,7 +172,7 @@ export function SteerCard({
             {last
               ? lastLabel
               : nextLeg
-                ? `Then ${formatBearing(nextLeg.courseDeg)} for ${formatDistance(nextLeg.lengthNM, 'nm')}`
+                ? `Then ${formatBearing(nextLeg.courseDeg)} for ${fmt.length(nextLeg.lengthNM)}`
                 : ''}
           </div>
         </div>
@@ -236,7 +237,7 @@ export function SteerCard({
                     {leg ? formatBearing(leg.courseDeg) : 'Finish'}
                   </td>
                   <td className="px-2 py-1.5 text-right">
-                    {formatDistance(runNM, 'nm')}
+                    {fmt.length(runNM)}
                   </td>
                   <td className="px-2 py-1.5 text-right text-slate-400">
                     {hours != null ? formatEtaClock(hours) : '—'}

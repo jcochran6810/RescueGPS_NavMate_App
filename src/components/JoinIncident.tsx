@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { Sheet } from '@/components/Sheet'
 import { Button, Input, Label } from '@/components/ui'
 import { useIncidents } from '@/store/useIncidents'
 import { useTracker } from '@/store/useTracker'
 import { toast } from '@/store/useToast'
 import { incidentTypeLabel } from '@/lib/incident'
-import { bearingDeg, compassPoint, formatDistance, haversineNM } from '@/lib/geo'
+import { bearingDeg, compassPoint, haversineNM } from '@/lib/geo'
 import type { JoinableIncident, JoinResult } from '@/lib/types'
 
 /**
@@ -45,6 +46,7 @@ export function JoinIncidentButton() {
 }
 
 function JoinIncidentSheet({ onDismiss }: { onDismiss: () => void }) {
+  const fmt = useFormat()
   const list = useIncidents((s) => s.listJoinable)
   const join = useIncidents((s) => s.joinIncident)
   const fix = useTracker((s) => s.fix)
@@ -145,7 +147,7 @@ function JoinIncidentSheet({ onDismiss }: { onDismiss: () => void }) {
                 </span>
                 {nm != null && deg != null && (
                   <span className="tnum shrink-0 text-xs text-slate-300">
-                    {formatDistance(nm, 'nm')} {compassPoint(deg)}
+                    {fmt.length(nm)} {compassPoint(deg)}
                   </span>
                 )}
               </div>

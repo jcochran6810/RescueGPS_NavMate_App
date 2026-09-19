@@ -6,11 +6,11 @@ import { useSarRecords } from '@/store/useSarRecords'
 import { useVictims } from '@/store/useVictims'
 import { recordsForSearch } from '@/lib/incident'
 import {
-  cToF,
   formatSurvivalMinutes,
   survivalEstimate,
   type PfdStatus,
 } from '@/lib/survival'
+import { useFormat } from '@/hooks/useFormat'
 import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
 
 /**
@@ -35,6 +35,7 @@ import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
  */
 export function SurvivalBanner() {
   const now = useNow(30_000)
+  const fmt = useFormat()
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
   const all = useSarRecords((s) => s.visible())
@@ -94,7 +95,7 @@ export function SurvivalBanner() {
             : `Survival window ${formatSurvivalMinutes(est.remainingMinutes)} left`}
         </span>
         <span className="tnum shrink-0 text-[11px] opacity-80">
-          {cToF(waterTempC).toFixed(0)} °F ·{' '}
+          {fmt.temp(waterTempC)} ·{' '}
           {formatSurvivalMinutes(elapsedMinutes)} in ·{' '}
           {pfd === 'yes' ? 'PFD' : 'PFD unknown'}
         </span>

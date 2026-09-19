@@ -63,7 +63,7 @@ await page.getByRole('button',{name:/^Record LKP$/}).click()
 await page.waitForTimeout(700)
 ok('an LKP is recorded', (await page.locator('body').innerText()).includes('LKP'))
 
-await page.getByLabel(/Water temperature, Fahrenheit/i).fill('55')
+await page.getByLabel(/Water temperature/i).fill('55')
 await page.getByRole('button',{name:/^Record conditions$/}).click()
 await page.waitForTimeout(700)
 
@@ -214,6 +214,37 @@ ok('re-planning the pattern restarts the steering on the new plan',
 ok('and never counts to a point the plan does not have',
    Number.isFinite(ptNow) && Number.isFinite(ptOf) && ptNow <= ptOf,
    afterReplan)
+
+// --- the units setting actually reaches the screens -------------------------
+/*
+ * Done last, because it changes what every later assertion would be reading.
+ * The claim being tested is the only one that matters about a settings page:
+ * that choosing a unit changes the numbers a crew reads, on a different
+ * screen from the one the choice was made on.
+ */
+const patternText = async () => (await page.locator('body').innerText()).replace(/\s+/g,' ')
+const beforeUnits = await patternText()
+ok('the pattern reads in nautical miles to begin with', /TRACK [\d.]+ NM/i.test(beforeUnits))
+
+await openTab(/^Settings\b/)
+ok('Settings opens', await page.getByRole('heading',{name:/^Settings$/}).count()>0)
+await page.getByRole('radiogroup',{name:/^Distance$/}).getByRole('radio',{name:/^km$/}).click()
+await page.getByRole('radiogroup',{name:/Water temperature/i}).getByRole('radio',{name:/°C/}).click()
+await page.waitForTimeout(400)
+
+const bannerText = (await banner().first().textContent()) ?? ''
+ok('the survival banner switches to Celsius', /°C/.test(bannerText) && !/°F/.test(bannerText),
+   bannerText.trim())
+// 55 °F is about 13 °C — the value has to be converted, not relabelled.
+ok('and converts the stored temperature rather than relabelling it',
+   /1[23]\s*°C/.test(bannerText), bannerText.trim())
+
+await openTab(/^Search pattern\b/)
+await page.waitForTimeout(600)
+const afterUnits = await patternText()
+ok('and the pattern distances follow the setting on another screen',
+   /TRACK [\d.]+ km/i.test(afterUnits) && !/TRACK [\d.]+ NM/i.test(afterUnits),
+   afterUnits.match(/TRACK [\d.]+ (km|NM)/i)?.[0] ?? 'no track figure')
 
 ok('no uncaught page errors', errors.length===0, errors.slice(0,2).join(' | '))
 

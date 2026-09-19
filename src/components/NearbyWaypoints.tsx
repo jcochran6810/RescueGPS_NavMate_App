@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useTeams } from '@/store/useTeams'
 import {
   bearingDeg,
   formatBearing,
-  formatDistance,
   haversineNM,
   isAtPosition,
 } from '@/lib/geo'
@@ -29,6 +29,7 @@ export function NearbyWaypoints({
   limit?: number
   onSeeAll?: () => void
 }) {
+  const fmt = useFormat()
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
 
@@ -104,7 +105,7 @@ export function NearbyWaypoints({
               </div>
               {distanceNM !== null && (
                 <span className="tnum shrink-0 text-sm text-slate-300">
-                  {formatDistance(distanceNM, 'nm')}
+                  {fmt.length(distanceNM)}
                 </span>
               )}
             </li>

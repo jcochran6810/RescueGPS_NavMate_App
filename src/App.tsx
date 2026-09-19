@@ -34,6 +34,7 @@ import { WaypointsTab } from '@/tabs/WaypointsTab'
 import { TeamTab } from '@/tabs/TeamTab'
 import { DataTab } from '@/tabs/DataTab'
 import { HelpTab } from '@/tabs/HelpTab'
+import { SettingsTab } from '@/tabs/SettingsTab'
 
 export default function App() {
   const { session, ready, recovering, init } = useAuth()
@@ -173,6 +174,7 @@ export default function App() {
         {tab === 'waypoints' && <WaypointsTab />}
         {tab === 'team' && <TeamTab />}
         {tab === 'data' && <DataTab />}
+        {tab === 'settings' && <SettingsTab />}
         {tab === 'help' && <HelpTab />}
         {tab === 'admin' && <AdminTab />}
       </main>

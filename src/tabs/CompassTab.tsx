@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { useHeading } from '@/store/useHeading'
 import { useWaypoints } from '@/store/useWaypoints'
@@ -7,7 +8,6 @@ import { Compass } from '@/components/Compass'
 import {
   bearingDeg,
   formatBearing,
-  formatDistance,
   haversineNM,
   isAtPosition,
   relativeBearing,
@@ -24,6 +24,7 @@ import { Card, EmptyState, Label } from '@/components/ui'
  */
 export function CompassTab() {
   const { fix, watching, error, once } = useTracker()
+  const fmt = useFormat()
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const heading = useHeading((s) => s.heading)
@@ -124,7 +125,7 @@ export function CompassTab() {
                   {bearing === null ? 'here' : formatBearing(bearing)}
                 </span>
                 <span className="tnum shrink-0 text-sm text-slate-300">
-                  {formatDistance(distanceNM, 'nm')}
+                  {fmt.length(distanceNM)}
                 </span>
               </li>
             ))}

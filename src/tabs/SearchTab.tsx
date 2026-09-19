@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { useTeams } from '@/store/useTeams'
 import { useSarRecords } from '@/store/useSarRecords'
@@ -10,7 +11,7 @@ import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { toDD } from '@/lib/coords'
-import { formatDistance, formatDuration } from '@/lib/geo'
+import { formatDuration } from '@/lib/geo'
 import { computeDatum, searchObjectType } from '@/lib/sar'
 import { recordsForSearch } from '@/lib/incident'
 import {
@@ -31,7 +32,9 @@ import {
   type SeaClass,
   type SearchPatternPlan,
 } from '@/lib/search'
-import { survivalEstimate, formatSurvivalMinutes, cToF, fToC, type PfdStatus } from '@/lib/survival'
+import { survivalEstimate, formatSurvivalMinutes, type PfdStatus } from '@/lib/survival'
+import { TEMP_SUFFIX, tempIn, tempToCelsius } from '@/lib/units'
+import { useUnits } from '@/store/useUnits'
 import { sunEvents } from '@/lib/sun'
 import { SatelliteMap } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
@@ -52,6 +55,7 @@ import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
  */
 
 export function SearchTab() {
+  const fmt = useFormat()
   const activeTeamId = useTeams((s) => s.activeTeamId)
   // Everyone else on this search, drawn on the map below.
   const units = useIncidentUnits()
@@ -407,7 +411,7 @@ export function SearchTab() {
                   <Stat label="Legs" value={String(plan.legs.length)} />
                   <Stat
                     label="Track"
-                    value={formatDistance(plan.totalNM, 'nm')}
+                    value={fmt.length(plan.totalNM)}
                   />
                   <Stat
                     label="Time"
@@ -544,36 +548,39 @@ function SurvivalCard({
   const [pfdChoice, setPfdChoice] = useState<PfdStatus | null>(null)
   const pfd = pfdChoice ?? defaultPfd
 
+  const tempUnit = useUnits((s) => s.temp)
+
   /**
-   * Water temperature in **Fahrenheit**, which is what is typed and shown.
+   * Water temperature in **the crew's own unit**, which is what is typed and
+   * shown.
    *
    * The trap this shape used to set: `tempStr` is typed by the crew and
    * `waterTempC` comes out of the stored record, so one variable carried two
    * different units depending on which branch won. Named and converted now, so
    * the two cannot be confused — `survivalEstimate` is handed Celsius below.
    */
-  const tempF = (() => {
+  const shownTemp = (() => {
     const typed = parseFloat(tempStr)
     if (Number.isFinite(typed)) return typed
-    return waterTempC == null ? null : cToF(waterTempC)
+    return waterTempC == null ? null : tempIn(waterTempC, tempUnit)
   })()
 
-  if (!lkpTime || tempF == null) {
+  if (!lkpTime || shownTemp == null) {
     return (
       <Card>
         <Label>Survival clock</Label>
         <EmptyState>
           Needs the time the person went in (the LKP) and the water
           temperature (On-scene conditions in Search datum
-          {tempF == null ? ', or type it here' : ''}).
+          {shownTemp == null ? ', or type it here' : ''}).
         </EmptyState>
-        {tempF == null && (
+        {shownTemp == null && (
           <Input
             value={tempStr}
             onChange={(e) => setTempStr(e.target.value)}
-            placeholder="Water temp (°F)"
+            placeholder={`Water temp (${TEMP_SUFFIX[tempUnit]})`}
             inputMode="decimal"
-            aria-label="Water temperature, Fahrenheit"
+            aria-label="Water temperature"
             className="mt-2"
           />
         )}
@@ -585,7 +592,7 @@ function SurvivalCard({
   // The model wants Celsius; the screen speaks Fahrenheit. One conversion,
   // here, rather than a second unit travelling through the component.
   const est = survivalEstimate({
-    waterTempC: fToC(tempF),
+    waterTempC: tempToCelsius(shownTemp, tempUnit),
     elapsedMinutes: elapsedMin,
     pfd,
   })
@@ -651,7 +658,7 @@ function SurvivalCard({
               ? `${formatSurvivalMinutes(est.survivalMin)}–${formatSurvivalMinutes(est.survivalMax)}`
               : 'No limit'
           }
-          hint={`water ${tempF.toFixed(0)} °F`}
+          hint={`water ${shownTemp.toFixed(0)} ${TEMP_SUFFIX[tempUnit]}`}
         />
       </div>
 

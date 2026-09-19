@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useIncidents } from '@/store/useIncidents'
 import { useTeams } from '@/store/useTeams'
 import { useAuth } from '@/store/useAuth'
@@ -7,7 +8,6 @@ import { useTracker } from '@/store/useTracker'
 import {
   bearingDeg,
   compassPoint,
-  formatDistance,
   formatDuration,
   haversineNM,
 } from '@/lib/geo'
@@ -46,6 +46,7 @@ import {
  * picture across in that system's own field names.
  */
 export function IncidentCard() {
+  const fmt = useFormat()
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const incidents = useIncidents()
   const sar = useSarRecords()
@@ -241,7 +242,7 @@ export function IncidentCard() {
                 <span className="font-semibold">{u.name}</span>
                 <span className="tnum">
                   {nm != null && deg != null
-                    ? `${formatDistance(nm, 'nm')} ${compassPoint(deg)}`
+                    ? `${fmt.length(nm)} ${compassPoint(deg)}`
                     : '—'}
                   {u.speedKn != null && u.speedKn >= 0.5
                     ? ` · ${u.speedKn.toFixed(1)} kn`

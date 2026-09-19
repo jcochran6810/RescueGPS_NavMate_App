@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTides } from '@/store/useTides'
 import { useNow } from '@/hooks/useNow'
 import {
@@ -7,7 +8,7 @@ import {
   formatTideClock,
   formatTideHeight,
 } from '@/lib/tides'
-import { formatDistance, formatBearing } from '@/lib/geo'
+import { formatBearing } from '@/lib/geo'
 import { Button, Card, Label, Spinner, Stat } from '@/components/ui'
 
 const TREND_LABEL = {
@@ -41,6 +42,7 @@ export function TidesNearMe({
     refresh,
     pin,
   } = useTides()
+  const fmt = useFormat()
   const now = useNow(30_000)
   const [picking, setPicking] = useState(false)
 
@@ -93,7 +95,7 @@ export function TidesNearMe({
               </div>
               {activeDistance && (
                 <div className="tnum text-xs text-slate-400">
-                  {formatDistance(activeDistance.distanceNM, 'nm')}{' '}
+                  {fmt.length(activeDistance.distanceNM)}{' '}
                   {formatBearing(activeDistance.bearingDeg)}
                   {active?.state ? ` · ${active.state}` : ''}
                   {pinnedStationId ? ' · pinned' : ''}
@@ -211,7 +213,7 @@ export function TidesNearMe({
                   >
                     <span className="min-w-0 truncate">{s.name}</span>
                     <span className="tnum ml-2 shrink-0 text-xs text-slate-400">
-                      {formatDistance(s.distanceNM, 'nm')}
+                      {fmt.length(s.distanceNM)}
                     </span>
                   </button>
                 </li>

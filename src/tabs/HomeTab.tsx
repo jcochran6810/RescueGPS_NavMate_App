@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { toDD, toDDM, toDMS } from '@/lib/coords'
-import { formatSpeed } from '@/lib/geo'
 import { DaylightTracker } from '@/components/DaylightTracker'
 import { NearbyWaypoints } from '@/components/NearbyWaypoints'
 import { Card, Label } from '@/components/ui'
@@ -22,6 +22,7 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
     if (!fix && !watching) void once()
   }, [fix, watching, once])
 
+  const fmt = useFormat()
   const lat = fix?.lat ?? null
   const lon = fix?.lon ?? null
 
@@ -68,7 +69,7 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
             <div className="text-slate-300">
               {fix.altitude != null ? `Altitude ${Math.round(fix.altitude)} m` : 'Altitude —'}
               {' | '}
-              Speed {formatSpeed(fix.speed)}
+              Speed {fmt.speed(fix.speed)}
               {fix.accuracy != null ? ` | ±${Math.round(fix.accuracy)} m` : ''}
             </div>
           </div>

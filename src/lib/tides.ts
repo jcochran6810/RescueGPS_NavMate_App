@@ -204,6 +204,50 @@ export function tideNow(now: Date, extremes: TideExtreme[]): TideNow {
   }
 }
 
+/**
+ * How much water there is over chart datum right now, in feet.
+ *
+ * NOAA publishes the extremes, not a curve, so the level between them is
+ * interpolated the way a tide table is read: a half-cosine from one extreme to
+ * the next, which is the standard approximation for a semidiurnal tide and is
+ * what the rule of twelfths is a rounded version of. Exact at both ends and
+ * within a few inches in between on a regular coast.
+ *
+ * **Null unless it is bracketed by a real extreme on each side.** Off the end
+ * of the predictions the curve would be extrapolation, and a made-up number
+ * here is under the boat rather than on a table — the whole point of this
+ * figure is that a crew adds it to a charted depth.
+ *
+ * This never touches routing. `routing.ts` plans at chart datum on purpose,
+ * because a shortcut that depends on the tide being in is a grounding waiting
+ * for a delay or a northerly. This is for the screen: the depth under the boat
+ * now, clearly labelled as a prediction.
+ */
+export function tideHeightNow(
+  now: Date,
+  extremes: TideExtreme[],
+): number | null {
+  const t = now.getTime()
+  const sorted = [...extremes].sort((a, b) => a.at.getTime() - b.at.getTime())
+  let before: TideExtreme | null = null
+  let after: TideExtreme | null = null
+  for (const e of sorted) {
+    if (e.at.getTime() <= t) before = e
+    else {
+      after = e
+      break
+    }
+  }
+  if (!before || !after) return null
+
+  const span = after.at.getTime() - before.at.getTime()
+  if (span <= 0) return before.heightFt
+  const phase = (t - before.at.getTime()) / span
+  const mid = (before.heightFt + after.heightFt) / 2
+  const half = (before.heightFt - after.heightFt) / 2
+  return mid + half * Math.cos(Math.PI * phase)
+}
+
 /* -------------------------------------------------------------------------
  * Fetching
  * ---------------------------------------------------------------------- */
