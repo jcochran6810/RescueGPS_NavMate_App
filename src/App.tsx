@@ -14,6 +14,7 @@ import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
 import { MapActionHost } from '@/components/MapActionHost'
+import { WaypointSheet } from '@/components/WaypointSheet'
 import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
@@ -183,6 +184,9 @@ export default function App() {
           opens, or the handover to the chart plotter. Here because both need
           something no map can reach: the tab, and a sheet that contains a map. */}
       <MapActionHost onNavigate={setTab} />
+      {/* One waypoint sheet for the whole app, opened by tapping a waypoint
+          in any list or on any map. */}
+      <WaypointSheet />
 
       {/* Stamping is the one action that can be urgent, so the button sits on
           every screen, in the same place, however far the page has scrolled. */}

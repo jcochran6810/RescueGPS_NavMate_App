@@ -260,6 +260,55 @@ ok('and escape again gives the page back',
 ok('with the page scrollable again',
    await page.evaluate(() => getComputedStyle(document.body).overflow) !== 'hidden')
 
+// --- tapping a waypoint opens it, wherever it is listed or drawn ------------
+/*
+ * The claim being tested is "anywhere". So the same waypoint is opened from a
+ * list on one screen and from a marker on a map on another, and both have to
+ * reach the same sheet with the same action on it.
+ */
+await open(/^Home\b/)
+await page.waitForTimeout(500)
+const row = page.getByRole('button').filter({ hasText: 'Pressed point' }).first()
+ok('the nearest-waypoints list is tappable', await row.count() > 0)
+await row.click()
+await page.waitForTimeout(500)
+const sheet3 = page.getByRole('dialog', { name: /Waypoint Pressed point/i })
+ok('tapping a waypoint in a list opens it', await sheet3.count() > 0)
+ok('and shows what is known about it — position and range',
+   /\d/.test(await sheet3.innerText()),
+   (await sheet3.innerText()).replace(/\s+/g,' ').slice(0, 80))
+ok('with Navigate here offered on it',
+   await sheet3.getByRole('button', { name: /^Navigate here$/ }).count() > 0)
+
+await sheet3.getByRole('button', { name: /^Navigate here$/ }).click()
+await page.waitForTimeout(1200)
+ok('which takes the crew to the plotter with that waypoint set',
+   /Pressed point/.test((await page.locator('body').innerText()).replace(/\s+/g,' ')))
+
+// The same waypoint, this time by tapping its marker on the tracker map.
+await open(/^Live tracking\b/)
+await page.waitForTimeout(800)
+await mapBox().scrollIntoViewIfNeeded()
+await page.waitForTimeout(300)
+const tBox = await mapBox().boundingBox()
+const markerPos = await page.evaluate(() => {
+  const t = [...document.querySelectorAll('svg text')].find((el) => el.textContent?.includes('Pressed point'))
+  if (!t) return null
+  const r = t.getBoundingClientRect()
+  // The label sits to the right of its dot; the dot is what is tapped.
+  return { x: r.left - 10, y: r.top + r.height / 2 }
+})
+if (markerPos && tBox) {
+  await page.mouse.click(markerPos.x, markerPos.y)
+  await page.waitForTimeout(600)
+  ok('and tapping its marker on the map opens the very same sheet',
+     await page.getByRole('dialog', { name: /Waypoint Pressed point/i }).count() > 0)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+} else {
+  ok('and tapping its marker on the map opens the very same sheet', false, 'marker label not found')
+}
+
 // --- the picker map does not offer a second creator -------------------------
 await page.getByRole('button', { name: /^Add waypoint$/ }).first().click()
 await page.waitForTimeout(400)

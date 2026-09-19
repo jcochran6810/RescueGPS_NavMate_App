@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useFormat } from '@/hooks/useFormat'
 import { useWaypoints } from '@/store/useWaypoints'
+import { useWaypointView } from '@/store/useWaypointView'
 import { useTeams } from '@/store/useTeams'
 import {
   bearingDeg,
@@ -30,6 +31,7 @@ export function NearbyWaypoints({
   onSeeAll?: () => void
 }) {
   const fmt = useFormat()
+  const openWaypoint = useWaypointView((s) => s.open)
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
 
@@ -85,7 +87,14 @@ export function NearbyWaypoints({
       ) : (
         <ul className="divide-y divide-white/5">
           {nearest.map(({ w, distanceNM, bearing }) => (
-            <li key={w.id} className="flex items-center justify-between gap-3 py-2">
+            <li key={w.id}>
+              {/* The whole row, not a button beside it: a crew reading this
+                  list is already pointing at the thing they mean. */}
+              <button
+                type="button"
+                onClick={() => openWaypoint(w.id)}
+                className="flex w-full items-center justify-between gap-3 py-2 text-left hover:bg-white/5"
+              >
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-slate-100">
                   {w.name}
@@ -108,6 +117,7 @@ export function NearbyWaypoints({
                   {fmt.length(distanceNM)}
                 </span>
               )}
+              </button>
             </li>
           ))}
         </ul>

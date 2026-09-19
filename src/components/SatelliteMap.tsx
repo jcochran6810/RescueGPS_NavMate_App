@@ -25,6 +25,7 @@ import { formatPosition } from '@/lib/coords'
 import { bearingDeg, compassPoint, haversineNM } from '@/lib/geo'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { useMapAction } from '@/store/useMapAction'
+import { useWaypointView } from '@/store/useWaypointView'
 import { toast } from '@/store/useToast'
 
 const MIN_ZOOM = 3
@@ -177,6 +178,7 @@ export function SatelliteMap({
   >(null)
   const coordFormat = useCoordFormat((s) => s.format)
   const askMapAction = useMapAction((s) => s.ask)
+  const openWaypoint = useWaypointView((s) => s.open)
 
   const loaded = useRef(0)
 
@@ -510,14 +512,41 @@ export function SatelliteMap({
     if (pointers.current.size < 2) pinch.current = null
   }
 
+  /** How close a tap has to land to count as hitting a marker, in pixels. */
+  const MARKER_HIT_PX = 22
+
   const onPointerUp = (e: ReactPointerEvent) => {
     const t = tap.current
     tap.current = null
     endPointer(e)
-    if (!onPick || !t || t.moved || Date.now() - t.t > TAP_MS) return
+    if (!t || t.moved || Date.now() - t.t > TAP_MS) return
     const r = boxRef.current?.getBoundingClientRect()
     if (!r) return
-    onPick(unproject(e.clientX - r.left, e.clientY - r.top))
+    const x = e.clientX - r.left
+    const y = e.clientY - r.top
+
+    /*
+     * A tap on a waypoint opens the waypoint.
+     *
+     * Only when the map is not being used as a picker: a crew part-way
+     * through choosing a destination means the place under their finger, and
+     * hijacking that to open a sheet would take the task away from them. When
+     * they are just looking at the chart, the marker is the thing they meant.
+     */
+    if (!onPick) {
+      const hit = markers.find((m) => {
+        if (!m.waypointId) return false
+        const p = project(m.lat, m.lon)
+        return Math.hypot(p.x - x, p.y - y) <= MARKER_HIT_PX
+      })
+      if (hit?.waypointId) {
+        openWaypoint(hit.waypointId)
+        return
+      }
+    }
+
+    if (!onPick) return
+    onPick(unproject(x, y))
   }
 
   /* ------------------------------------------------------------------ tiles */

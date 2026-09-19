@@ -87,6 +87,8 @@ export function TrackTab() {
         name: w.name,
         lat: w.lat,
         lon: w.lon,
+        // Tapping it on the map opens it, the same as tapping it in a list.
+        waypointId: w.id,
       })),
     [waypoints],
   )

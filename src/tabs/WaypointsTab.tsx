@@ -14,6 +14,7 @@ import { useAuth } from '@/store/useAuth'
 import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
 import { useMapAction } from '@/store/useMapAction'
+import { useWaypointView } from '@/store/useWaypointView'
 import { WaypointPhoto } from '@/components/WaypointPhoto'
 import { Button, Card, EmptyState, Input, Label, Spinner } from '@/components/ui'
 import { CoordInput } from '@/components/CoordInput'
@@ -299,6 +300,7 @@ function WaypointCard({
   const update = useWaypoints((s) => s.update)
   const remove = useWaypoints((s) => s.remove)
   const askMapAction = useMapAction((s) => s.ask)
+  const openWaypoint = useWaypointView((s) => s.open)
   const addPhotos = useWaypoints((s) => s.addPhotos)
   const userId = useAuth((s) => s.user?.id)
   const online = useOnline()
@@ -468,7 +470,16 @@ function WaypointCard({
           directly beneath Edit, where a thumb aiming for one lands on the
           other. */}
       <div className="flex items-baseline justify-between gap-3">
-        <div className="min-w-0 truncate font-semibold text-slate-50">{w.name}</div>
+        {/* The name opens the same sheet a tap opens everywhere else, so the
+            photographs and the note are one tap from every list rather than
+            only from this one. */}
+        <button
+          type="button"
+          onClick={() => openWaypoint(w.id)}
+          className="min-w-0 truncate text-left font-semibold text-slate-50 hover:underline"
+        >
+          {w.name}
+        </button>
         {/* The field question is "how far, and which way" — it was only ever
             answered on the home screen's nearest-four list. */}
         {relative && (
