@@ -281,7 +281,7 @@ export function WaypointsTab() {
 
 /** Shared look for the card's non-destructive controls. */
 const ACTION =
-  'rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/5'
+  'min-h-9 rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5'
 
 /** One saved waypoint, with an inline edit form for whoever may change it. */
 function WaypointCard({
@@ -550,7 +550,7 @@ function WaypointCard({
             }}
             // Pushed to the opposite end of the row, so the destructive
             // control is never the neighbour of the one next reached for.
-            className="ml-auto rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/10"
+            className="ml-auto min-h-9 rounded-lg border border-red-500/30 px-2.5 text-xs text-red-300 hover:bg-red-500/10"
           >
             Delete
           </button>

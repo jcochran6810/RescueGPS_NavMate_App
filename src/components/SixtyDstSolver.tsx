@@ -91,7 +91,7 @@ export function SixtyDstSolver({
               )
               setTime('')
             }}
-            className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
+            className="min-h-9 rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5"
           >
             Fill from waypoint
           </button>

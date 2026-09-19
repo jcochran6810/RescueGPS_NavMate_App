@@ -55,7 +55,7 @@ export function TeamTab() {
           <p>{error}</p>
           <button
             onClick={() => void load()}
-            className="mt-1.5 rounded-lg border border-amber-400/30 px-2.5 py-1 text-xs hover:bg-amber-500/10"
+            className="mt-1.5 min-h-9 rounded-lg border border-amber-400/30 px-2.5 text-xs hover:bg-amber-500/10"
           >
             Try again
           </button>
@@ -161,7 +161,7 @@ export function TeamTab() {
                           )
                           if (error) toast(error, 'error')
                         }}
-                        className="rounded-lg border border-white/10 bg-navy-900 px-1.5 py-1 text-xs text-slate-200"
+                        className="min-h-9 rounded-lg border border-white/10 bg-navy-900 px-2 text-xs text-slate-200"
                       >
                         <option value="member">Member</option>
                         <option value="admin">Admin</option>

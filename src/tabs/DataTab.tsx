@@ -106,7 +106,7 @@ export function DataTab() {
             <div className="mt-2 flex gap-2">
               <button
                 onClick={() => void retryFailed()}
-                className="rounded-lg border border-amber-400/30 px-2.5 py-1 text-xs hover:bg-amber-500/10"
+                className="min-h-9 rounded-lg border border-amber-400/30 px-2.5 text-xs hover:bg-amber-500/10"
               >
                 Retry
               </button>
@@ -116,7 +116,7 @@ export function DataTab() {
                   discardFailed()
                   toast('Refused changes discarded')
                 }}
-                className="rounded-lg border border-red-400/30 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10"
+                className="min-h-9 rounded-lg border border-red-400/30 px-2.5 text-xs text-red-300 hover:bg-red-500/10"
               >
                 Discard
               </button>
