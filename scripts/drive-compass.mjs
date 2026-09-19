@@ -378,6 +378,167 @@ for (const w of [320, 360, 390]) {
      `${Math.round(dial?.width ?? 0)}px wide`)
 }
 
+
+/* ------------------------------------------------ the map under the compass */
+/*
+ * Rotation is the thing that cannot be checked by reading code: the transform
+ * can be right and the gestures wrong, or the map turned and the labels
+ * upside down. So the drive reads the transform back out of the DOM and then
+ * taps the turned map to see where the tap actually lands.
+ */
+const mapBtn = page.getByRole('button', { name: /Show the map under the compass/i })
+ok('the map is offered, not forced', await mapBtn.count() > 0)
+await mapBtn.click()
+await page.waitForTimeout(1200)
+
+ok('and all three layers are offered',
+   await page.getByRole('radio', { name: /^Satellite$/ }).count() > 0
+   && await page.getByRole('radio', { name: /^Hybrid$/ }).count() > 0
+   && await page.getByRole('radio', { name: /^Chart$/ }).count() > 0)
+
+/** The rotation actually applied to the ground, in degrees. */
+const groundDeg = async () => await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  if (!box) return null
+  const layer = box.querySelector('div.pointer-events-none.absolute.inset-0')
+  if (!layer) return null
+  const t = getComputedStyle(layer).transform
+  if (!t || t === 'none') return 0
+  const m = t.match(/matrix\(([^)]+)\)/)
+  if (!m) return 0
+  const [a, b] = m[1].split(',').map(Number)
+  return Math.round(((Math.atan2(b, a) * 180) / Math.PI + 360) % 360)
+})
+
+/** A flat phone facing `deg` magnetic: alpha is the azimuth of the top edge. */
+const setHeading = (deg) => hold((360 - deg) % 360, 0, 0, 1400)
+
+await setHeading(0)
+const at0 = await groundDeg()
+await setHeading(90)
+const at90 = await groundDeg()
+await setHeading(200)
+const at200 = await groundDeg()
+
+/** Signed difference between two angles, -180..180. */
+const delta = (a, b) => (((a - b) % 360) + 540) % 360 - 180
+
+/*
+ * Head-up means the ground turns the OPPOSITE way to the heading: face east
+ * and east has to come round to the top of the screen, so the ground goes
+ * anticlockwise by 90. Getting the sign backwards is the classic way to ship
+ * a map that turns the wrong way and still "rotates".
+ */
+const near = (a, b, tol = 12) => a !== null && Math.min(Math.abs(a - b), 360 - Math.abs(a - b)) <= tol
+ok('the ground turns with the heading', !near(at0, at90, 20) && !near(at90, at200, 20),
+   `${at0}° → ${at90}° → ${at200}°`)
+/*
+ * Compared as *changes*, not absolutes: the dial is corrected to true north,
+ * so the rotation carries the local declination and asserting "heading 90 →
+ * ground 270" would be asserting the declination is zero. The difference
+ * cancels it, and is what actually has to be right — turn 90° right and the
+ * ground turns 90° left under you.
+ */
+ok('and turns the right way — the heading comes to the top of the screen',
+   Math.abs(delta(at90, at0) + 90) <= 12 && Math.abs(delta(at200, at90) + 110) <= 12,
+   `+90° of heading moved the ground ${Math.round(delta(at90, at0))}°, ` +
+   `+110° moved it ${Math.round(delta(at200, at90))}°`)
+
+/*
+ * The arrangement the crew asked for: one view, dial on the ground, not a
+ * picture beside one. Checked by geometry rather than by the presence of two
+ * elements — the rose has to sit *inside* the map box and be centred on it,
+ * which is what makes it a rose on a chart.
+ */
+const overlay = await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  const rose = document.querySelector('svg[viewBox="-100 -100 200 200"]')
+  if (!box || !rose) return null
+  const b = box.getBoundingClientRect()
+  const r = rose.getBoundingClientRect()
+  return {
+    inside: r.left >= b.left - 2 && r.right <= b.right + 2 && r.top >= b.top - 2 && r.bottom <= b.bottom + 2,
+    centred: Math.abs((r.left + r.right) / 2 - (b.left + b.right) / 2) < 4
+      && Math.abs((r.top + r.bottom) / 2 - (b.top + b.bottom) / 2) < 4,
+    facePaint: (() => {
+      const face = rose.querySelector('circle')
+      return face ? face.getAttribute('fill') : null
+    })(),
+  }
+})
+ok('the dial is drawn on the map, centred on it', !!overlay && overlay.inside && overlay.centred,
+   overlay ? `inside ${overlay.inside}, centred ${overlay.centred}` : 'rose or map missing')
+ok('and its face is see-through, so it does not hide the ground',
+   !!overlay && /rgba/.test(overlay.facePaint ?? ''), overlay?.facePaint ?? 'none')
+ok('while the map under it still takes a gesture',
+   await page.evaluate(() => {
+     const layer = document.querySelector('div.touch-none .pointer-events-none.absolute.inset-0')
+     return !!layer
+   }))
+
+ok('a north arrow says which way north went',
+   await page.locator('svg text').filter({ hasText: /^N$/ }).count() > 0)
+
+// Range rings, and the distances written on them.
+const ringLabels = await page.evaluate(() =>
+  [...document.querySelectorAll('svg text')]
+    .map((t) => t.textContent ?? '')
+    .filter((t) => /^[\d.]+ (NM|km|mi|ft|m)$/.test(t)))
+ok('range rings are drawn with distances on them', ringLabels.length >= 3,
+   ringLabels.slice(0, 4).join(', '))
+ok('and the rings step evenly outwards',
+   (() => {
+     // The scale bar shares this format, so only the ring labels are compared
+     // — three of them, evenly spaced, with the same suffix.
+     const rings = ringLabels.filter((t, i, a) => a.filter((x) => x.endsWith(t.split(' ')[1])).length >= 3)
+     const v = rings.map((t) => parseFloat(t)).filter(Number.isFinite).sort((a, b) => a - b)
+     return v.length >= 3 && Math.abs(v[1] - v[0] * 2) < 1e-6 && Math.abs(v[2] - v[0] * 3) < 1e-6
+   })(),
+   ringLabels.join(' / '))
+
+/*
+ * The gesture check, and the reason the frame transforms exist: with the map
+ * turned 200°, dragging DOWN the screen must move the ground down the screen
+ * — not off at 200° to it. Read as the position under the middle of the map
+ * before and after.
+ */
+/** Where the boat is drawn, in screen pixels — transforms and all. */
+const boatAt = async () => await page.evaluate(() => {
+  const box = document.querySelector('div.touch-none')
+  const dot = box ? box.querySelector('circle.fill-emerald-400') : null
+  if (!dot) return null
+  const r = dot.getBoundingClientRect()
+  return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }
+})
+const boatBefore = await boatAt()
+const box = await page.locator('div.touch-none').first().boundingBox()
+await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+await page.mouse.down()
+await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 80, { steps: 8 })
+await page.mouse.up()
+await page.waitForTimeout(600)
+const boatAfter = await boatAt()
+/*
+ * The check the frame transforms exist for. Drag 80 px straight down on a map
+ * turned 174° and the ground — the boat with it — must come 80 px straight
+ * down the screen. Without turning the delta into the map's own frame it
+ * leaves at 174° to the finger instead, which is the bug that would have
+ * shipped: a map that pans sideways when you drag down.
+ */
+ok('dragging a turned map moves it the way the finger went',
+   !!boatBefore && !!boatAfter
+     && Math.abs(boatAfter.y - boatBefore.y - 80) <= 12
+     && Math.abs(boatAfter.x - boatBefore.x) <= 12,
+   boatBefore && boatAfter
+     ? `boat moved ${boatAfter.x - boatBefore.x}, ${boatAfter.y - boatBefore.y} px for a drag of 0, 80`
+     : 'boat not drawn')
+
+// North up is one tap away, and really is north up.
+await page.getByRole('radio', { name: /^North up$/ }).click()
+await page.waitForTimeout(700)
+ok('north up puts the ground back where a printed chart has it',
+   near(await groundDeg(), 0), `${await groundDeg()}°`)
+
 ok('no uncaught page errors', errors.length === 0, errors.slice(0, 2).join(' | '))
 
 await browser.close()

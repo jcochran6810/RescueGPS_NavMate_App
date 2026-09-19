@@ -15,7 +15,9 @@ import {
 } from '@/lib/geo'
 import { magneticFromTrue } from '@/lib/geomag'
 import { AddWaypointButton } from '@/components/AddWaypoint'
-import { Card, EmptyState, Label } from '@/components/ui'
+import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
+import { Button, Card, EmptyState, Label, Segmented } from '@/components/ui'
+import { useState } from 'react'
 
 /**
  * The compass, with the bearing to everything saved underneath it.
@@ -30,6 +32,17 @@ export function CompassTab() {
   const waypoints = useWaypoints((s) => s.visible())
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const heading = useHeading((s) => s.heading)
+  /*
+   * The map turns by the **true** heading, never the one on the dial.
+   *
+   * The dial can be showing magnetic if the crew asked for it, and the ground
+   * under the map is laid out from coordinates — true. Turning a true map by
+   * a magnetic heading would leave it wrong by the declination, which on
+   * either US coast is 10–20°: the exact error the compass work went to
+   * trouble to remove. Course over ground stands in when there is no
+   * magnetometer, because that is true as well.
+   */
+  const trueHeading = useHeading((s) => s.trueHeading)
   const shownReference = useHeading((s) => s.shownReference)
   const declination = useHeading((s) => s.declination)
 
@@ -39,6 +52,33 @@ export function CompassTab() {
 
   const lat = fix?.lat ?? null
   const lon = fix?.lon ?? null
+
+  const [showMap, setShowMap] = useState(false)
+  const [base, setBase] = useState<MapBase>('satellite')
+  const [headUp, setHeadUp] = useState(true)
+  /*
+   * The map turns by the true heading and falls back to course over ground,
+   * which is true as well. The dial above it may be showing magnetic if the
+   * crew asked for that — and the two disagree by the declination, which is
+   * not a fault: a paper chart prints a magnetic rose inside a true one for
+   * exactly this reason. What matters is that the top of both is ahead.
+   */
+  const mapHeading = trueHeading ?? fix?.heading ?? null
+
+  /** The saved waypoints, for the map under the dial. */
+  const markers = useMemo(
+    () =>
+      waypoints
+        .filter((w) => (activeTeamId ? w.team_id === activeTeamId : w.team_id === null))
+        .map((w) => ({
+          id: w.id,
+          name: w.name,
+          lat: w.lat,
+          lon: w.lon,
+          waypointId: w.id,
+        })),
+    [waypoints, activeTeamId],
+  )
 
   const legs = useMemo(() => {
     if (lat === null || lon === null) return []
@@ -82,7 +122,40 @@ export function CompassTab() {
         </div>
       )}
 
-      <Compass lat={lat} lon={lon} />
+      <CompassMapControls
+        show={showMap}
+        onShow={setShowMap}
+        base={base}
+        onBase={setBase}
+        headUp={headUp}
+        onHeadUp={setHeadUp}
+        heading={mapHeading}
+      />
+
+      <Compass
+        lat={lat}
+        lon={lon}
+        behind={
+          showMap
+            ? (rose) => (
+            <SatelliteMap
+              trail={[]}
+              fix={fix}
+              markers={markers}
+              base={base}
+              height={340}
+              // Head-up needs a heading to be head-up *to*. Without one the
+              // map stays north-up rather than freezing at the last reading,
+              // which would be a map claiming a direction it does not have.
+              rotationDeg={headUp && mapHeading !== null ? mapHeading : 0}
+              rangeRings
+              forwardDeg={mapHeading}
+              overlay={rose}
+            />
+              )
+            : undefined
+        }
+      />
 
       <Card>
         <div className="flex items-center justify-between gap-2">
@@ -145,5 +218,82 @@ export function CompassTab() {
         </p>
       </Card>
     </div>
+  )
+}
+
+/**
+ * The controls for the map behind the dial.
+ *
+ * Above the compass rather than below it, because they are about what the
+ * crew is looking *at* — and off by default: imagery is the most expensive
+ * thing this app fetches, and a crew out of coverage still has a dial.
+ */
+function CompassMapControls({
+  show,
+  onShow,
+  base,
+  onBase,
+  headUp,
+  onHeadUp,
+  heading,
+}: {
+  show: boolean
+  onShow: (v: boolean) => void
+  base: MapBase
+  onBase: (b: MapBase) => void
+  headUp: boolean
+  onHeadUp: (v: boolean) => void
+  heading: number | null
+}) {
+  if (!show) {
+    return (
+      <Button variant="ghost" className="w-full" onClick={() => onShow(true)}>
+        Show the map under the compass
+      </Button>
+    )
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between gap-2">
+        <Label>Map under the dial</Label>
+        <button
+          onClick={() => onShow(false)}
+          className="mb-1.5 flex min-h-9 items-center rounded-lg border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5"
+        >
+          Hide map
+        </button>
+      </div>
+
+      <div className="space-y-1.5">
+        <Segmented
+          label="Map layer"
+          value={base}
+          options={[
+            { id: 'satellite' as MapBase, label: 'Satellite', hint: 'Aerial imagery' },
+            { id: 'hybrid' as MapBase, label: 'Hybrid', hint: 'The chart blended over the imagery' },
+            { id: 'chart' as MapBase, label: 'Chart', hint: 'The NOAA chart alone' },
+          ]}
+          onChange={onBase}
+        />
+        <Segmented
+          label="Map orientation"
+          value={headUp ? 'head' : 'north'}
+          options={[
+            { id: 'head', label: 'Head up', hint: 'The ground turns with you' },
+            { id: 'north', label: 'North up', hint: 'The ground stays put, like a printed chart' },
+          ]}
+          onChange={(v) => onHeadUp(v === 'head')}
+        />
+      </div>
+
+      <p className="mt-1.5 text-xs text-slate-400">
+        {headUp
+          ? heading === null
+            ? 'Waiting for a heading — the ground stays north up until there is one.'
+            : 'The ground is turned to your heading, so straight up the dial is straight ahead. The rings are distance from you.'
+          : 'North is up, as on a printed chart. The dashed line is the way you are facing.'}
+      </p>
+    </Card>
   )
 }
