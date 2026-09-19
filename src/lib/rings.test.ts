@@ -4,6 +4,7 @@ import {
   forwardScreenDeg,
   pickRings,
   ringLabel,
+  rulerLengthPx,
   unitInMeters,
 } from './rings'
 
@@ -49,9 +50,30 @@ describe('pickRings', () => {
    */
   it('has short steps for a map zoomed in close', () => {
     const rings = pickRings(1.2, 138, 'nm')
-    expect(rings).toHaveLength(3)
+    expect(rings.length).toBeGreaterThanOrEqual(3)
     expect(rings[0].label).toMatch(/ft$/)
-    expect(rings[2].px).toBeLessThanOrEqual(138)
+    expect(rings[rings.length - 1].px).toBeLessThanOrEqual(138)
+  })
+
+  /*
+   * The contract changed when the rings became a ruler to the edge of the
+   * screen: the count is no longer "three" but "as many as fit and can still
+   * be read". A long scale divided into three is one nobody can interpolate
+   * on, so the *finest* readable spacing wins rather than the coarsest that
+   * fits three.
+   */
+  it('divides a long scale finely rather than into three', () => {
+    const short = pickRings(1.2, 138, 'nm')
+    const long = pickRings(1.2, 420, 'nm')
+    expect(long.length).toBeGreaterThan(short.length)
+    // And the last graduation still lands inside the length it was given.
+    expect(long[long.length - 1].px).toBeLessThanOrEqual(420)
+  })
+
+  it('never crowds past six graduations', () => {
+    for (const len of [138, 300, 420, 900, 2000]) {
+      expect(pickRings(1.2, len, 'nm').length).toBeLessThanOrEqual(6)
+    }
   })
 
   it('says metres to a crew that reads kilometres, feet to one that does not', () => {
@@ -83,9 +105,9 @@ describe('pickRings', () => {
     expect(pickRings(1_000_000, 300, 'nm')).toEqual([])
   })
 
-  it('honours how many rings were asked for', () => {
-    expect(pickRings(2, 300, 'nm', 1)).toHaveLength(1)
-    expect(pickRings(2, 300, 'nm', 2)).toHaveLength(2)
+  it('never returns more graduations than it was allowed', () => {
+    expect(pickRings(2, 300, 'nm', 1).length).toBeLessThanOrEqual(1)
+    expect(pickRings(2, 300, 'nm', 2).length).toBeLessThanOrEqual(2)
   })
 })
 
@@ -139,5 +161,37 @@ describe('ringLabel and unitInMeters', () => {
     expect(unitInMeters('nm')).toBe(1852)
     expect(unitInMeters('km')).toBe(1000)
     expect(unitInMeters('mi')).toBeCloseTo(1609.344, 3)
+  })
+})
+
+describe('rulerLengthPx', () => {
+  /*
+   * The scale has to reach the edge of the screen. Straight up from the
+   * middle of a 300×400 box, that is 200 px less the margin that keeps the
+   * arrow head and the last label inside.
+   */
+  it('measures to the edge along the way the crew is facing', () => {
+    expect(rulerLengthPx(150, 200, 300, 400, 0, 18)).toBeCloseTo(182, 6)
+    expect(rulerLengthPx(150, 200, 300, 400, 180, 18)).toBeCloseTo(182, 6)
+    expect(rulerLengthPx(150, 200, 300, 400, 90, 18)).toBeCloseTo(132, 6)
+  })
+
+  it('shortens as the boat approaches the edge it is facing', () => {
+    expect(rulerLengthPx(150, 40, 300, 400, 0, 18)).toBeCloseTo(22, 6)
+  })
+
+  /* Off the edge already: nothing to draw, rather than a negative ruler. */
+  it('never returns a negative length', () => {
+    expect(rulerLengthPx(150, 5, 300, 400, 0, 18)).toBe(0)
+  })
+
+  it('handles a diagonal by whichever edge comes first', () => {
+    /*
+     * 45° up and to the right from (150, 200) in a 300 × 260 box: 150 px of
+     * room to the right and 200 to the top, so the *side* is reached first at
+     * 150·√2. The first version of this check said the top wins and was
+     * simply wrong about its own geometry — the code was right.
+     */
+    expect(rulerLengthPx(150, 200, 300, 260, 45, 0)).toBeCloseTo(150 * Math.SQRT2, 6)
   })
 })

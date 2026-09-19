@@ -366,8 +366,16 @@ export const CompassRose = memo(function CompassRose({
         </>
       )}
 
-      {/* The number, which is what actually gets read out over a radio. It
-          stays upright while everything behind it turns. */}
+      {/*
+       * The number, which is what actually gets read out over a radio.
+       *
+       * Not over a map. It is 38 px of digits in the middle of the dial, and
+       * the middle of the dial is where the crew is standing — on a map it
+       * covered their own position marker and the nought of the range scale,
+       * which was reported from a phone. Over a map it is rendered below the
+       * dial instead, in ordinary text, by whoever placed the map there.
+       */}
+      {!overMap && (
       <text
         x="0"
         y="-8"
@@ -383,7 +391,8 @@ export const CompassRose = memo(function CompassRose({
       >
         {heading === null ? '—' : `${Math.round(normalizeDeg(heading))}°`}
       </text>
-      {caption && (
+      )}
+      {caption && !overMap && (
         <text
           x="0"
           y="15"
