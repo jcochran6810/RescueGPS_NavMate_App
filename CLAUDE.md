@@ -310,6 +310,65 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-24 — claude/cross-app-integrations-eizkb7 (the integration contract with RescueGPS)
+
+Applied `INTEGRATION-CONTRACT.md` v1 — the agreement that lets NavMate and the
+RescueGPS command system share data through the one database they already
+share. Both halves were built in this one session (both repos were attached),
+each side creating only the objects the contract says it owns, and every task
+logged in the shared `integ_handshake` table (all 21 tasks `done`).
+
+**Database (NavMate-owned, `supabase/migrations/20260924*`, all applied):**
+- `N2` `waypoints.incident_id` (+ index). `N10` `deleted_at` on waypoints,
+  sar_records and vessels.
+- `N3` read policies on waypoints / sar_records / vessels through RescueGPS's
+  `integ_can_read_incident()` (never a local copy), and the three tables in
+  the realtime publication. Existing team policies unchanged.
+- `N11` `navmate_can_read_field_photo(name)` + a storage policy so a clue
+  photo (`<uid>/<sar_records.id>/…`) is readable by the record's team and by
+  anyone who can read its incident. Before this only the author could open
+  one. A SECURITY DEFINER function takes the object name so nothing can
+  shadow it — the bug that once hid every teammate's waypoint photo.
+
+**App (N1, N2, N4–N11):**
+- `N1` writes `missing_person_piw`; closing sets `status='closed'` + `outcome`
+  (+ `outcome_time`, `ended_at`), cancel sets `cancelled`; legacy rows are
+  normalised on read (`normalizeIncident`, `incidentStatusLabel`).
+- `N2` every waypoint made during an incident carries it, queued ones too;
+  "Attach to incident" on the waypoint sheet. `N10` deletes are soft and go
+  through the offline queue in order.
+- `N4`/`N9` registers the crew as a unit with `integ_register_unit` and sends
+  `asset_id` on every fix; other units arrive over Realtime with a 60 s
+  fallback poll.
+- `N5`–`N8` new stores (`useAssignments`, `useMessages`, `useHazards`,
+  `useSearchAreas`) and cards: assignments with En route / Searching /
+  Complete, messages with delivered/read receipts, replies and a full-screen
+  emergency alert, hazards (view + report), search areas and command's LKP on
+  the map. All cached per incident and queued offline, idempotent on replay.
+- `N11` clue form takes a description and an optional photo.
+- `useVessels.inScope(null)` now shows only this account's private boats:
+  N3 makes another crew's boat readable once it is a unit, and it must not
+  appear in this crew's boat list.
+
+**What RescueGPS built on its side** (their repo): the incident vocabulary
+trigger, `integ_can_read_incident`, the unit registry, the fan-out of
+sar_records into lkp_history / field_drift_data / environmental_data /
+evidence, field write-back rules, and R8 — which closes two items this file
+carried: `victims` open to every signed-in user, and self-insert into
+`incident_participants` (see `fix_list.md`).
+
+**Verification.** 715 tests, typecheck, lint, build clean. The database side
+was tested as the real accounts in rolled-back transactions: join, register a
+unit, track, clue → evidence with photo path, assignment status, receipts,
+hazard report, close as found alive; an outsider sees no waypoints, tracks,
+assignments, victims or clue photos, cannot add themselves, and a participant
+cannot promote themselves to IC. **Not run in a browser or on a phone.**
+
+**Known limits:** a polygon arriving over Realtime is EWKB hex and is re-read
+through PostgREST; a new field message goes incident-wide (a reply goes to
+its sender); waypoint and SAR-record lists may now include other teams' rows
+on a shared incident (vessels were tightened, those two were not).
+
 ### 2026-09-19 — claude/youthful-knuth-t4hzoo (the bearing goes back on the ground)
 
 "The bearing display still needs to be on the map window, just not covering

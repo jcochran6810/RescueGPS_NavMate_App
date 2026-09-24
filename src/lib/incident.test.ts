@@ -3,9 +3,13 @@ import {
   newIncidentNumber,
   incidentHandoff,
   INCIDENT_TYPES,
-  CLOSE_STATUSES,
+  CLOSE_OPTIONS,
   incidentTypeLabel,
   recordsForSearch,
+  canonicalIncidentType,
+  closePatch,
+  normalizeIncident,
+  incidentStatusLabel,
 } from './incident'
 import type { Incident, SarRecord } from './types'
 
@@ -103,7 +107,8 @@ describe('incidentHandoff', () => {
     expect(out.format).toBe('rescuegps-navmate/incident-handoff')
     expect(out.incident).toMatchObject({
       incident_number: 'INC-260806-ABCDE',
-      incident_type: 'piw',
+      // The fixture carries the legacy code; the handoff speaks C1.
+      incident_type: 'missing_person_piw',
       lkp_lat: 29.5,
       lkp_lng: -94.8,
       lkp_source: 'field_gps',
@@ -198,11 +203,58 @@ describe('choice lists', () => {
     expect(incidentTypeLabel('jetski')).toBe('Jet ski missing / overdue')
     expect(INCIDENT_TYPES.some((t) => t.value === 'jetski')).toBe(false)
     expect(incidentTypeLabel('jumper')).toBe('Jumper / long fall')
-    for (const s of CLOSE_STATUSES) {
+    for (const s of CLOSE_OPTIONS) {
       expect([
         'found_alive', 'found_deceased', 'not_found', 'false_alarm', 'cancelled',
       ]).toContain(s.value)
     }
+  })
+
+  it('writes missing_person_piw and never piw, but still reads piw', () => {
+    expect(INCIDENT_TYPES.some((t) => t.value === 'piw')).toBe(false)
+    expect(INCIDENT_TYPES.some((t) => t.value === 'missing_person_piw')).toBe(true)
+    expect(canonicalIncidentType('piw')).toBe('missing_person_piw')
+    expect(incidentTypeLabel('piw')).toBe('Person in water')
+    expect(incidentTypeLabel('missing_person_piw')).toBe('Person in water')
+  })
+})
+
+describe('status vs outcome (contract C2)', () => {
+  it('closing with an outcome writes status closed, the outcome and the time', () => {
+    const now = new Date('2026-09-24T10:00:00.000Z')
+    expect(closePatch('found_alive', now)).toEqual({
+      status: 'closed',
+      outcome: 'found_alive',
+      outcome_time: '2026-09-24T10:00:00.000Z',
+      ended_at: '2026-09-24T10:00:00.000Z',
+    })
+  })
+
+  it('cancelling is a lifecycle status with no outcome', () => {
+    expect(closePatch('cancelled')).toEqual({ status: 'cancelled' })
+  })
+
+  it('reads legacy rows in the contract vocabulary', () => {
+    const legacy = normalizeIncident({ ...INCIDENT, status: 'not_found' })
+    expect(legacy.status).toBe('closed')
+    expect(legacy.outcome).toBe('not_found')
+    expect(legacy.incident_type).toBe('missing_person_piw')
+    expect(normalizeIncident({ ...INCIDENT, status: 'completed' }).status).toBe('closed')
+    // Already canonical: returned as-is.
+    const fresh = { ...INCIDENT, incident_type: 'kayak' }
+    expect(normalizeIncident(fresh)).toBe(fresh)
+  })
+
+  it('labels a closed incident with its outcome', () => {
+    expect(incidentStatusLabel({ status: 'closed', outcome: 'found_alive' })).toBe(
+      'Closed · Found alive',
+    )
+    expect(incidentStatusLabel({ status: 'found_deceased' })).toBe(
+      'Closed · Found deceased',
+    )
+    expect(incidentStatusLabel({ status: 'closed', outcome: null })).toBe('Closed')
+    expect(incidentStatusLabel({ status: 'cancelled', outcome: null })).toBe('Cancelled')
+    expect(incidentStatusLabel({ status: 'active' })).toBe('Active')
   })
 })
 

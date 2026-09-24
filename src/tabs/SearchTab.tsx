@@ -7,6 +7,7 @@ import { useIncidents } from '@/store/useIncidents'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useVessels } from '@/store/useVessels'
 import { useIncidentUnits } from '@/hooks/useIncidentUnits'
+import { useIncidentOverlay } from '@/hooks/useIncidentOverlay'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
@@ -40,6 +41,9 @@ import { SatelliteMap } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
 import { IncidentCard } from '@/components/IncidentCard'
+import { AssignmentsCard } from '@/components/AssignmentsCard'
+import { MessagesCard } from '@/components/MessagesCard'
+import { HazardsCard } from '@/components/HazardsCard'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
 
@@ -59,6 +63,7 @@ export function SearchTab() {
   const activeTeamId = useTeams((s) => s.activeTeamId)
   // Everyone else on this search, drawn on the map below.
   const units = useIncidentUnits()
+  const commandPicture = useIncidentOverlay()
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
   const { visible, load } = useSarRecords()
   const tracker = useTracker()
@@ -246,6 +251,16 @@ export function SearchTab() {
       </div>
 
       <IncidentCard />
+
+      {/* What command has sent this crew: segments, orders, hazards. Each
+
+          renders nothing off an incident. */}
+
+      <AssignmentsCard />
+
+      <MessagesCard />
+
+      <HazardsCard />
 
       {!datum ? (
         <Card>
@@ -491,6 +506,7 @@ export function SearchTab() {
                   : []
               }
               units={units}
+              incident={commandPicture}
               height={300}
             />
             <p className="mt-1.5 text-xs text-slate-400">

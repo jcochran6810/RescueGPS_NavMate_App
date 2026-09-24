@@ -4,6 +4,7 @@ import { useTracker } from '@/store/useTracker'
 import { useGoTo } from '@/store/useGoTo'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useIncidentUnits } from '@/hooks/useIncidentUnits'
+import { useIncidentOverlay } from '@/hooks/useIncidentOverlay'
 import { useTeams } from '@/store/useTeams'
 import { useVessels } from '@/store/useVessels'
 import { useChartData } from '@/store/useChartData'
@@ -85,6 +86,7 @@ export function ChartTab() {
   const tracker = useTracker()
   // Everyone else on this search, drawn on the map below.
   const units = useIncidentUnits()
+  const commandPicture = useIncidentOverlay()
   const fix = tracker.fix
   const online = useOnline()
   const activeTeamId = useTeams((s) => s.activeTeamId)
@@ -497,6 +499,7 @@ export function ChartTab() {
           route={plan?.points ?? []}
           routeUnverified={plan?.source === 'straight'}
           units={units}
+          incident={commandPicture}
           markers={[
             ...(start
               ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]

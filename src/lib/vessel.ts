@@ -41,6 +41,8 @@ export interface Vessel {
   under_keel_margin_m: number
   /** Lateral stand-off kept from any charted hazard, metres. */
   clearance_m: number
+  /** Soft delete (N10): set instead of removing the row. Never shown. */
+  deleted_at?: string | null
   created_at: string
   updated_at: string
 }

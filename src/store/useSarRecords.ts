@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { supabase, errorMessage } from '@/lib/supabase'
+import { supabase, errorMessage, PHOTO_BUCKET } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
 import type { NewSarRecord, SarRecord } from '@/lib/types'
 
@@ -19,7 +19,8 @@ import type { NewSarRecord, SarRecord } from '@/lib/types'
 type PendingOp = (
   | { kind: 'create'; record: SarRecord }
   | { kind: 'update'; id: string; patch: Partial<SarRecord> }
-  | { kind: 'delete'; id: string }
+  /** A soft delete (N10); `deletedAt` is the moment the crew tapped. */
+  | { kind: 'delete'; id: string; deletedAt?: string }
 ) & { attempts?: number }
 
 interface FailedOp {
@@ -47,6 +48,12 @@ interface SarState {
   createRecord: (input: NewSarRecord) => Promise<SarRecord | null>
   updateRecord: (id: string, patch: Partial<SarRecord>) => Promise<void>
   removeRecord: (id: string) => Promise<void>
+  /**
+   * Upload a photograph for a record and put its path in the payload as
+   * `photo_path` (the clue → evidence contract). Needs a connection; returns
+   * the path, or null when it could not be uploaded.
+   */
+  attachPhoto: (id: string, file: File) => Promise<string | null>
   retryFailed: () => Promise<void>
   discardFailed: () => void
   clearLocal: () => void
@@ -82,7 +89,7 @@ let memo: {
 } | null = null
 
 function applyOps(cache: SarRecord[], ops: PendingOp[]): SarRecord[] {
-  const byId = new Map(cache.map((r) => [r.id, r]))
+  const byId = new Map(cache.filter((r) => !r.deleted_at).map((r) => [r.id, r]))
   for (const op of ops) {
     if (op.kind === 'create') byId.set(op.record.id, op.record)
     else if (op.kind === 'delete') byId.delete(op.id)
@@ -152,6 +159,7 @@ export const useSarRecords = create<SarState>()(
             const { data, error } = await supabase
               .from('sar_records')
               .select('*')
+              .is('deleted_at', null)
               .order('recorded_at', { ascending: false })
             if (error) throw error
             set({ cache: (data ?? []) as SarRecord[] })
@@ -197,9 +205,12 @@ export const useSarRecords = create<SarState>()(
                   .eq('id', op.id)
                 if (error) throw error
               } else {
+                // Soft delete (N10). RescueGPS mirrors the record into its
+                // own tables and soft-deletes its copy off this column; a
+                // hard delete would leave that copy behind for good.
                 const { error } = await supabase
                   .from('sar_records')
-                  .delete()
+                  .update({ deleted_at: op.deletedAt ?? new Date().toISOString() })
                   .eq('id', op.id)
                 if (error) throw error
               }
@@ -276,8 +287,36 @@ export const useSarRecords = create<SarState>()(
       },
 
       removeRecord: async (id) => {
-        set({ pending: [...get().pending, { kind: 'delete', id }] })
+        set({
+          pending: [
+            ...get().pending,
+            { kind: 'delete', id, deletedAt: new Date().toISOString() },
+          ],
+        })
         await get().flush()
+      },
+
+      attachPhoto: async (id, file) => {
+        if (!online()) return null
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id
+        if (!uid) return null
+        const record = get().visible().find((r) => r.id === id)
+        if (!record) return null
+        // The waypoint photo bucket and its own-folder rule:
+        // `<user>/<record id>/<file>`, the same layout a waypoint photo uses.
+        const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().slice(0, 5)
+        const path = `${uid}/${id}/${newId()}.${ext}`
+        const { error } = await supabase.storage
+          .from(PHOTO_BUCKET)
+          .upload(path, file, { contentType: file.type || 'image/jpeg' })
+        if (error) {
+          console.warn('record photo upload failed', errorMessage(error))
+          return null
+        }
+        await get().updateRecord(id, {
+          payload: { ...record.payload, photo_path: path } as SarRecord['payload'],
+        })
+        return path
       },
 
       retryFailed: async () => {

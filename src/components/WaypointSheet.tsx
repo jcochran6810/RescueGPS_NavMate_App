@@ -5,6 +5,7 @@ import { WaypointPhoto } from '@/components/WaypointPhoto'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useWaypointView } from '@/store/useWaypointView'
 import { useTeams } from '@/store/useTeams'
+import { useIncidents } from '@/store/useIncidents'
 import { useTracker } from '@/store/useTracker'
 import { useMapAction } from '@/store/useMapAction'
 import { useCoordFormat } from '@/store/useCoordFormat'
@@ -37,6 +38,9 @@ export function WaypointSheet() {
   const close = useWaypointView((s) => s.close)
   const all = useWaypoints((s) => s.visible())
   const members = useTeams((s) => s.members)
+  const activeTeamId = useTeams((s) => s.activeTeamId)
+  const incident = useIncidents((s) => s.activeIncident(activeTeamId))
+  const attach = useWaypoints((s) => s.attachToIncident)
   const fix = useTracker((s) => s.fix)
   const ask = useMapAction((s) => s.ask)
   const format = useCoordFormat((s) => s.format)
@@ -90,6 +94,26 @@ export function WaypointSheet() {
             <WaypointPhoto key={p} path={p} />
           ))}
         </div>
+      )}
+
+      {/* A waypoint saved before the incident was opened, or under another
+          one, can be put on this search so command sees it (C4). */}
+      {incident && w.incident_id !== incident.id && (
+        <Button
+          variant="default"
+          className="mt-3 w-full"
+          onClick={async () => {
+            await attach(w.id, incident.id)
+            toast(`Attached to ${incident.incident_number}`, 'success')
+          }}
+        >
+          Attach to incident {incident.incident_number}
+        </Button>
+      )}
+      {incident && w.incident_id === incident.id && (
+        <p className="mt-2 text-xs text-emerald-300/80">
+          On incident {incident.incident_number}
+        </p>
       )}
 
       <Button

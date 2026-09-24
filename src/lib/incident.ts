@@ -8,7 +8,7 @@
  * field names, ready to be inserted rather than translated.
  */
 
-import type { Incident, SarRecord, CluePayload, DriftMarkerPayload, EnvironmentPayload, LkpPayload } from './types'
+import type { Incident, IncidentOutcome, SarRecord, CluePayload, DriftMarkerPayload, EnvironmentPayload, LkpPayload } from './types'
 import { canonicalObjectKey, driftStartsAt } from './sar'
 import { NM_TO_KM } from './geo'
 
@@ -18,7 +18,9 @@ import { NM_TO_KM } from './geo'
  * incidents CHECK constraint.
  */
 export const INCIDENT_TYPES: { value: string; label: string }[] = [
-  { value: 'piw', label: 'Person in water' },
+  // The canonical PIW code (integration contract C1). NavMate wrote `piw`
+  // until September 2026; it is still read as a synonym, never written.
+  { value: 'missing_person_piw', label: 'Person in water' },
   { value: 'swimmer', label: 'Swimmer in trouble' },
   { value: 'kayak', label: 'Kayaker missing / overdue' },
   { value: 'jumper', label: 'Jumper / long fall' },
@@ -46,22 +48,108 @@ const RETIRED_TYPE_LABELS: Record<string, string> = {
   jetski: 'Jet ski missing / overdue',
 }
 
+/**
+ * Codes that mean the same thing as a canonical one. The server rewrites
+ * `piw` on the way in (RescueGPS trigger `integ_normalize_incident`), but a
+ * row cached on a phone before that, or a queued create from an old build,
+ * can still carry it — so every read goes through here.
+ */
+const TYPE_ALIASES: Record<string, string> = {
+  piw: 'missing_person_piw',
+}
+
+export function canonicalIncidentType(value: string): string {
+  return TYPE_ALIASES[value] ?? value
+}
+
 export function incidentTypeLabel(value: string): string {
+  const v = canonicalIncidentType(value)
   return (
-    INCIDENT_TYPES.find((t) => t.value === value)?.label ??
-    RETIRED_TYPE_LABELS[value] ??
-    value
+    INCIDENT_TYPES.find((t) => t.value === v)?.label ??
+    RETIRED_TYPE_LABELS[v] ??
+    v
   )
 }
 
-/** Statuses a crew closes an incident with (the rest are lifecycle). */
-export const CLOSE_STATUSES: { value: Incident['status']; label: string }[] = [
-  { value: 'found_alive', label: 'Found alive' },
-  { value: 'found_deceased', label: 'Found deceased' },
-  { value: 'not_found', label: 'Search ended — not found' },
-  { value: 'false_alarm', label: 'False alarm' },
+/* -------------------------------------------------------------------------
+ * Status vs outcome (integration contract C2)
+ *
+ * `status` is lifecycle only — active, suspended, closed, cancelled. How a
+ * search ended is `outcome`. NavMate used to write the outcome into `status`
+ * (`found_alive` and friends); those rows are still readable here and are
+ * normalised on the server for anything still queued on an old phone.
+ * ---------------------------------------------------------------------- */
+
+export const OUTCOME_LABEL: Record<IncidentOutcome, string> = {
+  found_alive: 'Found alive',
+  found_deceased: 'Found deceased',
+  not_found: 'Search ended — not found',
+  false_alarm: 'False alarm',
+}
+
+/** How a crew can close an incident: an outcome, or cancelled. */
+export type CloseChoice = IncidentOutcome | 'cancelled'
+
+export const CLOSE_OPTIONS: { value: CloseChoice; label: string }[] = [
+  { value: 'found_alive', label: OUTCOME_LABEL.found_alive },
+  { value: 'found_deceased', label: OUTCOME_LABEL.found_deceased },
+  { value: 'not_found', label: OUTCOME_LABEL.not_found },
+  { value: 'false_alarm', label: OUTCOME_LABEL.false_alarm },
   { value: 'cancelled', label: 'Cancelled' },
 ]
+
+const LEGACY_OUTCOMES: IncidentOutcome[] = [
+  'found_alive',
+  'found_deceased',
+  'not_found',
+  'false_alarm',
+]
+
+/**
+ * The write that closes an incident. An outcome closes it with the result and
+ * the time; cancelling is a lifecycle state of its own and carries no outcome.
+ */
+export function closePatch(
+  choice: CloseChoice,
+  now: Date = new Date(),
+): Partial<Incident> {
+  if (choice === 'cancelled') return { status: 'cancelled' }
+  const at = now.toISOString()
+  return { status: 'closed', outcome: choice, outcome_time: at, ended_at: at }
+}
+
+/**
+ * A row in the vocabulary of the contract, whatever it was written in:
+ * `piw` becomes `missing_person_piw`, an outcome in `status` moves to
+ * `outcome` with `status = closed`, and `completed` becomes `closed`.
+ */
+export function normalizeIncident<T extends Incident>(i: T): T {
+  let next = i
+  const type = canonicalIncidentType(i.incident_type)
+  if (type !== i.incident_type) next = { ...next, incident_type: type }
+  const legacy = LEGACY_OUTCOMES.find((o) => o === i.status)
+  if (legacy) {
+    next = { ...next, status: 'closed', outcome: i.outcome ?? legacy }
+  } else if (i.status === 'completed') {
+    next = { ...next, status: 'closed' }
+  }
+  return next
+}
+
+/** "Active", "Suspended", "Cancelled", or "Closed · Found alive". */
+export function incidentStatusLabel(i: Pick<Incident, 'status' | 'outcome'>): string {
+  const n = normalizeIncident({ incident_type: '', ...i } as Incident)
+  switch (n.status) {
+    case 'active':
+      return 'Active'
+    case 'suspended':
+      return 'Suspended'
+    case 'cancelled':
+      return 'Cancelled'
+    default:
+      return n.outcome ? `Closed · ${OUTCOME_LABEL[n.outcome]}` : 'Closed'
+  }
+}
 
 /**
  * INC-YYMMDD-XXXXX — RescueGPS's field-activation format, with the random
@@ -151,10 +239,11 @@ export function incidentHandoff(input: HandoffInput): string {
       incident: {
         client_id: incident.client_id,
         incident_number: incident.incident_number,
-        incident_type: incident.incident_type,
+        incident_type: canonicalIncidentType(incident.incident_type),
         incident_name: incident.incident_name,
         urgency_level: incident.urgency_level,
-        status: incident.status,
+        status: normalizeIncident(incident).status,
+        outcome: normalizeIncident(incident).outcome ?? null,
         lkp_lat: incident.lkp_lat,
         lkp_lng: incident.lkp_lng,
         lkp_time: lkpTime,

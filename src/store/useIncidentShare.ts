@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
+import { applyTrackRow, type UnitPosition } from '@/lib/command'
 import type { Fix, IncidentUnit } from '@/lib/types'
 
 /**
@@ -32,14 +33,28 @@ import type { Fix, IncidentUnit } from '@/lib/types'
 const PUBLISH_EVERY_S = 15
 /** How many unsent fixes to hold. At one per 15 s this is about two hours. */
 const BUFFER_MAX = 480
-/** How often to ask where everyone else is. */
-export const UNITS_REFRESH_MS = 20_000
+/**
+ * How often to ask where everyone else is when the live feed cannot be
+ * trusted to say.
+ *
+ * Positions arrive over Realtime (`asset_tracks`, filtered to the incident);
+ * this is the fallback for when the socket has dropped, or has gone quiet for
+ * longer than this — which on a phone moving between cells is the same thing
+ * without the error.
+ */
+export const UNITS_REFRESH_MS = 60_000
 /** A unit that has not reported for this long is stale, and says so. */
 export const UNIT_STALE_MS = 5 * 60_000
 
 interface Queued {
   client_id: string
   incident_id: string
+  /**
+   * The unit this fix belongs to (`resources.id`, contract C3). Null when the
+   * unit is not registered yet — the server fills it from the crew row, and
+   * the flush fills it from the cache once registration has answered.
+   */
+  asset_id?: string | null
   lat: number
   lng: number
   heading_deg: number | null
@@ -54,6 +69,19 @@ interface ShareState {
   /** Fixes written but not yet accepted by the server. */
   queue: Queued[]
   units: IncidentUnit[]
+  /**
+   * This crew's unit id per incident, from `integ_register_unit`. Persisted:
+   * it is what every fix, assignment and message to "my unit" is keyed on,
+   * and a phone reopened offline still needs to know which unit it is.
+   */
+  unitIds: Record<string, string>
+  /** The account those unit ids were issued to. Another sign-in on the same
+   *  phone must not report its fixes as this crew's boat. */
+  unitOwner: string | null
+  /** True while the Realtime feed of other units is joined. */
+  live: boolean
+  /** When the feed last delivered a row (ms). */
+  lastLiveAt: number
   sending: boolean
   lastPublishedAt: number
   lastError: string | null
@@ -63,6 +91,15 @@ interface ShareState {
   flush: () => Promise<void>
   /** Read every other unit on the search. */
   refreshUnits: (incidentId: string) => Promise<void>
+  /**
+   * Register this crew as a unit on the incident (idempotent server-side).
+   * Never throws and never blocks tracking — a failure leaves fixes going out
+   * with a null asset_id for the server to backfill, and is retried later.
+   */
+  registerUnit: (incidentId: string, vesselId: string | null) => Promise<string | null>
+  unitId: (incidentId: string | null) => string | null
+  /** Follow the other units live. Returns the unsubscribe. */
+  subscribeUnits: (incidentId: string) => () => void
   clearLocal: () => void
 }
 
@@ -73,6 +110,10 @@ export const useIncidentShare = create<ShareState>()(
     (set, get) => ({
       queue: [],
       units: [],
+      unitIds: {},
+      unitOwner: null,
+      live: false,
+      lastLiveAt: 0,
       sending: false,
       lastPublishedAt: 0,
       lastError: null,
@@ -90,6 +131,8 @@ export const useIncidentShare = create<ShareState>()(
           // Unique per user per fix, which is what makes a retry safe.
           client_id: `${uid}:${fix.timestamp}`,
           incident_id: incidentId,
+          asset_id:
+            get().unitOwner === uid ? (get().unitIds[incidentId] ?? null) : null,
           lat: fix.lat,
           lng: fix.lon,
           heading_deg: fix.heading,
@@ -114,11 +157,18 @@ export const useIncidentShare = create<ShareState>()(
         if (!uid) return
 
         set({ sending: true })
+        const unitIds = get().unitOwner === uid ? get().unitIds : {}
         try {
           const { error } = await supabase
             .from('asset_tracks')
             .upsert(
-              queue.map((q) => ({ ...q, user_id: uid })),
+              queue.map((q) => ({
+                ...q,
+                // A fix buffered before the unit was registered picks the id
+                // up here, so a backlog uploads already attributed.
+                asset_id: q.asset_id ?? unitIds[q.incident_id] ?? null,
+                user_id: uid,
+              })),
               { onConflict: 'client_id' },
             )
           if (error) throw error
@@ -153,6 +203,72 @@ export const useIncidentShare = create<ShareState>()(
         set({ units: ((data ?? []) as IncidentUnit[]).filter((u) => u.user_id !== uid) })
       },
 
+      registerUnit: async (incidentId, vesselId) => {
+        const uid =
+          (await supabase.auth.getSession()).data.session?.user?.id ?? null
+        if (!uid) return null
+        if (get().unitOwner !== uid) set({ unitIds: {}, unitOwner: uid })
+        if (!online()) return get().unitIds[incidentId] ?? null
+        const { data, error } = await supabase.rpc('integ_register_unit', {
+          p_incident_id: incidentId,
+          p_vessel_id: vesselId,
+        })
+        if (error || typeof data !== 'string') {
+          // Not a participant yet (an incident opened offline that has not
+          // synced), or the boat is still in the queue. Retried later.
+          console.warn('unit registration failed', errorMessage(error))
+          return get().unitIds[incidentId] ?? null
+        }
+        set({ unitIds: { ...get().unitIds, [incidentId]: data } })
+        // Anything buffered before this answer goes out attributed.
+        void get().flush()
+        return data
+      },
+
+      unitId: (incidentId) =>
+        incidentId ? (get().unitIds[incidentId] ?? null) : null,
+
+      subscribeUnits: (incidentId) => {
+        let uid: string | null = null
+        void supabase.auth.getSession().then((r) => {
+          uid = r.data.session?.user?.id ?? null
+        })
+        const channel = supabase
+          .channel(`navmate-units-${incidentId}`)
+          .on(
+            'postgres_changes',
+            {
+              // An upsert that lands on an existing client_id arrives as an
+              // UPDATE; either way the row is a position.
+              event: '*',
+              schema: 'public',
+              table: 'asset_tracks',
+              filter: `incident_id=eq.${incidentId}`,
+            },
+            (payload) => {
+              const row = payload.new as Partial<UnitPosition>
+              if (!row?.user_id || row.lat == null || row.lng == null) return
+              if (row.user_id === uid) return
+              set({ lastLiveAt: Date.now() })
+              const next = applyTrackRow(get().units, row as UnitPosition)
+              // A unit not on the list yet: the row has no name on it, so
+              // ask who it is rather than draw a nameless boat.
+              if (next === null) void get().refreshUnits(incidentId)
+              else if (next !== get().units) set({ units: next })
+            },
+          )
+          .subscribe((status) => {
+            const live = status === 'SUBSCRIBED'
+            set({ live })
+            // Joining (or rejoining after a drop) may have missed rows.
+            if (live) void get().refreshUnits(incidentId)
+          })
+        return () => {
+          set({ live: false })
+          void supabase.removeChannel(channel)
+        }
+      },
+
       clearLocal: () => set({ queue: [], units: [], lastError: null }),
     }),
     {
@@ -162,7 +278,11 @@ export const useIncidentShare = create<ShareState>()(
       // exactly when the gap in the shared track would otherwise appear.
       // Other units' positions do not: they are stale the moment the app is
       // not running, and a restored one would draw a boat that has moved.
-      partialize: (s) => ({ queue: s.queue }),
+      partialize: (s) => ({
+        queue: s.queue,
+        unitIds: s.unitIds,
+        unitOwner: s.unitOwner,
+      }),
     },
   ),
 )

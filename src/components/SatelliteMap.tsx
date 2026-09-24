@@ -21,6 +21,7 @@ import {
   type TileSource,
 } from '@/lib/tiles'
 import type { PathMarker } from '@/components/TrackPath'
+import type { MapIncidentLayer } from '@/lib/command'
 import { formatPosition } from '@/lib/coords'
 import {
   alongForward,
@@ -76,6 +77,7 @@ export function SatelliteMap({
   fix,
   markers = [],
   units = [],
+  incident = null,
   route = [],
   routeUnverified = false,
   labels = false,
@@ -109,6 +111,13 @@ export function SatelliteMap({
     speedKn: number | null
     stale: boolean
   }[]
+  /**
+   * The command picture for this search: the segments command has assigned
+   * (this crew's drawn bright, the rest dimmed), the search areas, active
+   * hazards coloured by severity, and command's current LKP. Read-only — the
+   * map draws it, nothing on it is editable from here.
+   */
+  incident?: MapIncidentLayer | null
   /** A planned line to steer — a search pattern — drawn dashed, under the
    *  track, with a square at each turn point. Drawn from the coordinates
    *  like everything else, so it is exact even when imagery is not. */
@@ -996,6 +1005,115 @@ export function SatelliteMap({
           <g
             transform={rot === 0 ? undefined : `rotate(${-rot} ${w / 2} ${h / 2})`}
           >
+          {incident &&
+            incident.areas.map((a) => {
+              const d =
+                a.ring
+                  .map((pt, i) => {
+                    const v = project(pt.lat, pt.lon)
+                    return `${i === 0 ? 'M' : 'L'}${v.x.toFixed(1)},${v.y.toFixed(1)}`
+                  })
+                  .join(' ') + ' Z'
+              const first = project(a.ring[0].lat, a.ring[0].lon)
+              const tone =
+                a.kind === 'search_area'
+                  ? 'stroke-violet-300 fill-violet-400/5'
+                  : a.mine
+                    ? 'stroke-sky-300 fill-sky-400/15'
+                    : 'stroke-slate-400 fill-slate-400/5'
+              return (
+                <g key={a.id} opacity={a.kind === 'assignment' && !a.mine ? 0.55 : 1}>
+                  <path
+                    d={d}
+                    className={tone}
+                    strokeWidth={a.mine ? 2 : 1.25}
+                    strokeDasharray={a.kind === 'search_area' ? '3 3' : a.mine ? undefined : '5 4'}
+                    strokeLinejoin="round"
+                  />
+                  <text
+                    x={first.x + 4}
+                    y={first.y - 4}
+                    transform={rot === 0 ? undefined : `rotate(${rot} ${first.x + 4} ${first.y - 4})`}
+                    className={
+                      'text-[10px] font-semibold ' +
+                      (a.kind === 'search_area'
+                        ? 'fill-violet-200'
+                        : a.mine
+                          ? 'fill-sky-100'
+                          : 'fill-slate-300')
+                    }
+                    style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                  >
+                    {a.label}
+                  </text>
+                </g>
+              )
+            })}
+
+          {incident &&
+            incident.hazards.map((hz) => {
+              const p = project(hz.lat, hz.lon)
+              if (p.x < -200 || p.x > w + 200 || p.y < -200 || p.y > h + 200) return null
+              const r =
+                hz.radiusM != null && mpp > 0
+                  ? Math.min(Math.max(hz.radiusM / mpp, 7), Math.max(w, h))
+                  : 7
+              return (
+                <g key={`hazard:${hz.id}`}>
+                  <circle
+                    cx={p.x}
+                    cy={p.y}
+                    r={r}
+                    fill={hz.color}
+                    fillOpacity={0.2}
+                    stroke={hz.color}
+                    strokeWidth="1.5"
+                  />
+                  <path
+                    d="M0,-6 L5.5,4 L-5.5,4 Z"
+                    fill={hz.color}
+                    stroke="#06131f"
+                    strokeWidth="1"
+                    transform={`translate(${p.x} ${p.y})`}
+                  />
+                  <text
+                    x={p.x + 9}
+                    y={p.y + 4}
+                    transform={rot === 0 ? undefined : `rotate(${rot} ${p.x + 9} ${p.y + 4})`}
+                    className="text-[10px] font-semibold"
+                    fill={hz.color}
+                    style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                  >
+                    ⚠ {hz.label}
+                  </text>
+                </g>
+              )
+            })}
+
+          {incident?.lkp &&
+            (() => {
+              const p = project(incident.lkp.lat, incident.lkp.lon)
+              return (
+                <g>
+                  <path
+                    d="M0,-8 L8,0 L0,8 L-8,0 Z"
+                    className="fill-red-500/80 stroke-navy-950"
+                    strokeWidth="1.5"
+                    transform={`translate(${p.x} ${p.y})`}
+                  />
+                  <text
+                    x={p.x + 10}
+                    y={p.y + 4}
+                    transform={rot === 0 ? undefined : `rotate(${rot} ${p.x + 10} ${p.y + 4})`}
+                    className="fill-red-200 text-[11px] font-semibold"
+                    style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                  >
+                    {incident.lkp.label}
+                  </text>
+                </g>
+              )
+            })()}
+
           {markers.map((m) => {
             const p = project(m.lat, m.lon)
             if (p.x < -40 || p.x > w + 40 || p.y < -20 || p.y > h + 20) {
