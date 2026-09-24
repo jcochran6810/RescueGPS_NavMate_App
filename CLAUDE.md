@@ -310,6 +310,59 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-24 — claude/brave-gates-xmu47k (auto-routing drew straight lines; offline chart cache)
+
+Reported: auto-routing to a waypoint always drew a straight line "because of
+depths". First time the ENC service was measured for real: the sandbox
+cannot reach NOAA, so every probe went through the live `/api/enc` relay via
+the Vercel connector, and NOAA's answers were replayed through the real
+`fetchChartFeatures` + `planRoute` code offline.
+
+**What the live service showed:** the relay works; the `ENC_BANDS` service
+paths, the `DRVAL1` field and the layer names in `ROLE_PATTERNS` are all
+right. The fault was elsewhere: ENC usage bands are **not nested**. Galveston
+has 501 harbour-band depth areas and **zero** approach-band features of any
+kind, and the planner asked exactly one band per route, chosen by span. The
+padded box around even a 1 NM hop is over 4 NM, so the harbour band was never
+chosen. The approach band came back empty, so coverage was `none` and the
+course was a straight line over Pelican Island.
+
+**Fix — auto-routing (`3f47967`):**
+- `src/lib/chart.ts`: `bandsForSpan()` + `fetchChartArea()` ask every band
+  from harbour down to one coarser than the span, capped per band by box
+  size, and merge them with each polygon tagged by chart level. A band that
+  fails does not sink the others. A failure is still reported when no band
+  produced a depth.
+- `src/lib/routing.ts`: `rasterise()` lets the **most detailed chart
+  covering a cell win** (ECDIS best-scale); shoalest-wins still applies
+  within one chart. A naive cross-band merge still failed, because the
+  coastal band draws the Galveston Channel as land.
+- NOAA's rock layer is `Underwater_Awash_Rock`, which the pattern missed.
+- `useChartData` loads through `fetchChartArea`; a saved area's `band` is
+  now the bands used, joined with `+`.
+- Replayed on real Galveston data: Galveston Channel → Galveston Bay went
+  from a straight line to a 5.1 NM charted course around Pelican Island.
+
+**Fix — offline chart cache (`3ced669`):**
+- The `navmate-charts` rule matched `encdirect.noaa.gov`, but browsers send
+  every ENC query to the same-origin `/api/enc` relay, so none were cached.
+- `api/enc.js` re-issues an ArcGIS error sent at HTTP 200 as a `502`
+  (`no-store`, NOAA's body intact, `x-enc-relay: arcgis-error`). Before
+  this, Vercel's edge cache also kept those errors for a day.
+- `src/lib/encCache.ts` `ENC_QUERY_RULE` (imported by `vite.config.ts`):
+  same-origin `/api/enc`, NetworkFirst with a 10 s timeout, its own
+  `navmate-enc` cache, 200s only, 1500 entries, 30 days. Confirmed in the
+  built `dist/sw.js`.
+- `defaultFetcher` reads the ArcGIS message back out of the 502.
+
+**Tests:** 743 pass (+27): merge rule, `bandsForSpan`, `fetchChartArea`,
+the relay handler, the SW rule (including rebuilding it from its source
+text the way workbox writes it into `sw.js`), and the fetcher.
+
+**Open (fix_list.md):** plot a route on a real phone; check offline
+re-plot on a device. Known limit: the cache is keyed by the exact query box,
+so a *different* route in the same waters after an app restart misses.
+
 ### 2026-09-24 — claude/cross-app-integrations-eizkb7 (the integration contract with RescueGPS)
 
 Applied `INTEGRATION-CONTRACT.md` v1 — the agreement that lets NavMate and the

@@ -5,7 +5,7 @@ import {
   ChartUnavailableError,
   boundsSpanNM,
   containsBounds,
-  fetchChartFeatures,
+  fetchChartArea,
   padBounds,
   type ChartBounds,
 } from '@/lib/chart'
@@ -69,13 +69,18 @@ export const useChartData = create<ChartDataState>()(
         if (get().status === 'loading') return get().features
 
         const bounds = padBounds(b)
-        const band = bandForSpan(boundsSpanNM(bounds))
         set({ status: 'loading', error: null })
         try {
-          const features = await fetchChartFeatures(bounds, { band })
+          // Every chart scale that covers the area, merged finest-first — a
+          // single band left whole harbours with no chart at all. See
+          // `bandsForSpan` in lib/chart.ts.
+          const { bands, ...features } = await fetchChartArea(bounds)
+          const bandId = bands.length
+            ? bands.join('+')
+            : bandForSpan(boundsSpanNM(bounds)).id
           const entry: SavedArea = {
             bounds,
-            band: band.id,
+            band: bandId,
             savedAt: new Date().toISOString(),
             coverage: features.coverage,
           }
@@ -90,7 +95,7 @@ export const useChartData = create<ChartDataState>()(
             saved: [
               entry,
               ...get().saved.filter(
-                (a) => !(a.band === band.id && containsBounds(bounds, a.bounds)),
+                (a) => !(a.band === bandId && containsBounds(bounds, a.bounds)),
               ),
             ].slice(0, MAX_SAVED),
           })

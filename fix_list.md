@@ -8,6 +8,51 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-24 — **Auto-routing drew a straight line because it only ever
+      asked one chart band — FIXED in code, confirm on the water.** Measured
+      through the live `/api/enc` relay (via the Vercel connector, since the
+      sandbox cannot reach NOAA): the relay works, the service paths in
+      `ENC_BANDS` are right, `DRVAL1` is the field name, and layer names match
+      `ROLE_PATTERNS`. The real fault: ENC bands are **not nested**. Galveston
+      has 501 harbour-band depth areas and **zero** approach-band features of
+      any kind, and the planner picked exactly one band by span — approach,
+      because the padded box around even a 1 NM hop is >4 NM, so the harbour
+      band was never chosen. Empty sea → `coverage: 'none'` → straight line.
+      Fix: `fetchChartArea` (`src/lib/chart.ts`) asks every band from harbour
+      down to one coarser than the span (`bandsForSpan`) and `rasterise`
+      (`src/lib/routing.ts`) lets the most detailed chart win per cell — a
+      naive shoalest-wins merge still failed, because the coastal band draws
+      the Galveston Channel as land. Replayed on the real Galveston data:
+      Galveston Channel → Galveston Bay now plots a 5.1 NM charted course
+      east round Pelican Island instead of a straight line over it. Also:
+      NOAA's rock layer is `Underwater_Awash_Rock`, which the pattern missed.
+      Still to see: a route plotted on a phone, and whether piles/hazards on
+      the harbour band trip `exceededTransferLimit` over larger boxes.
+- [x] 2026-09-24 — **Chart queries are not cached offline.** The
+      `navmate-charts` CacheFirst rule in `vite.config.ts` matches
+      `encdirect.noaa.gov`, but in the browser every ENC query goes to the
+      same-origin `/api/enc` relay, so the rule never sees them. Adding
+      `/api/enc` needs care: an ArcGIS error arrives as HTTP 200 and would be
+      cached for 30 days. **Fixed 2026-09-24:** `api/enc.js` now re-issues an
+      ArcGIS error-at-200 as a `502` (`no-store`, NOAA's body intact, header
+      `x-enc-relay: arcgis-error`), which also keeps it out of Vercel's edge
+      cache, where it used to sit for a day. A new rule, `ENC_QUERY_RULE`
+      (`src/lib/encCache.ts`, imported by `vite.config.ts`), caches
+      same-origin `/api/enc` in its own `navmate-enc` cache: NetworkFirst with
+      a 10 s timeout (fresh chart when online, stored one when not), 200s
+      only, 1500 entries (20 saved areas × ~45 requests), 30 days.
+      `defaultFetcher` reads the ArcGIS message back out of the 502. Verified
+      the rule in the built `dist/sw.js`; tests in `encCache.test.ts` and
+      `encRelay.test.ts`. **Still unconfirmed on a real device** — Playwright
+      cannot exercise service-worker fetches (see the offline item below).
+      Known limits: the cache is keyed by the exact query URL, so an offline
+      re-plot hits only when it asks for the same box as before — the same
+      route, or one inside an area still loaded in memory (`covers()` in
+      `useChartData`). A *different* route in the same waters after an app
+      restart pads to a different box and misses. And NetworkFirst hands
+      back a live 502 rather than the stored copy when NOAA answers with an
+      error while online; only a network failure or timeout falls back.
+
 - [ ] 2026-09-19 — **Four things can only be answered on a real phone.** The
       build is now driven under touch emulation (`scripts/drive-mobile.mjs`),
       which caught the press-menu click-through, but emulation stops short of:
@@ -229,8 +274,9 @@ Add new items at the top. Use the format:
       speed. If legs stop advancing in the field, check whether a heading is
       present at all: with none, the rule deliberately falls back to the
       circle alone.
-- [ ] 2026-09-13 — **Confirm what the chart service actually does, now the
-      app can say.** Reported from the water: auto-plot draws a straight line
+- [x] 2026-09-13 — **Confirm what the chart service actually does, now the
+      app can say.** **Answered 2026-09-24 — see the auto-routing item at the
+      top of Open.** Reported from the water: auto-plot draws a straight line
       through land, which means `planRoute` fell back — the router never got a
       chart. Three causes were indistinguishable until now (unreachable /
       renamed layers / genuinely no coverage); the app now names which, and

@@ -37,6 +37,28 @@ function bad(status, message) {
   })
 }
 
+/**
+ * Is this body an ArcGIS error object rather than data?
+ *
+ * Error bodies are a few hundred bytes; feature collections run to megabytes.
+ * Only small bodies are parsed, so the relay never pays to parse a chart it
+ * is about to hand straight on.
+ */
+export function isArcgisError(body) {
+  if (body.length > 64 * 1024) return false
+  try {
+    const parsed = JSON.parse(body)
+    return (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      parsed.error !== null &&
+      typeof parsed.error === 'object'
+    )
+  } catch {
+    return false
+  }
+}
+
 export default async function handler(request) {
   const target = new URL(request.url).searchParams.get('u')
   if (!target) return bad(400, 'Missing the u parameter')
@@ -72,6 +94,24 @@ export default async function handler(request) {
   }
 
   const body = await upstream.text()
+
+  // ArcGIS reports a failed query as HTTP 200 with `{ "error": … }` in the
+  // body. Passed through as a 200, that error would be kept for a day by this
+  // relay's edge cache and for a month by the phone's service worker, which
+  // caches only 200s — so a crew would re-plot offline against a stored
+  // failure. It is re-issued as a 502 carrying NOAA's own body, so the
+  // message still reaches the screen but nothing downstream keeps it.
+  if (upstream.ok && isArcgisError(body)) {
+    return new Response(body, {
+      status: 502,
+      headers: {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'x-enc-relay': 'arcgis-error',
+      },
+    })
+  }
+
   return new Response(body, {
     // Upstream's status is passed through deliberately: a 404 here means the
     // service path is wrong, which is a thing worth reading on the screen.

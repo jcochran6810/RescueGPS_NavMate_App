@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { MERCATOR_HALF, NOAA_CHART, SEAMARKS, tileBbox3857, lonToTileX, latToTileY } from './tiles'
 import {
   bandForSpan,
+  bandsForSpan,
   boundsSpanNM,
   containsBounds,
   encRequestUrl,
@@ -9,6 +10,7 @@ import {
   ENC_BANDS,
   exceededLimit,
   featuresOf,
+  fetchChartArea,
   fetchChartFeatures,
   HAZARD_RADIUS_M,
   layersUrl,
@@ -125,6 +127,22 @@ describe('bandForSpan', () => {
   })
 })
 
+describe('bandsForSpan', () => {
+  it('asks the harbour band about a short hop, even though its padded box is past 4 NM', () => {
+    // A 1 NM hop's padded box is ~5 NM across, so `bandForSpan` alone picked
+    // approach and never harbour — and Galveston has no approach chart at all.
+    expect(bandsForSpan(5).map((b) => b.id)).toEqual(['harbour', 'approach', 'coastal'])
+  })
+
+  it('backs the span band with one coarser band and every finer one', () => {
+    expect(bandsForSpan(40).map((b) => b.id)).toEqual(['approach', 'coastal', 'general'])
+  })
+
+  it('never asks the harbour band about an ocean passage', () => {
+    expect(bandsForSpan(500).map((b) => b.id)).toEqual(['general', 'overview'])
+  })
+})
+
 describe('boundsSpanNM', () => {
   it('measures the diagonal of the box', () => {
     expect(boundsSpanNM({ minLat: 29, minLon: -95, maxLat: 30, maxLon: -95 })).toBeCloseTo(60, 0)
@@ -169,6 +187,15 @@ describe('matchLayers', () => {
     expect(roles).toContain('wreck')
     expect(roles).toContain('obstruction')
     expect(roles).toContain('rock')
+  })
+
+  it("matches NOAA's real rock layer name, with 'Awash' in the middle", () => {
+    const found = matchLayers({
+      layers: [
+        { id: 34, name: 'Harbor.Underwater_Awash_Rock_point', geometryType: 'esriGeometryPoint' },
+      ],
+    })
+    expect(found.map((l) => l.role)).toEqual(['rock'])
   })
 
   it('ignores line layers — a line has no inside to rasterise', () => {
@@ -624,6 +651,87 @@ describe('fetchChartFeatures', () => {
           : base(url),
     })
     expect(f.coverage).toBe('partial')
+  })
+})
+
+describe('fetchChartArea', () => {
+  const ring = [
+    [-94.85, 29.3],
+    [-94.8, 29.3],
+    [-94.8, 29.35],
+    [-94.85, 29.35],
+    [-94.85, 29.3],
+  ]
+  const depth = (d: number) => ({
+    features: [{ geometry: { type: 'Polygon', coordinates: [ring] }, properties: { DRVAL1: d } }],
+  })
+
+  it('finds the harbour chart when the approach band has nothing there', async () => {
+    // Galveston, measured through the live relay: 501 harbour-band depth
+    // areas, zero approach-band features of any kind. One band per span
+    // meant an empty sea and a straight line over Pelican Island.
+    const f = await fetchChartArea(BOX, {
+      bands: [ENC_BANDS[0], ENC_BANDS[1]],
+      fetcher: async (url) => {
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('enc_harbour') && url.includes('/40/query')) return depth(9.1)
+        return { features: [] }
+      },
+    })
+    expect(f.coverage).toBe('full')
+    expect(f.bands).toEqual(['harbour'])
+    expect(f.depthAreas).toHaveLength(1)
+    expect(f.depthAreas[0].minDepthM).toBe(9.1)
+  })
+
+  it('tags each band so the finer chart outranks the coarser one', async () => {
+    const f = await fetchChartArea(BOX, {
+      bands: [ENC_BANDS[0], ENC_BANDS[2]],
+      fetcher: async (url) => {
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('/40/query')) return depth(url.includes('enc_harbour') ? 9.1 : 0.5)
+        return { features: [] }
+      },
+    })
+    const harbour = f.depthAreas.find((d) => d.minDepthM === 9.1)
+    const coastal = f.depthAreas.find((d) => d.minDepthM === 0.5)
+    expect(harbour?.level).toBeGreaterThan(coastal?.level ?? Infinity)
+    expect(f.bands).toEqual(['harbour', 'coastal'])
+  })
+
+  it('uses the bands that answered when another one failed', async () => {
+    const f = await fetchChartArea(BOX, {
+      bands: [ENC_BANDS[0], ENC_BANDS[1]],
+      fetcher: async (url) => {
+        if (url.includes('enc_harbour')) throw new Error('Chart service returned 502')
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('/40/query')) return depth(6)
+        return { features: [] }
+      },
+    })
+    expect(f.bands).toEqual(['approach'])
+    expect(f.coverage).toBe('full')
+  })
+
+  it('still reports a failure, not an empty sea, when nothing produced a depth', async () => {
+    await expect(
+      fetchChartArea(BOX, {
+        bands: [ENC_BANDS[0], ENC_BANDS[1]],
+        fetcher: async (url) => {
+          if (url.includes('enc_harbour')) throw new Error('Failed to fetch')
+          if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+          return { features: [] }
+        },
+      }),
+    ).rejects.toMatchObject({ name: 'ChartUnavailableError', kind: 'unreachable' })
+  })
+
+  it('calls genuinely uncharted water empty when every band answered', async () => {
+    const f = await fetchChartArea(BOX, {
+      bands: [ENC_BANDS[0], ENC_BANDS[1]],
+      fetcher: async (url) => (url.includes('/layers?f=json') ? LAYER_PAYLOAD : { features: [] }),
+    })
+    expect(f.coverage).toBe('none')
   })
 })
 
