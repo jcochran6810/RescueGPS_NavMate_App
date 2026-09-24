@@ -3,6 +3,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { ENC_QUERY_RULE } from './src/lib/encCache'
 
 export default defineConfig({
   plugins: [
@@ -89,8 +90,12 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
-          // Nautical chart tiles, and the ENC depth/hazard queries the route
-          // planner runs on. Their own cache rather than a share of the
+          // The route planner's ENC depth/hazard queries, which in a browser
+          // all go through the same-origin `/api/enc` relay. See
+          // src/lib/encCache.ts — the rule lives there so it can be tested.
+          ENC_QUERY_RULE,
+          // Nautical chart tiles (and ENC queries made straight to NOAA, which
+          // only a non-browser caller does). Their own cache rather than a share of the
           // imagery budget, so a saved operating area cannot evict the chart
           // that goes with it — and a shorter life, because ENC is republished
           // weekly and a month-old wreck position is the wrong kind of stale

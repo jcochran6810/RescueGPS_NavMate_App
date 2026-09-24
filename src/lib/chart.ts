@@ -566,14 +566,26 @@ export function encRequestUrl(url: string): string {
   return `/api/enc?u=${encodeURIComponent(url)}`
 }
 
-const defaultFetcher: Fetcher = async (url) => {
+/** How chart queries are fetched in the app. Exported for its tests. */
+export const defaultFetcher: Fetcher = async (url) => {
   const res = await fetch(encRequestUrl(url), {
     credentials: 'omit',
   })
   if (!res.ok) {
     // The relay passes NOAA's status through, so this number is the service's
     // own answer — a 404 here means the service path is wrong, not the relay.
-    throw new Error(`Chart service returned ${res.status}`)
+    //
+    // A 502 may also be an ArcGIS error that NOAA sent as a 200: the relay
+    // re-issues those as 502 so no cache keeps them (api/enc.js), with NOAA's
+    // body intact. Its message is the useful part, so it is read back out.
+    let detail = ''
+    try {
+      const err = arcgisError(await res.json())
+      if (err) detail = `: ${err}`
+    } catch {
+      // Not JSON — the status alone is all there is to say.
+    }
+    throw new Error(`Chart service returned ${res.status}${detail}`)
   }
   return (await res.json()) as unknown
 }

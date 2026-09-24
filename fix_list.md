@@ -28,12 +28,30 @@ Add new items at the top. Use the format:
       NOAA's rock layer is `Underwater_Awash_Rock`, which the pattern missed.
       Still to see: a route plotted on a phone, and whether piles/hazards on
       the harbour band trip `exceededTransferLimit` over larger boxes.
-- [ ] 2026-09-24 — **Chart queries are not cached offline.** The
+- [x] 2026-09-24 — **Chart queries are not cached offline.** The
       `navmate-charts` CacheFirst rule in `vite.config.ts` matches
       `encdirect.noaa.gov`, but in the browser every ENC query goes to the
       same-origin `/api/enc` relay, so the rule never sees them. Adding
       `/api/enc` needs care: an ArcGIS error arrives as HTTP 200 and would be
-      cached for 30 days.
+      cached for 30 days. **Fixed 2026-09-24:** `api/enc.js` now re-issues an
+      ArcGIS error-at-200 as a `502` (`no-store`, NOAA's body intact, header
+      `x-enc-relay: arcgis-error`), which also keeps it out of Vercel's edge
+      cache, where it used to sit for a day. A new rule, `ENC_QUERY_RULE`
+      (`src/lib/encCache.ts`, imported by `vite.config.ts`), caches
+      same-origin `/api/enc` in its own `navmate-enc` cache: NetworkFirst with
+      a 10 s timeout (fresh chart when online, stored one when not), 200s
+      only, 1500 entries (20 saved areas × ~45 requests), 30 days.
+      `defaultFetcher` reads the ArcGIS message back out of the 502. Verified
+      the rule in the built `dist/sw.js`; tests in `encCache.test.ts` and
+      `encRelay.test.ts`. **Still unconfirmed on a real device** — Playwright
+      cannot exercise service-worker fetches (see the offline item below).
+      Known limits: the cache is keyed by the exact query URL, so an offline
+      re-plot hits only when it asks for the same box as before — the same
+      route, or one inside an area still loaded in memory (`covers()` in
+      `useChartData`). A *different* route in the same waters after an app
+      restart pads to a different box and misses. And NetworkFirst hands
+      back a live 502 rather than the stored copy when NOAA answers with an
+      error while online; only a network failure or timeout falls back.
 
 - [ ] 2026-09-19 — **Four things can only be answered on a real phone.** The
       build is now driven under touch emulation (`scripts/drive-mobile.mjs`),
