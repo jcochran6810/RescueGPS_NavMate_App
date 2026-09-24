@@ -37,6 +37,14 @@ export interface Waypoint {
   note: string
   /** Storage object paths in the `waypoint-photos` bucket. */
   photos: string[]
+  /**
+   * The search this waypoint was dropped under (contract C4) — how the
+   * command system finds it. Optional in the type because rows cached before
+   * the column existed do not carry it.
+   */
+  incident_id?: string | null
+  /** Soft delete (N10): set instead of removing the row. Never shown. */
+  deleted_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -44,6 +52,8 @@ export interface Waypoint {
 /** Fields the client supplies when creating a waypoint. */
 export type NewWaypoint = Pick<Waypoint, 'name' | 'lat' | 'lon' | 'note'> & {
   team_id?: string | null
+  /** Leave undefined to take the incident open right now; null for none. */
+  incident_id?: string | null
 }
 
 /* -------------------------------------------------------------------------
@@ -82,6 +92,15 @@ export interface LkpPayload {
 }
 
 export interface CluePayload {
+  /**
+   * What was found. The command system's fan-out (R3) maps a clue onto its
+   * `evidence` table from these keys — `clue_type`, `description`,
+   * `photo_path` — so they are a contract, not a UI detail. The crew's own
+   * words still travel in the record's `note` as well.
+   */
+  description?: string
+  /** A photograph in the `waypoint-photos` bucket, `<user>/<record id>/…`. */
+  photo_path?: string | null
   clue_type:
     | 'debris'
     | 'clothing'
@@ -157,6 +176,8 @@ export interface SarRecord {
   recorded_at: string
   payload: SarPayload
   note: string
+  /** Soft delete (N10): set instead of removing the row. Never shown. */
+  deleted_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -185,6 +206,17 @@ export type IncidentStatus =
   | 'false_alarm'
   | 'closed'
 
+/**
+ * How a search ended — its own column, set when closing (contract C2). The
+ * same four values used to be written into `status`; they still appear there
+ * on legacy rows and are read as `closed` + this.
+ */
+export type IncidentOutcome =
+  | 'found_alive'
+  | 'found_deceased'
+  | 'not_found'
+  | 'false_alarm'
+
 export type UrgencyLevel = 'critical' | 'high' | 'medium' | 'low'
 
 export interface Incident {
@@ -207,6 +239,10 @@ export interface Incident {
   /** When the search object was last confirmed alive (their column name). */
   time_last_alive: string | null
   summary: string
+  /** Set when closed; null while running or when cancelled. */
+  outcome?: IncidentOutcome | null
+  outcome_time?: string | null
+  ended_at?: string | null
   created_by: string
   created_at: string
   updated_at: string

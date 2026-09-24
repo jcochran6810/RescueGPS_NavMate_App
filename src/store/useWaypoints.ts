@@ -3,6 +3,8 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage, PHOTO_BUCKET } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
 import type { NewWaypoint, Waypoint } from '@/lib/types'
+import { useIncidents } from '@/store/useIncidents'
+import { useTeams } from '@/store/useTeams'
 
 /**
  * Waypoints are the one thing a crew cannot afford to lose signal over, so the
@@ -19,8 +21,14 @@ export type PendingOp = (
   | {
       kind: 'delete'
       id: string
-      /** Own-folder photo paths captured at delete time, so the objects can be
-       *  removed from Storage once the row is gone. */
+      /**
+       * When the crew deleted it. A delete is a soft delete (N10): the row
+       * stays for the command system and gets this as `deleted_at`, stamped
+       * at the tap rather than at sync so a queued delete keeps its real time.
+       */
+      deletedAt?: string
+      /** Legacy: ops queued by builds that hard-deleted carry this. Ignored —
+       *  a soft-deleted waypoint keeps its photographs. */
       photoPaths?: string[]
     }
 ) & {
@@ -63,6 +71,8 @@ interface WaypointState {
   create: (input: NewWaypoint, photos?: File[]) => Promise<Waypoint | null>
   update: (id: string, patch: Partial<Waypoint>) => Promise<void>
   remove: (id: string) => Promise<void>
+  /** Tag an existing waypoint to an incident (or clear it with null). */
+  attachToIncident: (id: string, incidentId: string | null) => Promise<void>
   importMany: (inputs: NewWaypoint[], teamId: string | null) => Promise<number>
   /** Attach photos to a waypoint that already exists. Needs a connection. */
   addPhotos: (id: string, files: File[]) => Promise<number>
@@ -137,7 +147,9 @@ function merge(
 }
 
 function mergeUncached(cache: Waypoint[], pending: PendingOp[]): Waypoint[] {
-  const byId = new Map(cache.map((w) => [w.id, w]))
+  // A soft-deleted row is gone as far as the crew is concerned, however it
+  // got into the cache.
+  const byId = new Map(cache.filter((w) => !w.deleted_at).map((w) => [w.id, w]))
   for (const op of pending) {
     if (op.kind === 'create') byId.set(op.waypoint.id, op.waypoint)
     else if (op.kind === 'delete') byId.delete(op.id)
@@ -157,6 +169,16 @@ function mergeUncached(cache: Waypoint[], pending: PendingOp[]): Waypoint[] {
  */
 function isTerminal(e: unknown): boolean {
   return !isOffline(e) && !isTransient(e)
+}
+
+/**
+ * The search a new waypoint belongs to: the incident the crew is on right
+ * now, in the scope the rest of the app decides it with. Read at creation,
+ * so a waypoint stamped offline carries it in its queued op.
+ */
+function currentIncidentId(): string | null {
+  const teamId = useTeams.getState().activeTeamId
+  return useIncidents.getState().activeIncident(teamId)?.id ?? null
 }
 
 /** Bumped whenever a flush lands at least one op, so a concurrent `load` can
@@ -213,6 +235,7 @@ export const useWaypoints = create<WaypointState>()(
             const { data, error } = await supabase
               .from('waypoints')
               .select('*')
+              .is('deleted_at', null)
               .order('created_at', { ascending: false })
             if (error) throw error
             set({
@@ -258,10 +281,11 @@ export const useWaypoints = create<WaypointState>()(
               if (op.kind === 'create') {
                 const { id, user_id, team_id, name, lat, lon, note, photos, created_at } =
                   op.waypoint
+                const incident_id = op.waypoint.incident_id ?? null
                 const { error } = await supabase
                   .from('waypoints')
                   .upsert(
-                    { id, user_id, team_id, name, lat, lon, note, photos, created_at },
+                    { id, user_id, team_id, incident_id, name, lat, lon, note, photos, created_at },
                     { onConflict: 'id' },
                   )
                 if (error) throw error
@@ -272,23 +296,15 @@ export const useWaypoints = create<WaypointState>()(
                   .eq('id', op.id)
                 if (error) throw error
               } else {
+                // Soft delete (N10): the command system reads waypoints by
+                // incident, and a row it has shown an IC must not simply
+                // vanish from under them. Photos stay with the row for the
+                // same reason.
                 const { error } = await supabase
                   .from('waypoints')
-                  .delete()
+                  .update({ deleted_at: op.deletedAt ?? new Date().toISOString() })
                   .eq('id', op.id)
                 if (error) throw error
-                // The row is gone; clear out its photo objects. Best-effort —
-                // the storage policy only lets us remove our own uploads, and
-                // an orphaned object is a nuisance, not a data loss.
-                if (op.photoPaths && op.photoPaths.length > 0) {
-                  await supabase.storage
-                    .from(PHOTO_BUCKET)
-                    .remove(op.photoPaths)
-                    .then(
-                      () => undefined,
-                      () => undefined,
-                    )
-                }
               }
               progressed = true
               completed.push(op)
@@ -365,6 +381,8 @@ export const useWaypoints = create<WaypointState>()(
           lon: input.lon,
           note: input.note ?? '',
           photos: photoPaths,
+          incident_id:
+            input.incident_id !== undefined ? input.incident_id : currentIncidentId(),
           created_at: now,
           updated_at: now,
         }
@@ -392,19 +410,17 @@ export const useWaypoints = create<WaypointState>()(
       },
 
       remove: async (id) => {
-        const uid = get().ownerId
-        const photos = get()
-          .visible()
-          .find((w) => w.id === id)?.photos
-        // Only paths in our own folder — the storage policy will not let us
-        // delete a teammate's uploads.
-        const photoPaths = (photos ?? []).filter((p) =>
-          uid ? p.startsWith(`${uid}/`) : false,
-        )
         set({
-          pending: [...get().pending, { kind: 'delete', id, photoPaths }],
+          pending: [
+            ...get().pending,
+            { kind: 'delete', id, deletedAt: new Date().toISOString() },
+          ],
         })
         await get().flush()
+      },
+
+      attachToIncident: async (id, incidentId) => {
+        await get().update(id, { incident_id: incidentId })
       },
 
       importMany: async (inputs, teamId) => {

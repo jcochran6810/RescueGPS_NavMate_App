@@ -2,7 +2,12 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
-import { newIncidentNumber } from '@/lib/incident'
+import {
+  closePatch,
+  newIncidentNumber,
+  normalizeIncident,
+  type CloseChoice,
+} from '@/lib/incident'
 import type {
   Incident,
   IncidentStatus,
@@ -80,7 +85,8 @@ interface IncidentState {
   flush: () => Promise<void>
   openIncident: (input: NewIncident) => Promise<Incident | null>
   updateIncident: (id: string, patch: Partial<Incident>) => Promise<void>
-  closeIncident: (id: string, status: IncidentStatus) => Promise<void>
+  /** Close with an outcome (status closed) or cancel (status cancelled). */
+  closeIncident: (id: string, choice: CloseChoice) => Promise<void>
   retryFailed: () => Promise<void>
   discardFailed: () => void
   clearLocal: () => void
@@ -160,7 +166,7 @@ let flushSeq = 0
  * columns, and this result is cached in localStorage.
  */
 const INCIDENT_COLUMNS =
-  'id, client_id, team_id, incident_number, incident_type, incident_name, urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source, incident_time, time_last_alive, summary, created_by, created_at, updated_at' as const
+  'id, client_id, team_id, incident_number, incident_type, incident_name, urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source, incident_time, time_last_alive, summary, outcome, outcome_time, ended_at, created_by, created_at, updated_at' as const
 
 /** The row columns sent to the server (never updated_at — a trigger owns it). */
 function toRow(r: Incident) {
@@ -168,7 +174,7 @@ function toRow(r: Incident) {
     id, client_id, team_id, incident_number, incident_type, incident_name,
     urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
     incident_time, time_last_alive, summary, created_by,
-  } = r
+  } = normalizeIncident(r)
   return {
     id, client_id, team_id, incident_number, incident_type, incident_name,
     urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
@@ -239,7 +245,9 @@ export const useIncidents = create<IncidentState>()(
               .not('client_id', 'is', null)
               .order('created_at', { ascending: false })
             if (error) throw error
-            let rows = (data ?? []) as Incident[]
+            // Legacy rows (`piw`, an outcome in `status`) read in the
+            // contract's vocabulary, whatever wrote them.
+            let rows = ((data ?? []) as Incident[]).map(normalizeIncident)
 
             /*
              * A joined search is very often not one of those rows. The filter
@@ -255,7 +263,9 @@ export const useIncidents = create<IncidentState>()(
                 .select(INCIDENT_COLUMNS)
                 .eq('id', current)
                 .maybeSingle()
-              if (joined.data) rows = [joined.data as Incident, ...rows]
+              if (joined.data) {
+                rows = [normalizeIncident(joined.data as Incident), ...rows]
+              }
             }
             set({ cache: rows })
             if (flushSeq === seqBefore) break
@@ -357,6 +367,9 @@ export const useIncidents = create<IncidentState>()(
           incident_time: null,
           time_last_alive: null,
           summary: '',
+          outcome: null,
+          outcome_time: null,
+          ended_at: null,
           created_by: uid,
           created_at: now,
           updated_at: now,
@@ -378,8 +391,8 @@ export const useIncidents = create<IncidentState>()(
         await get().flush()
       },
 
-      closeIncident: async (id, status) => {
-        await get().updateIncident(id, { status })
+      closeIncident: async (id, choice) => {
+        await get().updateIncident(id, closePatch(choice))
         if (get().currentIncidentId === id) set({ currentIncidentId: null })
       },
 

@@ -22,7 +22,8 @@ import { VESSEL_DEFAULTS } from '@/lib/vessel'
 type PendingOp = (
   | { kind: 'create'; vessel: Vessel }
   | { kind: 'update'; id: string; patch: Partial<Vessel> }
-  | { kind: 'delete'; id: string }
+  /** A soft delete (N10); `deletedAt` is the moment the crew tapped. */
+  | { kind: 'delete'; id: string; deletedAt?: string }
 ) & { attempts?: number }
 
 interface FailedOp {
@@ -113,7 +114,7 @@ let memo: {
 } | null = null
 
 function applyOps(cache: Vessel[], ops: PendingOp[]): Vessel[] {
-  const byId = new Map(cache.map((r) => [r.id, r]))
+  const byId = new Map(cache.filter((r) => !r.deleted_at).map((r) => [r.id, r]))
   for (const op of ops) {
     if (op.kind === 'create') byId.set(op.vessel.id, op.vessel)
     else if (op.kind === 'delete') byId.delete(op.id)
@@ -189,7 +190,15 @@ export const useVessels = create<VesselState>()(
       inScope: (teamId) =>
         get()
           .visible()
-          .filter((v) => (teamId ? v.team_id === teamId : v.team_id === null)),
+          .filter((v) =>
+            teamId
+              ? v.team_id === teamId
+              : // Private means this account's. Another crew's private boat
+                // is readable once it is a unit on a shared incident (N3),
+                // and it must not turn up in this crew's boat list.
+                v.team_id === null &&
+                (get().ownerId === null || v.user_id === get().ownerId),
+          ),
 
       active: (teamId) => {
         const scope = get().inScope(teamId)
@@ -218,6 +227,7 @@ export const useVessels = create<VesselState>()(
             const { data, error } = await supabase
               .from('vessels')
               .select('*')
+              .is('deleted_at', null)
               .order('name', { ascending: true })
             if (error) throw error
             set({
@@ -267,9 +277,11 @@ export const useVessels = create<VesselState>()(
                   .eq('id', op.id)
                 if (error) throw error
               } else {
+                // Soft delete (N10): a boat registered as a unit is named on
+                // the command side's map, and its row has to outlive it here.
                 const { error } = await supabase
                   .from('vessels')
-                  .delete()
+                  .update({ deleted_at: op.deletedAt ?? new Date().toISOString() })
                   .eq('id', op.id)
                 if (error) throw error
               }
@@ -348,7 +360,12 @@ export const useVessels = create<VesselState>()(
 
       removeVessel: async (id) => {
         if (get().activeId === id) get().setActive(null)
-        set({ pending: [...get().pending, { kind: 'delete', id }] })
+        set({
+          pending: [
+            ...get().pending,
+            { kind: 'delete', id, deletedAt: new Date().toISOString() },
+          ],
+        })
         await get().flush()
       },
 

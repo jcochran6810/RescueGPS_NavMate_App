@@ -32,7 +32,11 @@ import {
 } from '@/lib/sar'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import { IncidentCard } from '@/components/IncidentCard'
+import { AssignmentsCard } from '@/components/AssignmentsCard'
+import { MessagesCard } from '@/components/MessagesCard'
+import { HazardsCard } from '@/components/HazardsCard'
 import { VictimCard } from '@/components/VictimCard'
+import { WaypointPhoto } from '@/components/WaypointPhoto'
 import type {
   CluePayload,
   DriftMarkerPayload,
@@ -133,6 +137,16 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
       )}
 
       <IncidentCard />
+
+      {/* What command has sent this crew: segments, orders, hazards. Each
+
+          renders nothing off an incident. */}
+
+      <AssignmentsCard />
+
+      <MessagesCard />
+
+      <HazardsCard />
 
       {/* Who is being looked for. Under the incident because that is what it
 
@@ -358,10 +372,16 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
 
       <ClueCard
         clues={clues}
-        onLog={async (clueType, note) => {
+        onLog={async (clueType, note, photo) => {
           const fix = await once()
           const time = fix ? new Date(fix.timestamp).toISOString() : new Date().toISOString()
-          const payload: CluePayload = { clue_type: clueType }
+          // The clue → evidence contract (N11): type, description and an
+          // optional photograph, in these keys. The text also stays in
+          // `note`, where everything else in NavMate keeps it.
+          const payload: CluePayload = {
+            clue_type: clueType,
+            ...(note ? { description: note } : {}),
+          }
           const created = await createRecord({
             kind: 'clue',
             lat: fix?.lat ?? null,
@@ -372,11 +392,16 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
             team_id: activeTeamId,
             incident_id: incident?.id ?? null,
           })
+          let photoNote = ''
+          if (created && photo) {
+            const path = await useSarRecords.getState().attachPhoto(created.id, photo)
+            photoNote = path ? ' and photo' : ' — photo not uploaded (needs a connection)'
+          }
           toast(
             created
-              ? fix
-                ? 'Clue logged with position'
-                : 'Clue logged — no GPS fix, position blank'
+              ? (fix
+                  ? 'Clue logged with position'
+                  : 'Clue logged — no GPS fix, position blank') + photoNote
               : 'Could not log the clue',
             created ? 'success' : 'error',
           )
@@ -1349,11 +1374,17 @@ function ClueCard({
   onRemove,
 }: {
   clues: SarRecord[]
-  onLog: (type: CluePayload['clue_type'], note: string) => Promise<void>
+  onLog: (
+    type: CluePayload['clue_type'],
+    note: string,
+    photo: File | null,
+  ) => Promise<void>
   onRemove: (id: string) => Promise<void>
 }) {
   const [clueType, setClueType] = useState<CluePayload['clue_type']>('debris')
   const [note, setNote] = useState('')
+  const [photo, setPhoto] = useState<File | null>(null)
+  const [photoKey, setPhotoKey] = useState(0)
   const [busy, setBusy] = useState(false)
 
   return (
@@ -1361,8 +1392,8 @@ function ClueCard({
       <Label>Clue log</Label>
       <p className="mb-2 text-xs text-slate-400">
         Anything found gets a position and a time — a clue is a datum in its
-        own right, and RescueGPS back-drifts them to refine the origin. For
-        photographs, stamp a waypoint at the clue too.
+        own right, and RescueGPS back-drifts them to refine the origin and
+        files each one as evidence, photograph included.
       </p>
 
       <div className="flex gap-2">
@@ -1387,6 +1418,18 @@ function ClueCard({
           aria-label="Clue description"
         />
       </div>
+      <label className="mt-2 flex min-h-11 items-center gap-2 rounded-xl border border-white/10 px-3 text-xs text-slate-300">
+        <span className="shrink-0 font-semibold text-slate-200">Photo</span>
+        <input
+          key={photoKey}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
+          className="min-w-0 text-xs text-slate-300 file:mr-2 file:rounded-lg file:border-0 file:bg-white/10 file:px-2 file:py-1 file:text-slate-100"
+          aria-label="Clue photo (optional)"
+        />
+      </label>
       <Button
         variant="primary"
         className="mt-2 w-full"
@@ -1394,8 +1437,10 @@ function ClueCard({
         onClick={async () => {
           setBusy(true)
           try {
-            await onLog(clueType, note.trim())
+            await onLog(clueType, note.trim(), photo)
             setNote('')
+            setPhoto(null)
+            setPhotoKey((k) => k + 1)
           } finally {
             setBusy(false)
           }
@@ -1441,6 +1486,11 @@ function ClueCard({
                   </div>
                 )}
                 {c.note && <p className="text-xs text-slate-300">{c.note}</p>}
+                {p.photo_path && (
+                  <div className="mt-1.5">
+                    <WaypointPhoto path={p.photo_path} />
+                  </div>
+                )}
               </li>
             )
           })}

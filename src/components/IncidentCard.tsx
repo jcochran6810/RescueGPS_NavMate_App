@@ -19,7 +19,9 @@ import { download } from '@/lib/transfer'
 import {
   INCIDENT_TYPES,
   incidentTypeLabel,
-  CLOSE_STATUSES,
+  incidentStatusLabel,
+  CLOSE_OPTIONS,
+  closePatch,
   incidentHandoff,
 } from '@/lib/incident'
 import type { LkpPayload, SarRecord } from '@/lib/types'
@@ -64,7 +66,7 @@ export function IncidentCard() {
   const units = useIncidentUnits()
   const fix = useTracker((s) => s.fix)
 
-  const [type, setType] = useState('piw')
+  const [type, setType] = useState('missing_person_piw')
   const [name, setName] = useState('')
   const [closing, setClosing] = useState(false)
   /*
@@ -75,7 +77,7 @@ export function IncidentCard() {
    */
   const [victim, setVictim] = useState<VictimDraft | null>(null)
   const [describing, setDescribing] = useState(false)
-  const [closeAs, setCloseAs] = useState(CLOSE_STATUSES[0].value)
+  const [closeAs, setCloseAs] = useState(CLOSE_OPTIONS[0].value)
 
   async function open() {
     const created = await incidents.openIncident({
@@ -207,7 +209,7 @@ export function IncidentCard() {
               : 'bg-emerald-500/15 text-emerald-300')
           }
         >
-          {suspended ? 'Suspended' : 'Active'}
+          {incidentStatusLabel(incident)}
         </span>
       </div>
 
@@ -307,7 +309,7 @@ export function IncidentCard() {
             className="min-h-11 w-full rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 focus:border-sky-400/60 focus:outline-none"
             aria-label="Close incident as"
           >
-            {CLOSE_STATUSES.map((s) => (
+            {CLOSE_OPTIONS.map((s) => (
               <option key={s.value} value={s.value}>
                 {s.label}
               </option>
@@ -322,7 +324,16 @@ export function IncidentCard() {
               onClick={async () => {
                 await incidents.closeIncident(incident.id, closeAs)
                 setClosing(false)
-                toast(`${incident.incident_number} closed`, 'success')
+                // Says what was written — "Closed · Found alive", or
+                // "Cancelled" — in the words the command side will show.
+                toast(
+                  `${incident.incident_number} — ${incidentStatusLabel({
+                    status: 'active',
+                    outcome: null,
+                    ...closePatch(closeAs),
+                  })}`,
+                  'success',
+                )
               }}
             >
               Close

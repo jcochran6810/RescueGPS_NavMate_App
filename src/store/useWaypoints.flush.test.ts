@@ -13,6 +13,8 @@ import type { Waypoint } from '@/lib/types'
  */
 
 const upsertImpl = vi.fn<(row: unknown) => Promise<{ error: unknown }>>()
+const updateImpl = vi.fn<(patch: unknown, id: unknown) => void>()
+const deleteImpl = vi.fn()
 const getSessionImpl = vi.fn()
 
 vi.mock('@/lib/supabase', () => ({
@@ -25,10 +27,20 @@ vi.mock('@/lib/supabase', () => ({
     },
     from: () => ({
       upsert: (row: unknown) => upsertImpl(row),
-      update: () => ({ eq: () => Promise.resolve({ error: null }) }),
-      delete: () => ({ eq: () => Promise.resolve({ error: null }) }),
+      update: (patch: unknown) => ({
+        eq: (_col: string, id: unknown) => {
+          updateImpl(patch, id)
+          return Promise.resolve({ error: null })
+        },
+      }),
+      delete: () => {
+        deleteImpl()
+        return { eq: () => Promise.resolve({ error: null }) }
+      },
       select: () => ({
-        order: () => Promise.resolve({ data: [], error: null }),
+        is: () => ({
+          order: () => Promise.resolve({ data: [], error: null }),
+        }),
       }),
     }),
     storage: {
@@ -67,6 +79,8 @@ const createOp = (id: string): PendingOp => ({
 beforeEach(() => {
   vi.stubGlobal('navigator', { onLine: true })
   upsertImpl.mockReset()
+  updateImpl.mockReset()
+  deleteImpl.mockReset()
   getSessionImpl.mockReset()
   getSessionImpl.mockResolvedValue({
     data: { session: { user: { id: 'u1' } } },
@@ -180,5 +194,41 @@ describe('flush', () => {
     expect(s.failed).toHaveLength(0)
     expect(s.pending).toHaveLength(0) // synced on the retry flush
     expect(upsertImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends incident_id with a queued create (N2)', async () => {
+    upsertImpl.mockResolvedValue({ error: null })
+    useWaypoints.setState({
+      pending: [
+        { kind: 'create', waypoint: waypoint('a1', { incident_id: 'inc-1' }) },
+      ],
+    })
+
+    await useWaypoints.getState().flush()
+
+    expect(upsertImpl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'a1', incident_id: 'inc-1' }),
+    )
+  })
+
+  it('deletes softly: sets deleted_at, never removes the row (N10)', async () => {
+    useWaypoints.setState({ cache: [waypoint('a1')] })
+
+    await useWaypoints.getState().remove('a1')
+
+    expect(deleteImpl).not.toHaveBeenCalled()
+    expect(updateImpl).toHaveBeenCalledTimes(1)
+    const [patch, id] = updateImpl.mock.calls[0]
+    expect(id).toBe('a1')
+    expect(typeof (patch as { deleted_at: string }).deleted_at).toBe('string')
+    // And it is gone from what the crew sees.
+    expect(useWaypoints.getState().visible()).toHaveLength(0)
+  })
+
+  it('never shows a soft-deleted row that reached the cache', () => {
+    useWaypoints.setState({
+      cache: [waypoint('a1', { deleted_at: '2026-09-24T00:00:00.000Z' }), waypoint('a2')],
+    })
+    expect(useWaypoints.getState().visible().map((w) => w.id)).toEqual(['a2'])
   })
 })

@@ -16,6 +16,11 @@ import { Header } from '@/components/Header'
 import { MapActionHost } from '@/components/MapActionHost'
 import { WaypointSheet } from '@/components/WaypointSheet'
 import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
+import { useIncidentFeeds } from '@/hooks/useIncidentFeeds'
+import { useAssignments } from '@/store/useAssignments'
+import { useMessages } from '@/store/useMessages'
+import { useHazards } from '@/store/useHazards'
+import { EmergencyAlert } from '@/components/MessagesCard'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
 import { SurvivalBanner } from '@/components/SurvivalBanner'
@@ -55,6 +60,9 @@ export default function App() {
       void useSarRecords.getState().flush()
       void useIncidents.getState().flush()
       void useVessels.getState().flush()
+      void useAssignments.getState().flush()
+      void useMessages.getState().flush()
+      void useHazards.getState().flush()
     }
     window.addEventListener('online', onOnline)
     return () => window.removeEventListener('online', onOnline)
@@ -201,13 +209,21 @@ export default function App() {
         </div>
       </div>
 
+      {/* An emergency message from command covers whatever screen is open
+          until it is acknowledged. */}
+      <EmergencyAlert />
+
       <Toast />
     </div>
   )
 }
 
-/** Nothing to draw — it exists so the telemetry runs wherever the crew is. */
+/**
+ * Nothing to draw — it exists so the telemetry and the command feeds run
+ * wherever the crew is.
+ */
 function IncidentTelemetry() {
   useIncidentTelemetry()
+  useIncidentFeeds()
   return null
 }

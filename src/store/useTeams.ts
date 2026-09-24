@@ -34,10 +34,26 @@ interface TeamState {
   reset: () => void
 }
 
+/**
+ * The stored team choice, or null where there is no storage to read — a
+ * private window with storage blocked, or a unit test importing a store that
+ * reads this one. Only the initial read is guarded; writes happen in the
+ * browser, after the crew has chosen.
+ */
+function readActiveTeam(): string | null {
+  try {
+    return typeof localStorage === 'undefined'
+      ? null
+      : localStorage.getItem(ACTIVE_TEAM_KEY) || null
+  } catch {
+    return null
+  }
+}
+
 export const useTeams = create<TeamState>((set, get) => ({
   teams: [],
   members: [],
-  activeTeamId: localStorage.getItem(ACTIVE_TEAM_KEY) || null,
+  activeTeamId: readActiveTeam(),
   loading: false,
   error: null,
 
