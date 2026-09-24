@@ -17,8 +17,11 @@ Add new items at the top. Use the format:
       intercept SW fetches, so every drive blocks service workers); and
       whether a 500 ms press feels right to a thumb in wet gloves.
 
-- [ ] 2026-09-19 — **Anyone signed in can insert themselves as a participant
-      of any incident.** `incident_participants`' INSERT policy is
+- [x] 2026-09-19 — **Anyone signed in can insert themselves as a participant
+      of any incident.** *Closed 2026-09-24 by the integration contract's R8
+      (RescueGPS-owned, applied with the operator's approval): self-insert is
+      refused, joining goes through `navmate_join_incident`, and a
+      participant can only leave, never change their own role.* `incident_participants`' INSERT policy is
       `user_id = auth.uid() OR you are the IC`, which is the command system's
       own policy and predates NavMate. `navmate_join_incident` is the honest
       door — it checks the password in the database and files a request where
@@ -29,8 +32,9 @@ Add new items at the top. Use the format:
       incidents read" findings: their policy, their posture, NavMate does not
       depend on it.
 
-- [ ] 2026-09-19 — **`victims` is readable and writable by every signed-in
-      user.** The command system's `victims_incident_scoped` policy is
+- [x] 2026-09-19 — **`victims` is readable and writable by every signed-in
+      user.** *Closed 2026-09-24 by R8: `victims` is now scoped to
+      `integ_can_read_incident(incident_id)`.* The command system's `victims_incident_scoped` policy is
       effectively "the incident exists", on a table carrying medical
       conditions, injuries and descriptions of named people. NavMate now
       writes that table from the field, so more rows go into it. Not NavMate's
