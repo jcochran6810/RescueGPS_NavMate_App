@@ -192,6 +192,95 @@ describe('rasterise', () => {
     expect(g.cells[0]).toBe(2)
   })
 
+  it('lets a finer chart open water a coarser chart drew as land', () => {
+    // Galveston, for real: the coastal band draws the Galveston Channel as
+    // part of the island, the harbour band charts it at 9 m. Shoalest-wins
+    // across scales put the start "on land, 1.29 NM from usable water" and
+    // drew a straight line. The most detailed chart speaks for its cells.
+    const from = { lat: 29.3, lon: -94.8 }
+    const to = { lat: 29.32, lon: -94.78 }
+    const g = makeGrid(from, to)
+    const whole: Ring = boxRing(g.minLat, g.minLon, g.maxLat, g.maxLon)
+    rasterise(
+      g,
+      {
+        depthAreas: [
+          { minDepthM: 0.5, rings: [whole], level: 1 },
+          { minDepthM: 9, rings: [whole], level: 3 },
+        ],
+        channels: [],
+        land: [{ rings: [whole], level: 1 }],
+        hazards: [],
+        coverage: 'full',
+      },
+      1.5,
+    )
+    expect(g.depth[0]).toBeCloseTo(9, 5)
+    expect(g.cells[0]).toBe(1)
+  })
+
+  it('lets a finer chart close water a coarser chart called deep', () => {
+    // The rule cuts both ways — it is "most detailed wins", not "deepest wins".
+    const from = { lat: 29.3, lon: -94.8 }
+    const to = { lat: 29.32, lon: -94.78 }
+    const g = makeGrid(from, to)
+    const whole: Ring = boxRing(g.minLat, g.minLon, g.maxLat, g.maxLon)
+    rasterise(
+      g,
+      {
+        depthAreas: [
+          { minDepthM: 12, rings: [whole], level: 1 },
+          { minDepthM: 0.8, rings: [whole], level: 3 },
+        ],
+        channels: [],
+        land: [],
+        hazards: [],
+        coverage: 'full',
+      },
+      1.5,
+    )
+    expect(g.cells[0]).toBe(2)
+
+    const g2 = makeGrid(from, to)
+    rasterise(
+      g2,
+      {
+        depthAreas: [{ minDepthM: 12, rings: [whole], level: 1 }],
+        channels: [],
+        land: [{ rings: [whole], level: 3 }],
+        hazards: [],
+        coverage: 'full',
+      },
+      1.5,
+    )
+    expect(g2.cells[0]).toBe(2)
+    expect(g2.depth[0]).toBe(0)
+  })
+
+  it('keeps a coarse chart where no finer one reaches', () => {
+    const from = { lat: 29.3, lon: -94.8 }
+    const to = { lat: 29.32, lon: -94.78 }
+    const g = makeGrid(from, to)
+    const whole: Ring = boxRing(g.minLat, g.minLon, g.maxLat, g.maxLon)
+    const west: Ring = boxRing(g.minLat, g.minLon, g.maxLat, (g.minLon + g.maxLon) / 2)
+    rasterise(
+      g,
+      {
+        depthAreas: [
+          { minDepthM: 6, rings: [whole], level: 1 },
+          { minDepthM: 0.5, rings: [west], level: 3 },
+        ],
+        channels: [],
+        land: [],
+        hazards: [],
+        coverage: 'full',
+      },
+      1.5,
+    )
+    expect(g.cells[0]).toBe(2) // north-west corner: the harbour chart's shoal
+    expect(g.cells[g.cols - 1]).toBe(1) // north-east corner: coastal chart only
+  })
+
   it('blocks a circle of cells around a point hazard', () => {
     const from = { lat: 29.3, lon: -94.8 }
     const to = { lat: 29.31, lon: -94.79 }

@@ -8,6 +8,33 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-24 — **Auto-routing drew a straight line because it only ever
+      asked one chart band — FIXED in code, confirm on the water.** Measured
+      through the live `/api/enc` relay (via the Vercel connector, since the
+      sandbox cannot reach NOAA): the relay works, the service paths in
+      `ENC_BANDS` are right, `DRVAL1` is the field name, and layer names match
+      `ROLE_PATTERNS`. The real fault: ENC bands are **not nested**. Galveston
+      has 501 harbour-band depth areas and **zero** approach-band features of
+      any kind, and the planner picked exactly one band by span — approach,
+      because the padded box around even a 1 NM hop is >4 NM, so the harbour
+      band was never chosen. Empty sea → `coverage: 'none'` → straight line.
+      Fix: `fetchChartArea` (`src/lib/chart.ts`) asks every band from harbour
+      down to one coarser than the span (`bandsForSpan`) and `rasterise`
+      (`src/lib/routing.ts`) lets the most detailed chart win per cell — a
+      naive shoalest-wins merge still failed, because the coastal band draws
+      the Galveston Channel as land. Replayed on the real Galveston data:
+      Galveston Channel → Galveston Bay now plots a 5.1 NM charted course
+      east round Pelican Island instead of a straight line over it. Also:
+      NOAA's rock layer is `Underwater_Awash_Rock`, which the pattern missed.
+      Still to see: a route plotted on a phone, and whether piles/hazards on
+      the harbour band trip `exceededTransferLimit` over larger boxes.
+- [ ] 2026-09-24 — **Chart queries are not cached offline.** The
+      `navmate-charts` CacheFirst rule in `vite.config.ts` matches
+      `encdirect.noaa.gov`, but in the browser every ENC query goes to the
+      same-origin `/api/enc` relay, so the rule never sees them. Adding
+      `/api/enc` needs care: an ArcGIS error arrives as HTTP 200 and would be
+      cached for 30 days.
+
 - [ ] 2026-09-19 — **Four things can only be answered on a real phone.** The
       build is now driven under touch emulation (`scripts/drive-mobile.mjs`),
       which caught the press-menu click-through, but emulation stops short of:
@@ -229,8 +256,9 @@ Add new items at the top. Use the format:
       speed. If legs stop advancing in the field, check whether a heading is
       present at all: with none, the rule deliberately falls back to the
       circle alone.
-- [ ] 2026-09-13 — **Confirm what the chart service actually does, now the
-      app can say.** Reported from the water: auto-plot draws a straight line
+- [x] 2026-09-13 — **Confirm what the chart service actually does, now the
+      app can say.** **Answered 2026-09-24 — see the auto-routing item at the
+      top of Open.** Reported from the water: auto-plot draws a straight line
       through land, which means `planRoute` fell back — the router never got a
       chart. Three causes were indistinguishable until now (unreachable /
       renamed layers / genuinely no coverage); the app now names which, and

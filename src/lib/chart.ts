@@ -132,6 +132,42 @@ export const ENC_BANDS: EncBand[] = [
   { id: 'overview', service: `${ENC_ROOT}/enc_overview/MapServer`, maxSpanNM: Infinity },
 ]
 
+/**
+ * Largest box each band is worth querying over, NM.
+ *
+ * A finer band over a big box is thousands of polygons and a cascade of
+ * transfer-limit splits, so past this size it is skipped. These are well
+ * above `maxSpanNM` on purpose: the padded box around even a short harbour
+ * hop is ~4.5 NM across, which is already past the harbour band's
+ * `maxSpanNM`, and harbour charts are what make those hops routable.
+ */
+const MAX_FETCH_SPAN_NM: Record<string, number> = {
+  harbour: 30,
+  approach: 100,
+  coastal: 400,
+  general: 1500,
+  overview: Infinity,
+}
+
+/**
+ * Every band worth asking about a passage of this size, finest first.
+ *
+ * One band was never enough. ENC Direct publishes each usage band only where
+ * charts of that scale exist, and the bands are not nested: Galveston has
+ * five hundred harbour-band depth areas and **no approach-band chart at all**,
+ * so a route there asked the approach band, got an empty sea back, and was
+ * drawn as a straight line across Pelican Island. So every band from the
+ * finest down to one coarser than the span calls for is asked, and
+ * `fetchChartArea` lets the most detailed one that answered speak for each
+ * cell. The coarser band is the backstop between harbours.
+ */
+export function bandsForSpan(spanNM: number): EncBand[] {
+  const primary = ENC_BANDS.indexOf(bandForSpan(spanNM))
+  return ENC_BANDS.filter(
+    (b, i) => i <= primary + 1 && spanNM <= (MAX_FETCH_SPAN_NM[b.id] ?? Infinity),
+  )
+}
+
 /** Diagonal of the box, nautical miles. */
 export function boundsSpanNM(b: ChartBounds): number {
   return haversineNM(b.minLat, b.minLon, b.maxLat, b.maxLon)
@@ -213,7 +249,8 @@ const ROLE_WORDS: Record<ChartRole, string> = {
   shoreline: 'shoreline[\\s_]*construction',
   wreck: 'wreck',
   obstruction: 'obstruction',
-  rock: 'underwater[\\s_]*rock|rock[\\s_]*awash',
+  // NOAA publishes it as `Underwater_Awash_Rock` — both words between.
+  rock: 'underwater[\\s_]*(?:awash[\\s_]*)?rock|rock[\\s_]*awash',
   pile: token('piles?'),
   bridge: 'bridge',
 }
@@ -797,6 +834,78 @@ export async function fetchChartFeatures(
     land,
     hazards,
     coverage: complete ? 'full' : 'partial',
+  }
+}
+
+/**
+ * Everything the router needs for one area, from every chart scale that has
+ * something to say about it.
+ *
+ * Each band is fetched on its own terms by `fetchChartFeatures` (so every
+ * failure rule above still holds per band), then merged with each polygon
+ * tagged by how detailed its band is. `rasterise` uses that tag to let the
+ * finest chart covering a cell win — see there for why that, and not
+ * shoalest-wins, is the right rule across scales. Hazards and channels are a
+ * plain union: a wreck on any chart is a wreck.
+ *
+ * A band that failed does not sink the others; one that answered with real
+ * depths is real data about real water. Only when no band produced a depth is
+ * a failure reported, so "the chart could not be read" is still never passed
+ * off as empty sea.
+ */
+export async function fetchChartArea(
+  bounds: ChartBounds,
+  options: { fetcher?: Fetcher; bands?: EncBand[] } = {},
+): Promise<ChartFeatures & { bands: string[] }> {
+  const bands = options.bands ?? bandsForSpan(boundsSpanNM(bounds))
+  const settled = await Promise.all(
+    bands.map(async (band) => {
+      try {
+        const features = await fetchChartFeatures(bounds, { fetcher: options.fetcher, band })
+        return { band, features, error: null as unknown }
+      } catch (e) {
+        return { band, features: null, error: e }
+      }
+    }),
+  )
+
+  const depthAreas: DepthPolygon[] = []
+  const channels: ChannelPolygon[] = []
+  const land: LandPolygon[] = []
+  const hazards: PointHazard[] = []
+  const used: string[] = []
+  let partial = false
+
+  for (const { band, features: f } of settled) {
+    if (!f || f.coverage === 'none') continue
+    // Finer bands sit earlier in ENC_BANDS, so they get the higher level.
+    const level = ENC_BANDS.length - ENC_BANDS.indexOf(band)
+    for (const p of f.depthAreas) depthAreas.push({ ...p, level })
+    for (const p of f.land) land.push({ ...p, level })
+    channels.push(...f.channels)
+    hazards.push(...f.hazards)
+    if (f.coverage === 'partial') partial = true
+    used.push(band.id)
+  }
+
+  if (depthAreas.length === 0) {
+    // Prefer an `unreachable` over a `no-layers`: a service that did not
+    // answer is the likelier story, and the one a crew can do something about.
+    const errors = settled.map((r) => r.error).filter((e) => e != null)
+    const pick =
+      errors.find((e) => e instanceof ChartUnavailableError && e.kind === 'unreachable') ??
+      errors[0]
+    if (pick) throw pick
+    return { depthAreas: [], channels, land, hazards, coverage: 'none', bands: [] }
+  }
+
+  return {
+    depthAreas,
+    channels,
+    land,
+    hazards,
+    coverage: partial ? 'partial' : 'full',
+    bands: used,
   }
 }
 

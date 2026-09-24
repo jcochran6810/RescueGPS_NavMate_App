@@ -48,10 +48,17 @@ export interface DepthPolygon {
   /** Shoalest depth in the band, metres below chart datum. */
   minDepthM: number
   rings: Ring[]
+  /**
+   * How detailed the chart this came from is — higher is a larger-scale
+   * (finer) chart. Absent means 0. See `rasterise` for why it matters.
+   */
+  level?: number
 }
 
 export interface LandPolygon {
   rings: Ring[]
+  /** As on `DepthPolygon`. */
+  level?: number
 }
 
 export interface PointHazard {
@@ -450,32 +457,67 @@ export function fillRings(
  * Depth areas first, keeping the SHOALEST reading where bands overlap, then
  * land, then point hazards. Shoalest-wins is the only safe reconciliation: if
  * two sources disagree about a cell, the boat has to believe the shallow one.
+ *
+ * **Within one chart.** Across charts of different scale the rule is the one
+ * every ECDIS uses — the most detailed chart covering a cell is the one that
+ * speaks for it. A coastal chart generalises a 12 m dredged cut into the 0–2 m
+ * flat either side of it, and draws a harbour's marinas and bayous as solid
+ * land; shoalest-wins across scales would let that generalisation close every
+ * channel the harbour chart surveyed. So polygons are painted coarse to fine,
+ * and a finer chart replaces whatever a coarser one said about the cells it
+ * covers. Where only a coarse chart exists, it stands.
  */
 export function rasterise(
   g: RouteGrid,
   features: ChartFeatures,
   safeDepthM: number,
 ): void {
-  for (const poly of features.depthAreas) {
-    const d = poly.minDepthM
-    if (!Number.isFinite(d)) continue
-    fillRings(g, poly.rings, (i) => {
-      const prev = g.depth[i]
-      g.depth[i] = Number.isNaN(prev) ? d : Math.min(prev, d)
-    })
+  const n = g.cells.length
+  // The finest chart level that has spoken for each cell, -1 for none.
+  const levelAt = new Int16Array(n).fill(-1)
+  const land = new Uint8Array(n)
+
+  const levels = new Set<number>()
+  for (const p of features.depthAreas) levels.add(p.level ?? 0)
+  for (const p of features.land) levels.add(p.level ?? 0)
+  const ordered = [...levels].sort((a, b) => a - b)
+
+  for (const level of ordered) {
+    for (const poly of features.depthAreas) {
+      if ((poly.level ?? 0) !== level) continue
+      const d = poly.minDepthM
+      if (!Number.isFinite(d)) continue
+      fillRings(g, poly.rings, (i) => {
+        if (levelAt[i] < level) {
+          // A finer chart than anything before it: it replaces, land included.
+          levelAt[i] = level
+          land[i] = 0
+          g.depth[i] = d
+        } else if (levelAt[i] === level) {
+          const prev = g.depth[i]
+          g.depth[i] = Number.isNaN(prev) ? d : Math.min(prev, d)
+        }
+      })
+    }
+    for (const poly of features.land) {
+      if ((poly.level ?? 0) !== level) continue
+      fillRings(g, poly.rings, (i) => {
+        if (levelAt[i] > level) return
+        levelAt[i] = level
+        land[i] = 1
+      })
+    }
   }
 
-  for (let i = 0; i < g.cells.length; i++) {
+  for (let i = 0; i < n; i++) {
+    if (land[i]) {
+      g.cells[i] = BLOCKED
+      g.depth[i] = 0
+      continue
+    }
     const d = g.depth[i]
     if (Number.isNaN(d)) g.cells[i] = UNKNOWN
     else g.cells[i] = d >= safeDepthM ? OPEN : BLOCKED
-  }
-
-  for (const poly of features.land) {
-    fillRings(g, poly.rings, (i) => {
-      g.cells[i] = BLOCKED
-      g.depth[i] = 0
-    })
   }
 
   for (const h of features.hazards) {
