@@ -26,7 +26,7 @@ export const FT_PER_NM = NM_TO_METERS * M_TO_FEET
  * notice before they can do anything about it. The tightest setting is offered
  * for tight work, and the accuracy floor below is what keeps it honest.
  */
-export const ARRIVAL_FT_CHOICES = [50, 100, 150] as const
+export const ARRIVAL_FT_CHOICES = [50, 100, 150, 200] as const
 export type ArrivalFt = (typeof ARRIVAL_FT_CHOICES)[number]
 export const DEFAULT_ARRIVAL_FT: ArrivalFt = 150
 

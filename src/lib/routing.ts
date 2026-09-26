@@ -72,7 +72,7 @@ export interface PointHazard {
    * and read differently on a leg card, so the kind is carried rather than
    * being stringified into the label and lost.
    */
-  kind: 'wreck' | 'obstruction' | 'rock' | 'pile'
+  kind: 'wreck' | 'obstruction' | 'rock' | 'pile' | 'pylon' | 'islet' | 'platform'
   label: string
 }
 
@@ -92,7 +92,25 @@ export interface ChannelPolygon {
   rings: Ring[]
 }
 
+/**
+ * A hazard charted as a line — a jetty, breakwater, pier, obstruction line or
+ * causeway. Kept as polylines (not closed rings); the router treats every
+ * segment as solid, with `widthM` of its own and the crew's stand-off beyond.
+ */
+export interface LineHazard {
+  kind: 'structure' | 'obstruction'
+  /** Each path is an array of [lon, lat], open (not closed). */
+  paths: [number, number][][]
+  /** Physical width assumed for the structure, metres. */
+  widthM: number
+  label: string
+  /** As on `DepthPolygon`. */
+  level?: number
+}
+
 export interface ChartFeatures {
+  /** Line hazards (jetties, piers, obstruction lines). Optional for older callers. */
+  lines?: LineHazard[]
   depthAreas: DepthPolygon[]
   /** Dredged areas and fairways — the water traffic is meant to use. */
   channels: ChannelPolygon[]
@@ -128,7 +146,35 @@ export interface RouteRequest {
   /** Knots. Used for the time estimate only — never for the geometry. */
   speedKn: number
   features: ChartFeatures
+  /**
+   * The capture radius the crew steers with, feet (100–200). Turn points are
+   * given a per-point `arrivalFt` no larger than this, reduced where
+   * switching that early would cut the corner into shallow water or the
+   * stand-off. Default 150.
+   */
+  arrivalFt?: number
+  /**
+   * How far from each endpoint the route may run through water charted in a
+   * band that starts shallower than the boat needs (or not surveyed), metres —
+   * the dock, ramp or marina stretch. Such legs are flagged
+   * `caution: 'shallow-approach'`. Default 120 m (~400 ft).
+   */
+  approachM?: number
 }
+
+/**
+ * Why a leg needs the crew's eyes.
+ *
+ * - `ok` — clears the depth and the stand-off along its whole length.
+ * - `shallow-approach` — runs within `approachM` of the start or destination
+ *   through water charted as possibly shallower than the boat needs, or not
+ *   surveyed. Allowed by design so docks and ramps work; drawn dotted.
+ * - `reduced-clearance` — keeps the depth, but passes land or a hazard closer
+ *   than the stand-off. Only in a best-effort plan.
+ * - `unsafe-depth` — crosses water charted shallower than the boat needs.
+ *   Only in a best-effort plan.
+ */
+export type LegCaution = 'ok' | 'shallow-approach' | 'reduced-clearance' | 'unsafe-depth'
 
 export interface RouteLeg extends PatternLeg {
   /** Hours from departure to the END of this leg. */
@@ -142,9 +188,26 @@ export interface RouteLeg extends PatternLeg {
    * crew must never read the first as the second.
    */
   channelFraction: number | null
+  /** See `LegCaution`. */
+  caution: LegCaution
+  /**
+   * Least distance from the leg to land or a charted hazard, metres, measured
+   * against the chart geometry itself (not the grid). Null where unmeasured.
+   */
+  minClearanceM: number | null
 }
 
-export type RouteSource = 'charted' | 'straight'
+/**
+ * - `charted` — every leg keeps the depth and the stand-off (legs may still be
+ *   `shallow-approach` at the ends).
+ * - `best-effort` — no fully safe route exists; this is the safest one found,
+ *   with the failing legs flagged. The crew must confirm before steering it.
+ * - `none` — nothing to draw: no chart, or no water path at all. `points` is
+ *   empty and `failure` says why in plain words.
+ * - `straight` — LEGACY, never produced any more; kept only until the UI stops
+ *   referring to it.
+ */
+export type RouteSource = 'charted' | 'best-effort' | 'none' | 'straight'
 
 export interface RoutePlan {
   /** Every point in order, departure first — drawn and steered as-is. */
@@ -162,6 +225,16 @@ export interface RoutePlan {
   movedEnd: LatLon | null
   /** Distance run outside marked water, NM. Null where none is charted. */
   outsideChannelNM: number | null
+  /**
+   * Safe capture radius per point, feet, index-aligned with `points`. Never
+   * larger than the requested `arrivalFt`. The steering engine switches to the
+   * next point inside this radius.
+   */
+  arrivalFt: number[]
+  /** When `source === 'none'`: the reason, in plain words for the crew. */
+  failure: string | null
+  /** True for a `best-effort` plan: steering needs an explicit confirmation. */
+  needsConfirm: boolean
 }
 
 /* -------------------------------------------------------------------------
@@ -1172,6 +1245,8 @@ function legsFrom(
       etaHours: usableSpeed > 0 ? run / usableSpeed : NaN,
       minChartedDepthM: grid ? legMinDepth(grid, leg.from, leg.to) : null,
       channelFraction: grid ? legChannelFraction(grid, leg.from, leg.to) : null,
+      caution: 'ok' as LegCaution,
+      minClearanceM: null,
     }
   })
   return {
@@ -1200,6 +1275,9 @@ function straightPlan(
     movedStart: null,
     movedEnd: null,
     outsideChannelNM: null,
+    arrivalFt: points.map(() => req.arrivalFt ?? 150),
+    failure: null,
+    needsConfirm: false,
   }
 }
 
@@ -1315,6 +1393,9 @@ export function planRoute(req: RouteRequest): RoutePlan {
     movedStart,
     movedEnd,
     outsideChannelNM,
+    arrivalFt: points.map(() => req.arrivalFt ?? 150),
+    failure: null,
+    needsConfirm: false,
   }
 }
 
