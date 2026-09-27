@@ -17,6 +17,7 @@ import { MapActionHost } from '@/components/MapActionHost'
 import { WaypointSheet } from '@/components/WaypointSheet'
 import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
 import { useIncidentFeeds } from '@/hooks/useIncidentFeeds'
+import { useNavigationEngine } from '@/hooks/useNavigationEngine'
 import { useAssignments } from '@/store/useAssignments'
 import { useMessages } from '@/store/useMessages'
 import { useHazards } from '@/store/useHazards'
@@ -47,6 +48,9 @@ export default function App() {
   const [tab, setTab] = useState<TabId>('home')
 
   useEffect(() => init(), [init])
+
+  // Steering runs whichever tab is open — see hooks/useNavigationEngine.ts.
+  useNavigationEngine()
 
   // Runtime errors feed the admin dashboard's health numbers.
   useEffect(() => installErrorReporting(), [])

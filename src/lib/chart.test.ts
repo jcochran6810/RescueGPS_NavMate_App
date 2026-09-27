@@ -4,8 +4,22 @@ import {
   bandForSpan,
   bandsForSpan,
   boundsSpanNM,
+  chartNeeds,
   containsBounds,
+  DETAIL_HALF_NM,
+  detailBox,
   encRequestUrl,
+  intersectBounds,
+  ISLET_RADIUS_M,
+  LIGHT_STRUCTURE_WIDTH_M,
+  mergeOverlapping,
+  pathsOf,
+  planChartRegions,
+  PLATFORM_RADIUS_M,
+  PYLON_RADIUS_M,
+  regionsSatisfy,
+  STRUCTURE_WIDTH_M,
+  unionBounds,
   padBounds,
   ENC_BANDS,
   exceededLimit,
@@ -25,6 +39,7 @@ import {
   type ChartBounds,
   type Fetcher,
 } from './chart'
+import { EMPTY_FEATURES } from './routing'
 
 /* -------------------------------------------------------------------------
  * Web Mercator tile bounds — the WMS depends entirely on getting these right
@@ -198,9 +213,17 @@ describe('matchLayers', () => {
     expect(found.map((l) => l.role)).toEqual(['rock'])
   })
 
-  it('ignores line layers — a line has no inside to rasterise', () => {
+  it('reads a line only where the line IS the hazard', () => {
+    // Changed on purpose. This used to refuse every line layer, which threw
+    // away every jetty, breakwater and pier charted as a centreline — the
+    // Galveston jetties among them. A depth contour or a fairway line is
+    // still refused: each is the edge of an area published separately.
     const found = matchLayers(LAYER_PAYLOAD)
-    expect(found.some((l) => l.name.endsWith('_line'))).toBe(false)
+    const lines = found.filter((l) => l.geometry === 'line')
+    expect(lines.map((l) => l.id)).toEqual([85])
+    expect(lines[0].role).toBe('shoreline')
+    expect(found.some((l) => l.id === 41)).toBe(false) // Depth_Contour_line
+    expect(found.some((l) => l.id === 56)).toBe(false) // Fairway_line
     expect(found.some((l) => l.id === 86)).toBe(true)
   })
 
@@ -699,7 +722,13 @@ describe('fetchChartArea', () => {
     expect(f.bands).toEqual(['harbour', 'coastal'])
   })
 
-  it('uses the bands that answered when another one failed', async () => {
+  it('uses the bands that answered when another one failed — and says one failed', async () => {
+    // Changed on purpose: this used to read 'full'. The approach band's
+    // depths are real data and are still used, but the harbour chart that
+    // should have spoken for this water was never seen, so the area was
+    // checked on coarser charts than it should have been. That is a hole in
+    // what was checked, like a transfer-limit overflow, and gets the same
+    // word — plus the band's name, so the route can say which.
     const f = await fetchChartArea(BOX, {
       bands: [ENC_BANDS[0], ENC_BANDS[1]],
       fetcher: async (url) => {
@@ -710,7 +739,8 @@ describe('fetchChartArea', () => {
       },
     })
     expect(f.bands).toEqual(['approach'])
-    expect(f.coverage).toBe('full')
+    expect(f.coverage).toBe('partial')
+    expect(f.failedBands).toEqual(['harbour'])
   })
 
   it('still reports a failure, not an empty sea, when nothing produced a depth', async () => {
@@ -909,5 +939,816 @@ describe('encRequestUrl', () => {
     } finally {
       delete g.window
     }
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * More hazards: structures as lines, pylons, islets, platforms
+ *
+ * Names below are NOAA's own, as published by ENC Direct's harbour, approach
+ * and coastal services (checked against the live catalogues for Galveston).
+ * ---------------------------------------------------------------------- */
+
+const P = 'esriGeometryPoint'
+const L = 'esriGeometryPolyline'
+const A = 'esriGeometryPolygon'
+
+const HAZARD_CATALOGUE = {
+  layers: [
+    { id: 227, name: 'Harbor.Depth_Area', geometryType: A },
+    { id: 18, name: 'Harbor.Shoreline_Construction_point', geometryType: P },
+    { id: 24, name: 'Harbor.Dam_point', geometryType: P },
+    { id: 28, name: 'Harbor.Pylon_Bridge_Support_point', geometryType: P },
+    { id: 33, name: 'Harbor.Obstruction_point', geometryType: P },
+    { id: 38, name: 'Harbor.Land_Area_point', geometryType: P },
+    { id: 46, name: 'Harbor.Offshore_Platform_point', geometryType: P },
+    { id: 53, name: 'Harbor.Gate_point', geometryType: P },
+    { id: 55, name: 'Harbor.Hulk_point', geometryType: P },
+    { id: 56, name: 'Harbor.Mooring_Warping_Facility_point', geometryType: P },
+    { id: 58, name: 'Harbor.Pile_point', geometryType: P },
+    { id: 84, name: 'Harbor.Coastline_line', geometryType: L },
+    { id: 85, name: 'Harbor.Shoreline_Construction_line', geometryType: L },
+    { id: 87, name: 'Harbor.Bridge_line', geometryType: L },
+    { id: 90, name: 'Harbor.Dam_line', geometryType: L },
+    { id: 99, name: 'Harbor.Obstruction_line', geometryType: L },
+    { id: 103, name: 'Harbor.Depth_Area_line', geometryType: L },
+    { id: 104, name: 'Harbor.Depth_Contour_line', geometryType: L },
+    { id: 106, name: 'Harbor.Land_Area_line', geometryType: L },
+    { id: 118, name: 'Harbor.Causeway_line', geometryType: L },
+    { id: 119, name: 'Harbor.Dyke_line', geometryType: L },
+    { id: 120, name: 'Harbor.Floating_Dock_line', geometryType: L },
+    { id: 121, name: 'Harbor.Gate_line', geometryType: L },
+    { id: 122, name: 'Harbor.Mooring_Warping_Facility_line', geometryType: L },
+    { id: 93, name: 'Coastal.Pontoon_line', geometryType: L },
+    { id: 138, name: 'Harbor.Shoreline_Construction_area', geometryType: A },
+    { id: 141, name: 'Harbor.Bridge_area', geometryType: A },
+    { id: 145, name: 'Harbor.Dam_area', geometryType: A },
+    { id: 149, name: 'Harbor.Pylon_Bridge_Support_area', geometryType: A },
+    { id: 156, name: 'Harbor.Obstruction_area', geometryType: A },
+    { id: 165, name: 'Harbor.Offshore_Platform_area', geometryType: A },
+    { id: 171, name: 'Harbor.Causeway_area', geometryType: A },
+    { id: 175, name: 'Harbor.Dyke_area', geometryType: A },
+    { id: 176, name: 'Harbor.Floating_Dock_area', geometryType: A },
+    { id: 177, name: 'Harbor.Gate_area', geometryType: A },
+    { id: 180, name: 'Harbor.Hulk_area', geometryType: A },
+    { id: 182, name: 'Harbor.Mooring_Warping_Facility_area', geometryType: A },
+    { id: 233, name: 'Harbor.Land_Area', geometryType: A },
+  ],
+}
+
+describe('matchLayers — structures and small hazards', () => {
+  const byId = new Map(matchLayers(HAZARD_CATALOGUE).map((l) => [l.id, l]))
+  const role = (id: number) => byId.get(id)?.role
+  const geometry = (id: number) => byId.get(id)?.geometry
+
+  it('reads a bridge pylon as a pylon, not as a bridge that is thrown away', () => {
+    // "Pylon_Bridge_Support" says bridge too. Bridges are read for air draft
+    // only and never block, so a pier standing in the channel used to vanish.
+    expect(role(28)).toBe('pylon')
+    expect(geometry(28)).toBe('point')
+    expect(role(149)).toBe('pylon')
+    expect(geometry(149)).toBe('polygon')
+  })
+
+  it('reads land charted as a point (an islet) and as a line', () => {
+    expect(role(38)).toBe('land')
+    expect(geometry(38)).toBe('point')
+    expect(role(106)).toBe('land')
+    expect(geometry(106)).toBe('line')
+    expect(role(233)).toBe('land')
+  })
+
+  it('reads jetties, dams, causeways, dykes, gates, docks, pontoons and moorings as lines', () => {
+    expect(role(85)).toBe('shoreline')
+    expect(role(90)).toBe('dam')
+    expect(role(99)).toBe('obstruction')
+    expect(role(118)).toBe('causeway')
+    expect(role(119)).toBe('dyke')
+    expect(role(120)).toBe('floatingDock')
+    expect(role(121)).toBe('gate')
+    expect(role(122)).toBe('mooring')
+    expect(role(93)).toBe('pontoon')
+    for (const id of [85, 90, 99, 118, 119, 120, 121, 122, 93]) {
+      expect(geometry(id)).toBe('line')
+    }
+  })
+
+  it('reads the area forms of structures and platforms', () => {
+    expect(role(138)).toBe('shoreline')
+    expect(role(145)).toBe('dam')
+    expect(role(156)).toBe('obstruction')
+    expect(role(165)).toBe('platform')
+    expect(role(171)).toBe('causeway')
+    expect(role(175)).toBe('dyke')
+    expect(role(176)).toBe('floatingDock')
+    expect(role(180)).toBe('hulk')
+    expect(role(182)).toBe('mooring')
+  })
+
+  it('reads platforms and piles as points', () => {
+    expect(role(46)).toBe('platform')
+    expect(role(58)).toBe('pile')
+  })
+
+  it('still refuses contours, depth-area edges, the coastline and bridge lines', () => {
+    // Each is the edge of an area that is published separately, or (the
+    // bridge) something that does not block the water at all.
+    for (const id of [84, 87, 103, 104]) expect(byId.has(id)).toBe(false)
+  })
+
+  it('does not read the point forms charted on or beside a structure', () => {
+    // Dam, gate, hulk, mooring and shoreline-construction points mark
+    // something that has its own line or area; the spec does not block them.
+    for (const id of [18, 24, 53, 55, 56]) expect(byId.has(id)).toBe(false)
+  })
+
+  it('keeps the bridge area for air draft only, and leaves the gate area alone', () => {
+    expect(role(141)).toBe('bridge')
+    expect(byId.has(177)).toBe(false)
+  })
+
+  it('finds the new roles by their S-57 acronyms too', () => {
+    const layers = matchLayers({
+      layers: [
+        { id: 1, name: 'PYLONS', geometryType: P },
+        { id: 2, name: 'OFSPLF', geometryType: P },
+        { id: 3, name: 'DAMCON', geometryType: L },
+        { id: 4, name: 'CAUSWY', geometryType: L },
+        { id: 5, name: 'DYKCON', geometryType: L },
+        { id: 6, name: 'GATCON', geometryType: L },
+        { id: 7, name: 'FLODOC', geometryType: L },
+        { id: 8, name: 'HULKES', geometryType: A },
+        { id: 9, name: 'PONTON', geometryType: L },
+        { id: 10, name: 'MORFAC', geometryType: L },
+        { id: 11, name: 'SLCONS', geometryType: L },
+        { id: 12, name: 'OBSTRN', geometryType: L },
+        { id: 13, name: 'LNDARE', geometryType: P },
+      ],
+    })
+    expect(layers.map((l) => l.role)).toEqual([
+      'pylon', 'platform', 'dam', 'causeway', 'dyke', 'gate', 'floatingDock',
+      'hulk', 'pontoon', 'mooring', 'shoreline', 'obstruction', 'land',
+    ])
+  })
+
+  it('matches the short words only as whole words', () => {
+    expect(
+      matchLayers({
+        layers: [
+          { id: 1, name: 'Harbor.Damage_Report_line', geometryType: L },
+          { id: 2, name: 'Harbor.Navigation_Line', geometryType: L },
+          { id: 3, name: 'Harbor.Gateway_Zone_line', geometryType: L },
+        ],
+      }),
+    ).toEqual([])
+  })
+})
+
+describe('pathsOf', () => {
+  const path = [
+    [-94.7, 29.3],
+    [-94.69, 29.31],
+    [-94.68, 29.32],
+  ]
+
+  it('reads a GeoJSON LineString', () => {
+    expect(pathsOf({ type: 'LineString', coordinates: path })).toEqual([path])
+  })
+
+  it('reads every path of a GeoJSON MultiLineString', () => {
+    expect(pathsOf({ type: 'MultiLineString', coordinates: [path, path.slice(0, 2)] })).toEqual([
+      path,
+      path.slice(0, 2),
+    ])
+  })
+
+  it('reads Esri JSON paths, so the app survives a service without f=geojson', () => {
+    expect(pathsOf({ paths: [path, path] })).toHaveLength(2)
+  })
+
+  it('drops a Z or M value after the position', () => {
+    expect(pathsOf({ type: 'LineString', coordinates: [[-94.7, 29.3, 4], [-94.6, 29.3, 5]] })).toEqual([
+      [
+        [-94.7, 29.3],
+        [-94.6, 29.3],
+      ],
+    ])
+  })
+
+  it('splits a path at a vertex it cannot read rather than joining across it', () => {
+    // Joining the neighbours would draw a jetty where none was charted;
+    // dropping the whole path would lose the jetty that was.
+    const got = pathsOf({
+      paths: [[[-94.7, 29.3], [-94.69, 29.31], [null, 29.32], [-94.68, 29.33], [-94.67, 29.34]]],
+    })
+    expect(got).toEqual([
+      [
+        [-94.7, 29.3],
+        [-94.69, 29.31],
+      ],
+      [
+        [-94.68, 29.33],
+        [-94.67, 29.34],
+      ],
+    ])
+  })
+
+  it('drops a path with fewer than two vertices', () => {
+    expect(pathsOf({ type: 'LineString', coordinates: [[-94.7, 29.3]] })).toEqual([])
+  })
+
+  it('returns nothing for a polygon, a point or rubbish', () => {
+    expect(pathsOf({ type: 'Polygon', coordinates: [path] })).toEqual([])
+    expect(pathsOf({ type: 'Point', coordinates: [-94.8, 29.3] })).toEqual([])
+    expect(pathsOf(null)).toEqual([])
+    expect(pathsOf({ paths: 'no' })).toEqual([])
+  })
+})
+
+describe('fetchChartFeatures — structures and small hazards', () => {
+  const sq = (lon: number, lat: number, d = 0.001) => [
+    [lon, lat],
+    [lon + d, lat],
+    [lon + d, lat + d],
+    [lon, lat + d],
+    [lon, lat],
+  ]
+  const poly = (lon: number, lat: number) => ({
+    features: [{ geometry: { type: 'Polygon', coordinates: [sq(lon, lat)] }, properties: {} }],
+  })
+  const line = (lon: number, lat: number, properties: Record<string, unknown> = {}) => ({
+    features: [
+      {
+        geometry: { type: 'LineString', coordinates: [[lon, lat], [lon + 0.01, lat]] },
+        properties,
+      },
+    ],
+  })
+  const pt = (lon: number, lat: number) => ({
+    features: [{ geometry: { type: 'Point', coordinates: [lon, lat] }, properties: {} }],
+  })
+
+  function hazardService(): Fetcher {
+    return async (url) => {
+      if (url.includes('/layers?f=json')) return HAZARD_CATALOGUE
+      const id = Number(/\/(\d+)\/query/.exec(url)?.[1])
+      switch (id) {
+        case 227:
+          return {
+            features: [
+              { geometry: { type: 'Polygon', coordinates: [sq(-94.85, 29.3, 0.05)] }, properties: { DRVAL1: 9 } },
+            ],
+          }
+        case 28:
+          return pt(-94.81, 29.31)
+        case 38:
+          return pt(-94.82, 29.32)
+        case 46:
+          return pt(-94.83, 29.33)
+        case 85:
+          return line(-94.84, 29.3)
+        case 90:
+          return line(-94.84, 29.301)
+        case 99:
+          return line(-94.84, 29.302, { VALSOU: 1.2 })
+        case 106:
+          return line(-94.84, 29.303)
+        case 118:
+          return line(-94.84, 29.304)
+        case 119:
+          return line(-94.84, 29.305)
+        case 120:
+          // Esri's own form for a line: `paths`.
+          return {
+            features: [
+              { geometry: { paths: [[[-94.84, 29.306], [-94.83, 29.306]]] }, attributes: {} },
+            ],
+          }
+        case 121:
+          return line(-94.84, 29.307)
+        case 122:
+          return line(-94.84, 29.308)
+        case 93:
+          return line(-94.84, 29.309)
+        case 141:
+          return poly(-94.8, 29.34) // a bridge deck: must not block
+        case 149:
+          return poly(-94.81, 29.31)
+        case 165:
+          return poly(-94.83, 29.33)
+        case 145:
+        case 171:
+        case 175:
+        case 176:
+        case 180:
+        case 182:
+        case 138:
+        case 156:
+          return poly(-94.845, 29.345)
+        default:
+          return { features: [] }
+      }
+    }
+  }
+
+  it('makes structures charted as lines into line hazards with their widths', async () => {
+    const f = await fetchChartFeatures(BOX, { fetcher: hazardService() })
+    const byLabel = new Map(f.lines.map((l) => [l.label, l]))
+    expect(byLabel.get('jetty, pier or breakwater')).toMatchObject({
+      kind: 'structure',
+      widthM: STRUCTURE_WIDTH_M,
+    })
+    for (const label of ['dam', 'causeway', 'dyke', 'gate', 'narrow land']) {
+      expect(byLabel.get(label)).toMatchObject({ kind: 'structure', widthM: 5 })
+    }
+    for (const label of ['floating dock', 'pontoon', 'mooring facility']) {
+      expect(byLabel.get(label)).toMatchObject({ kind: 'structure', widthM: LIGHT_STRUCTURE_WIDTH_M })
+    }
+    expect(byLabel.get('obstruction 1.2 m')).toMatchObject({ kind: 'obstruction', widthM: 3 })
+    expect(f.lines).toHaveLength(10)
+  })
+
+  it('keeps each line as open [lon, lat] paths, from GeoJSON and from Esri paths', async () => {
+    const f = await fetchChartFeatures(BOX, { fetcher: hazardService() })
+    const jetty = f.lines.find((l) => l.label.startsWith('jetty'))
+    expect(jetty?.paths).toEqual([
+      [
+        [-94.84, 29.3],
+        [-94.83, 29.3],
+      ],
+    ])
+    const dock = f.lines.find((l) => l.label === 'floating dock')
+    expect(dock?.paths).toEqual([
+      [
+        [-94.84, 29.306],
+        [-94.83, 29.306],
+      ],
+    ])
+  })
+
+  it('gives pylons, islets and platforms footprints sized for what they are', async () => {
+    const f = await fetchChartFeatures(BOX, { fetcher: hazardService() })
+    expect(f.hazards.find((h) => h.kind === 'pylon')).toMatchObject({
+      lat: 29.31,
+      lon: -94.81,
+      radiusM: PYLON_RADIUS_M,
+    })
+    expect(f.hazards.find((h) => h.kind === 'islet')).toMatchObject({
+      lat: 29.32,
+      radiusM: ISLET_RADIUS_M,
+    })
+    expect(f.hazards.find((h) => h.kind === 'platform')).toMatchObject({
+      lat: 29.33,
+      radiusM: PLATFORM_RADIUS_M,
+    })
+    expect(PYLON_RADIUS_M).toBe(10)
+    expect(ISLET_RADIUS_M).toBe(15)
+    expect(PLATFORM_RADIUS_M).toBe(30)
+  })
+
+  it('makes the area forms land, and never a bridge deck', async () => {
+    const f = await fetchChartFeatures(BOX, { fetcher: hazardService() })
+    // Pylon area, platform area, and eight structure areas (dam, causeway,
+    // dyke, floating dock, hulk, mooring, shoreline construction,
+    // obstruction). The bridge area is read and discarded.
+    expect(f.land).toHaveLength(10)
+    const bridgeRing = sq(-94.8, 29.34)
+    expect(f.land.some((l) => JSON.stringify(l.rings[0]) === JSON.stringify(bridgeRing))).toBe(
+      false,
+    )
+  })
+
+  it('reads a multipoint layer as every point in it', async () => {
+    const f = await fetchChartFeatures(BOX, {
+      fetcher: async (url) => {
+        if (url.includes('/layers?f=json')) {
+          return {
+            layers: [
+              { id: 1, name: 'DEPARE', geometryType: A },
+              { id: 2, name: 'PYLONS', geometryType: 'esriGeometryMultipoint' },
+            ],
+          }
+        }
+        if (url.includes('/1/query')) return depth9()
+        if (url.includes('/2/query')) {
+          return {
+            features: [{ geometry: { points: [[-94.81, 29.31], [-94.811, 29.31]] }, attributes: {} }],
+          }
+        }
+        return { features: [] }
+      },
+    })
+    expect(f.hazards.filter((h) => h.kind === 'pylon')).toHaveLength(2)
+  })
+
+  it('returns an empty list of lines, never undefined, from a chart with none', async () => {
+    const f = await fetchChartFeatures(BOX, { fetcher: stubService() })
+    expect(f.lines).toEqual([])
+  })
+})
+
+function depth9() {
+  return {
+    features: [
+      {
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[-94.85, 29.3], [-94.8, 29.3], [-94.8, 29.35], [-94.85, 29.35], [-94.85, 29.3]]],
+        },
+        properties: { DRVAL1: 9 },
+      },
+    ],
+  }
+}
+
+describe('EMPTY_FEATURES', () => {
+  it('carries an empty list of line hazards', () => {
+    expect(EMPTY_FEATURES.lines).toEqual([])
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * Detail near the ends of a long passage
+ * ---------------------------------------------------------------------- */
+
+/** About 55 NM corner to corner: too big for the harbour band as a whole. */
+const LONG_BOX: ChartBounds = { minLat: 29.0, minLon: -95.2, maxLat: 29.6, maxLon: -94.4 }
+const START = { lat: 29.3115, lon: -94.79 } // Galveston Channel
+const END = { lat: 29.55, lon: -94.5 }
+
+/** The envelope a query asked about, as a box. */
+function envelopeOf(url: string): ChartBounds | null {
+  const g = new URL(url).searchParams.get('geometry')
+  if (!g) return null
+  const [minLon, minLat, maxLon, maxLat] = g.split(',').map(Number)
+  return { minLat, minLon, maxLat, maxLon }
+}
+
+function inside(p: { lat: number; lon: number }, b: ChartBounds): boolean {
+  return p.lat >= b.minLat && p.lat <= b.maxLat && p.lon >= b.minLon && p.lon <= b.maxLon
+}
+
+describe('detailBox', () => {
+  it('is DETAIL_HALF_NM either side of the position, in both directions', () => {
+    const b = detailBox(START)
+    expect(DETAIL_HALF_NM).toBeGreaterThanOrEqual(2)
+    // North-south and east-west half-sizes, measured independently.
+    expect(boundsSpanNM({ ...b, minLon: START.lon, maxLon: START.lon }) / 2).toBeCloseTo(
+      DETAIL_HALF_NM,
+      2,
+    )
+    expect(
+      boundsSpanNM({ minLat: START.lat, maxLat: START.lat, minLon: b.minLon, maxLon: b.maxLon }) /
+        2,
+    ).toBeCloseTo(DETAIL_HALF_NM, 1)
+    expect(inside(START, b)).toBe(true)
+  })
+
+  it('does not ask for the whole world at a pole', () => {
+    const b = detailBox({ lat: 90, lon: 0 })
+    expect(Number.isFinite(b.minLon) && Number.isFinite(b.maxLon)).toBe(true)
+  })
+})
+
+describe('intersectBounds and unionBounds', () => {
+  const a: ChartBounds = { minLat: 0, minLon: 0, maxLat: 2, maxLon: 2 }
+  it('intersects overlapping boxes and refuses apart ones', () => {
+    expect(intersectBounds(a, { minLat: 1, minLon: 1, maxLat: 3, maxLon: 3 })).toEqual({
+      minLat: 1,
+      minLon: 1,
+      maxLat: 2,
+      maxLon: 2,
+    })
+    expect(intersectBounds(a, { minLat: 3, minLon: 3, maxLat: 4, maxLon: 4 })).toBeNull()
+  })
+  it('unions to the smallest box holding both', () => {
+    expect(unionBounds(a, { minLat: 3, minLon: -1, maxLat: 4, maxLon: 1 })).toEqual({
+      minLat: 0,
+      minLon: -1,
+      maxLat: 4,
+      maxLon: 2,
+    })
+  })
+})
+
+describe('mergeOverlapping', () => {
+  it('joins two boxes that overlap along one side', () => {
+    const out = mergeOverlapping([
+      { minLat: 0, minLon: 0, maxLat: 1, maxLon: 1 },
+      { minLat: 0, minLon: 0.5, maxLat: 1, maxLon: 1.5 },
+    ])
+    expect(out).toEqual([{ minLat: 0, minLon: 0, maxLat: 1, maxLon: 1.5 }])
+  })
+
+  it('leaves apart boxes apart, and diagonal neighbours too', () => {
+    // The union of a diagonal pair is mostly water nobody asked about.
+    expect(
+      mergeOverlapping([
+        { minLat: 0, minLon: 0, maxLat: 1, maxLon: 1 },
+        { minLat: 0.5, minLon: 0.5, maxLat: 1.5, maxLon: 1.5 },
+      ]),
+    ).toHaveLength(2)
+    expect(
+      mergeOverlapping([
+        { minLat: 0, minLon: 0, maxLat: 1, maxLon: 1 },
+        { minLat: 5, minLon: 5, maxLat: 6, maxLon: 6 },
+      ]),
+    ).toHaveLength(2)
+  })
+})
+
+describe('planChartRegions', () => {
+  it('asks the harbour band about each end of a passage too long for it as a whole', () => {
+    const regions = planChartRegions(LONG_BOX, { detailAround: [START, END] })
+    expect(regions[0].detail).toBe(false)
+    expect(regions[0].bounds).toEqual(LONG_BOX)
+    expect(regions[0].bands.map((b) => b.id)).toEqual(['approach', 'coastal', 'general'])
+    const detail = regions.slice(1)
+    expect(detail).toHaveLength(2)
+    for (const r of detail) {
+      expect(r.detail).toBe(true)
+      // Approach is already asked about the whole box, so only harbour.
+      expect(r.bands.map((b) => b.id)).toEqual(['harbour'])
+    }
+    expect(inside(START, detail[0].bounds)).toBe(true)
+    expect(inside(END, detail[1].bounds)).toBe(true)
+  })
+
+  it('asks for approach too when the whole-area query leaves it out', () => {
+    const ocean: ChartBounds = { minLat: 28, minLon: -96, maxLat: 30, maxLon: -94 }
+    const regions = planChartRegions(ocean, { detailAround: [START] })
+    expect(regions[0].bands.map((b) => b.id)).not.toContain('approach')
+    expect(regions[1].bands.map((b) => b.id)).toEqual(['harbour', 'approach'])
+  })
+
+  it('adds nothing for a short hop that already asks the harbour band about everything', () => {
+    const regions = planChartRegions(BOX, {
+      detailAround: [
+        { lat: 29.31, lon: -94.84 },
+        { lat: 29.34, lon: -94.81 },
+      ],
+    })
+    expect(regions).toHaveLength(1)
+    expect(regions[0].bands[0].id).toBe('harbour')
+  })
+
+  it('still asks for detail round a position outside the box, rather than ignoring it', () => {
+    // A caller's mistake, not a real passage — but the harbour band over the
+    // main box says nothing about water outside it.
+    const regions = planChartRegions(BOX, { detailAround: [END] })
+    expect(regions).toHaveLength(2)
+    expect(inside(END, regions[1].bounds)).toBe(true)
+    expect(regions[1].bands.map((b) => b.id)).toEqual(['harbour', 'approach'])
+  })
+
+  it('cuts each detail box to the planning area', () => {
+    const regions = planChartRegions(LONG_BOX, { detailAround: [{ lat: 29.01, lon: -95.19 }] })
+    expect(containsBounds(LONG_BOX, regions[1].bounds)).toBe(true)
+  })
+
+  it('joins the boxes of two ends close together into one query', () => {
+    const regions = planChartRegions(LONG_BOX, {
+      detailAround: [START, { lat: START.lat, lon: START.lon + 0.02 }],
+    })
+    expect(regions).toHaveLength(2)
+  })
+
+  it('ignores positions that are not positions', () => {
+    const regions = planChartRegions(LONG_BOX, {
+      detailAround: [{ lat: NaN, lon: -94 }, { lat: 91, lon: 0 }],
+    })
+    expect(regions).toHaveLength(1)
+  })
+})
+
+describe('chartNeeds and regionsSatisfy', () => {
+  const HOP: ChartBounds = {
+    minLat: START.lat - 0.01,
+    minLon: START.lon - 0.01,
+    maxLat: START.lat + 0.01,
+    maxLon: START.lon + 0.01,
+  }
+
+  it('does not let a coastal-only load stand in for a harbour hop inside it', () => {
+    // The old `covers()` was containment alone: a short route after a long
+    // one planned on coastal data, which in Galveston is 0 m almost
+    // everywhere, so the hop failed or crossed what the harbour chart knows.
+    const loaded = [{ bounds: LONG_BOX, bands: ['approach', 'coastal', 'general'] }]
+    expect(regionsSatisfy(loaded, chartNeeds(HOP))).toBe(false)
+  })
+
+  it('lets a harbour detail box round the old start stand in for a hop inside it', () => {
+    const loaded = [
+      { bounds: LONG_BOX, bands: ['approach', 'coastal', 'general'] },
+      { bounds: detailBox(START), bands: ['harbour'] },
+    ]
+    expect(regionsSatisfy(loaded, chartNeeds(HOP))).toBe(true)
+  })
+
+  it('needs detail round each end of a long passage', () => {
+    const needs = chartNeeds(LONG_BOX, { detailAround: [START, END] })
+    expect(needs).toHaveLength(3)
+    expect(needs[1].bands).toEqual(['harbour'])
+    const withoutEnd = [
+      { bounds: LONG_BOX, bands: ['approach', 'coastal', 'general'] },
+      { bounds: detailBox(START), bands: ['harbour'] },
+    ]
+    expect(regionsSatisfy(withoutEnd, needs)).toBe(false)
+    expect(
+      regionsSatisfy([...withoutEnd, { bounds: detailBox(END), bands: ['harbour'] }], needs),
+    ).toBe(true)
+  })
+
+  it('does not count a band that was not read', () => {
+    const needs = chartNeeds(LONG_BOX)
+    expect(regionsSatisfy([{ bounds: LONG_BOX, bands: ['coastal', 'general'] }], needs)).toBe(false)
+  })
+
+  it('picks bands from `spanOf` when the box is padded before fetching', () => {
+    // A 3.5 NM box pads to ~4.4 NM: bands are chosen for what is fetched.
+    const needs = chartNeeds(BOX, { spanOf: padBounds(BOX) })
+    expect(needs[0].bounds).toEqual(BOX)
+    expect(needs[0].bands).toEqual(bandsForSpan(boundsSpanNM(padBounds(BOX))).map((b) => b.id))
+  })
+})
+
+describe('fetchChartArea — detail round the ends', () => {
+  const ring = (b: ChartBounds) => [
+    [b.minLon, b.minLat],
+    [b.maxLon, b.minLat],
+    [b.maxLon, b.maxLat],
+    [b.minLon, b.maxLat],
+    [b.minLon, b.minLat],
+  ]
+
+  /**
+   * Galveston as the services describe it: the coastal chart calls the whole
+   * box 0 m; the harbour chart knows the channel is 12 m. The harbour depth
+   * area returned is the one round whatever envelope was asked about.
+   */
+  function galveston(asked: string[], fail: RegExp | null = null): Fetcher {
+    return async (url) => {
+      asked.push(url)
+      if (fail && fail.test(url)) throw new Error('Chart service returned 502')
+      if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+      if (!url.includes('/40/query')) return { features: [] }
+      const env = envelopeOf(url)!
+      if (url.includes('enc_harbour')) {
+        return {
+          features: [
+            { geometry: { type: 'Polygon', coordinates: [ring(env)] }, properties: { DRVAL1: 12 } },
+          ],
+        }
+      }
+      if (url.includes('enc_coastal')) {
+        return {
+          features: [
+            { geometry: { type: 'Polygon', coordinates: [ring(LONG_BOX)] }, properties: { DRVAL1: 0 } },
+          ],
+        }
+      }
+      return { features: [] }
+    }
+  }
+
+  it('fetches the harbour chart round each end of a long passage, and only there', async () => {
+    const asked: string[] = []
+    const f = await fetchChartArea(LONG_BOX, { fetcher: galveston(asked), detailAround: [START, END] })
+    const harbourQueries = asked.filter((u) => u.includes('enc_harbour') && u.includes('/query'))
+    expect(harbourQueries.length).toBeGreaterThan(0)
+    for (const u of harbourQueries) {
+      const env = envelopeOf(u)!
+      expect(boundsSpanNM(env)).toBeLessThan(2 * DETAIL_HALF_NM * Math.SQRT2 + 0.1)
+      expect(inside(START, env) || inside(END, env)).toBe(true)
+    }
+    // Both ends asked.
+    expect(harbourQueries.some((u) => inside(START, envelopeOf(u)!))).toBe(true)
+    expect(harbourQueries.some((u) => inside(END, envelopeOf(u)!))).toBe(true)
+    expect(f.bands).toEqual(['harbour', 'coastal'])
+    expect(f.coverage).toBe('full')
+    expect(f.failedBands).toEqual([])
+  })
+
+  it('tags the harbour depths above the coastal 0 m so the finer chart speaks at the ends', async () => {
+    const f = await fetchChartArea(LONG_BOX, { fetcher: galveston([]), detailAround: [START, END] })
+    const harbour = f.depthAreas.filter((d) => d.minDepthM === 12)
+    const coastal = f.depthAreas.filter((d) => d.minDepthM === 0)
+    expect(harbour).toHaveLength(2)
+    expect(coastal).toHaveLength(1)
+    for (const h of harbour) expect(h.level).toBeGreaterThan(coastal[0].level ?? Infinity)
+  })
+
+  it('says what it read, box by box, so the store can tell what a later request can reuse', async () => {
+    const f = await fetchChartArea(LONG_BOX, { fetcher: galveston([]), detailAround: [START, END] })
+    expect(f.regions).toHaveLength(3)
+    expect(f.regions[0]).toEqual({ bounds: LONG_BOX, bands: ['approach', 'coastal', 'general'] })
+    expect(f.regions[1].bands).toEqual(['harbour'])
+    expect(inside(START, f.regions[1].bounds)).toBe(true)
+  })
+
+  it('reports a detail band that failed as partial, naming it, and keeps the rest', async () => {
+    const f = await fetchChartArea(LONG_BOX, {
+      fetcher: galveston([], /enc_harbour/),
+      detailAround: [START, END],
+    })
+    expect(f.coverage).toBe('partial')
+    expect(f.failedBands).toEqual(['harbour'])
+    expect(f.depthAreas.some((d) => d.minDepthM === 0)).toBe(true)
+    // Not recorded as read, so the next request asks again.
+    expect(f.regions[1].bands).toEqual([])
+  })
+
+  it('does not count a band that answered with an empty sea as failed', async () => {
+    // Galveston has no approach-band chart at all. That is geography, and
+    // warning about it on every route would teach the crew to ignore warnings.
+    const f = await fetchChartArea(LONG_BOX, { fetcher: galveston([]), detailAround: [START] })
+    expect(f.failedBands).toEqual([])
+    expect(f.regions[0].bands).toContain('approach')
+  })
+
+  it('still throws when nothing anywhere produced a depth and something failed', async () => {
+    await expect(
+      fetchChartArea(LONG_BOX, {
+        fetcher: async (url) => {
+          if (url.includes('enc_harbour')) throw new Error('Failed to fetch')
+          if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+          return { features: [] }
+        },
+        detailAround: [START],
+      }),
+    ).rejects.toMatchObject({ name: 'ChartUnavailableError', kind: 'unreachable' })
+  })
+
+  it('keeps one copy of a feature two detail boxes both returned', async () => {
+    const big = {
+      features: [
+        { geometry: { type: 'Polygon', coordinates: [ring(LONG_BOX)] }, properties: { DRVAL1: 7 } },
+      ],
+    }
+    const wreck = {
+      features: [{ geometry: { type: 'Point', coordinates: [-94.7, 29.4] }, properties: {} }],
+    }
+    const f = await fetchChartArea(LONG_BOX, {
+      detailAround: [START, END],
+      fetcher: async (url) => {
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (!url.includes('enc_harbour')) return { features: [] }
+        if (url.includes('/40/query')) return big
+        if (url.includes('/90/query')) return wreck
+        return { features: [] }
+      },
+    })
+    expect(f.depthAreas).toHaveLength(1)
+    expect(f.hazards.filter((h) => h.kind === 'wreck')).toHaveLength(1)
+  })
+
+  it('keeps two different features that happen to share a signature', async () => {
+    // Same ring shape, same first and middle vertex, different far corner:
+    // dropping one of these would drop real land.
+    const a = [[-94.8, 29.3], [-94.79, 29.3], [-94.79, 29.31], [-94.8, 29.31], [-94.8, 29.3]]
+    const b = [[-94.8, 29.3], [-94.78, 29.3], [-94.79, 29.31], [-94.8, 29.31], [-94.8, 29.3]]
+    const f = await fetchChartArea(BOX, {
+      bands: [ENC_BANDS[0]],
+      fetcher: async (url) => {
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('/40/query')) return depth9()
+        if (url.includes('/60/query')) {
+          return {
+            features: [
+              { geometry: { type: 'Polygon', coordinates: [a] }, properties: {} },
+              { geometry: { type: 'Polygon', coordinates: [b] }, properties: {} },
+            ],
+          }
+        }
+        return { features: [] }
+      },
+    })
+    expect(f.land).toHaveLength(2)
+  })
+
+  it('tags line hazards with their band level, like land', async () => {
+    const f = await fetchChartArea(BOX, {
+      bands: [ENC_BANDS[0], ENC_BANDS[2]],
+      fetcher: async (url) => {
+        if (url.includes('/layers?f=json')) return LAYER_PAYLOAD
+        if (url.includes('/40/query')) return depth9()
+        if (url.includes('/85/query') && url.includes('enc_harbour')) {
+          return {
+            features: [
+              { geometry: { type: 'LineString', coordinates: [[-94.84, 29.3], [-94.83, 29.3]] }, properties: {} },
+            ],
+          }
+        }
+        return { features: [] }
+      },
+    })
+    expect(f.lines).toHaveLength(1)
+    expect(f.lines[0].level).toBe(ENC_BANDS.length)
+  })
+
+  it('behaves exactly as before when no detail is asked for', async () => {
+    const asked: string[] = []
+    await fetchChartArea(LONG_BOX, { fetcher: galveston(asked) })
+    expect(asked.some((u) => u.includes('enc_harbour'))).toBe(false)
   })
 })

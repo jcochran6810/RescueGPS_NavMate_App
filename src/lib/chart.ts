@@ -20,8 +20,8 @@
  * Missing hazards are the failure mode that matters here.
  *
  * Coverage is US waters, exactly like the tide predictions. Outside it the
- * result is `coverage: 'none'` and the planner falls back to a straight line
- * it tells the crew not to trust.
+ * result is `coverage: 'none'`, and the planner says there is no chart to
+ * plan on rather than drawing anything.
  */
 
 import { haversineNM } from './geo'
@@ -30,9 +30,11 @@ import type {
   ChartFeatures,
   DepthPolygon,
   LandPolygon,
+  LineHazard,
   PointHazard,
   Ring,
 } from './routing'
+import type { LatLon } from './search'
 
 export interface ChartBounds {
   minLat: number
@@ -192,6 +194,16 @@ export type ChartRole =
   | 'obstruction'
   | 'rock'
   | 'pile'
+  | 'pylon'
+  | 'platform'
+  | 'dam'
+  | 'causeway'
+  | 'dyke'
+  | 'gate'
+  | 'floatingDock'
+  | 'hulk'
+  | 'pontoon'
+  | 'mooring'
   | 'bridge'
 
 /**
@@ -237,6 +249,16 @@ const ROLE_ACRONYMS: Record<ChartRole, string> = {
   obstruction: 'OBSTRN',
   rock: 'UWTROC',
   pile: 'PILPNT',
+  pylon: 'PYLONS',
+  platform: 'OFSPLF',
+  dam: 'DAMCON',
+  causeway: 'CAUSWY',
+  dyke: 'DYKCON',
+  gate: 'GATCON',
+  floatingDock: 'FLODOC',
+  hulk: 'HULKES',
+  pontoon: 'PONTON',
+  mooring: 'MORFAC',
   bridge: 'BRIDGE',
 }
 
@@ -252,20 +274,66 @@ const ROLE_WORDS: Record<ChartRole, string> = {
   // NOAA publishes it as `Underwater_Awash_Rock` — both words between.
   rock: 'underwater[\\s_]*(?:awash[\\s_]*)?rock|rock[\\s_]*awash',
   pile: token('piles?'),
+  // `Pylon_Bridge_Support` also says "bridge", which is why this role is
+  // matched before `bridge` — a bridge is read for air draft and never blocks,
+  // a pylon is a concrete pier standing in the channel.
+  pylon: 'pylon',
+  platform: 'offshore[\\s_]*platform',
+  // Short words, so whole-word only: "dam" must not match inside a longer name.
+  dam: token('dams?'),
+  causeway: 'causeway',
+  dyke: token('d[yi]kes?'),
+  gate: token('gates?'),
+  floatingDock: 'floating[\\s_]*dock',
+  hulk: token('hulks?'),
+  pontoon: 'pontoon',
+  mooring: 'mooring',
   bridge: 'bridge',
 }
 
-const ROLE_GEOMETRY: Record<ChartRole, 'polygon' | 'point' | 'any'> = {
-  depth: 'polygon',
-  dredged: 'polygon',
-  fairway: 'polygon',
-  land: 'polygon',
-  shoreline: 'polygon',
-  wreck: 'any',
-  obstruction: 'any',
-  rock: 'any',
-  pile: 'point',
-  bridge: 'any',
+type Geometry = LayerRef['geometry']
+
+/**
+ * The geometries each role is read in. Anything else is skipped — and then
+ * offered to the next role in `ROLE_ORDER`, which is how `Land_Area_point`
+ * (an islet) is still found after `Depth_Area_line` style names fall through.
+ *
+ * Lines are read only where a line IS the hazard: a jetty, breakwater, pier,
+ * dam, causeway, dyke, gate, floating dock, pontoon, mooring or obstruction
+ * line — and land charted as a line, which S-57 uses for land too narrow to
+ * draw as an area (a spit, a narrow training wall). A depth contour or a
+ * fairway line is a boundary of something that is also published as an area,
+ * and is still refused.
+ *
+ * Points are read for the hazards that have a position and a size: wrecks,
+ * obstructions, rocks, piles, bridge pylons, islets and platforms. The point
+ * forms of dams, gates, hulks and mooring facilities are not read — they are
+ * charted on or beside a structure that has its own line or area.
+ */
+const ROLE_GEOMETRY: Record<ChartRole, readonly Geometry[]> = {
+  depth: ['polygon'],
+  dredged: ['polygon'],
+  fairway: ['polygon'],
+  land: ['polygon', 'point', 'line'],
+  shoreline: ['polygon', 'line'],
+  wreck: ['polygon', 'point'],
+  obstruction: ['polygon', 'point', 'line'],
+  rock: ['polygon', 'point'],
+  pile: ['point'],
+  pylon: ['polygon', 'point'],
+  platform: ['polygon', 'point'],
+  dam: ['polygon', 'line'],
+  causeway: ['polygon', 'line'],
+  dyke: ['polygon', 'line'],
+  // Only the line: that is the form the gate itself is charted in. The area
+  // form is not in this app's list of blocking structures.
+  gate: ['line'],
+  floatingDock: ['polygon', 'line'],
+  hulk: ['polygon'],
+  pontoon: ['polygon', 'line'],
+  mooring: ['polygon', 'line'],
+  // Read for air draft only; a bridge never blocks the water.
+  bridge: ['polygon', 'point'],
 }
 
 /** Roles in match order — the first that fits a layer name wins. */
@@ -279,10 +347,20 @@ const ROLE_ORDER: ChartRole[] = [
   'obstruction',
   'rock',
   'pile',
+  'pylon',
+  'platform',
+  'dam',
+  'causeway',
+  'dyke',
+  'gate',
+  'floatingDock',
+  'hulk',
+  'pontoon',
+  'mooring',
   'bridge',
 ]
 
-const ROLE_PATTERNS: { role: ChartRole; test: RegExp; geometry: 'polygon' | 'point' | 'any' }[] =
+const ROLE_PATTERNS: { role: ChartRole; test: RegExp; geometry: readonly Geometry[] }[] =
   ROLE_ORDER.map((role) => ({
     role,
     test: new RegExp(`${ROLE_WORDS[role]}|${token(ROLE_ACRONYMS[role])}`, 'i'),
@@ -331,13 +409,12 @@ export function matchLayers(payload: unknown): LayerRef[] {
     if (typeof l.id !== 'number' || typeof l.name !== 'string') continue
     const geometry = geometryKind(l.geometryType)
     if (!geometry) continue
-    for (const { role, test, geometry: want } of ROLE_PATTERNS) {
+    for (const { role, test, geometry: accepts } of ROLE_PATTERNS) {
       if (!test.test(l.name)) continue
-      if (want === 'polygon' && geometry !== 'polygon') continue
-      if (want === 'point' && geometry !== 'point') continue
-      // Only polygons and points are useful: a line has no inside to rasterise
-      // and a hazard drawn as a line is already covered by its area twin.
-      if (geometry === 'line') continue
+      // A name that fits a role in a geometry that role is not read in falls
+      // through to the next role rather than stopping: `Land_Area_point` is
+      // not a land polygon, but it is an islet.
+      if (!accepts.includes(geometry)) continue
       out.push({ id: l.id, name: l.name, role, geometry })
       break
     }
@@ -427,6 +504,64 @@ export function pointOf(geometry: unknown): { lat: number; lon: number } | null 
   return null
 }
 
+/** One vertex, `[x, y]` with anything after (a Z or an M) dropped. */
+function vertexOf(v: unknown): [number, number] | null {
+  if (!Array.isArray(v) || v.length < 2) return null
+  const [x, y] = v as unknown[]
+  if (typeof x !== 'number' || typeof y !== 'number') return null
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return [x, y]
+}
+
+/**
+ * The runs of good vertices in one path, each at least two long.
+ *
+ * A vertex that cannot be read splits the path rather than being skipped or
+ * sinking it: joining its neighbours would draw a jetty where the chart did
+ * not put one, and dropping the whole path would lose a jetty the chart did
+ * put there. The pieces either side are still exactly what was charted.
+ */
+function runsOf(v: unknown): [number, number][][] {
+  if (!Array.isArray(v)) return []
+  const runs: [number, number][][] = []
+  let run: [number, number][] = []
+  for (const raw of v as unknown[]) {
+    const p = vertexOf(raw)
+    if (p) {
+      run.push(p)
+      continue
+    }
+    if (run.length >= 2) runs.push(run)
+    run = []
+  }
+  if (run.length >= 2) runs.push(run)
+  return runs
+}
+
+/**
+ * Polylines out of one feature's geometry, accepting GeoJSON or Esri JSON —
+ * the line twin of `ringsOf`, for the same reason: `f=geojson` is not
+ * guaranteed, and Esri's `paths` and GeoJSON's `coordinates` are the same
+ * nested arrays of `[x, y]`.
+ *
+ * Each path comes back open, as `[lon, lat]` pairs. A path with fewer than two
+ * usable vertices is dropped: a single point has no length to block.
+ */
+export function pathsOf(geometry: unknown): [number, number][][] {
+  if (!geometry || typeof geometry !== 'object') return []
+  const g = geometry as { type?: unknown; coordinates?: unknown; paths?: unknown }
+  const keep = (list: unknown[]) => list.flatMap(runsOf)
+
+  if (Array.isArray(g.paths)) return keep(g.paths as unknown[])
+  if (g.type === 'LineString' && Array.isArray(g.coordinates)) {
+    return keep([g.coordinates])
+  }
+  if (g.type === 'MultiLineString' && Array.isArray(g.coordinates)) {
+    return keep(g.coordinates as unknown[])
+  }
+  return []
+}
+
 interface RawFeature {
   geometry: unknown
   properties: Record<string, unknown> | null
@@ -486,6 +621,49 @@ export const HAZARD_RADIUS_M = 40
  * most. The lateral stand-off the coxswain sets is applied on top of this.
  */
 export const PILE_RADIUS_M = 10
+
+/**
+ * Radius given to a bridge pylon, metres.
+ *
+ * A pylon is a pier of a bridge the boat is about to pass under, charted to
+ * within metres, and the spans between them are the channel. Like a pile it
+ * is sized for what it is: a wreck's 40 m round each pier would close the
+ * navigation span of most bridges on the coast.
+ */
+export const PYLON_RADIUS_M = 10
+
+/**
+ * Radius given to an islet charted as a point, metres.
+ *
+ * S-57 draws land as a point when it is too small to draw as an area at the
+ * chart's scale — a rock that dries, a tiny island. Too small to draw is not
+ * too small to hit, and "too small" at a coastal scale can still be a boat
+ * length or two across.
+ */
+export const ISLET_RADIUS_M = 15
+
+/**
+ * Radius given to an offshore platform charted as a point, metres.
+ *
+ * A production platform has a jacket, risers and often a boat landing around
+ * it; 30 m is the structure itself, before the crew's own stand-off.
+ */
+export const PLATFORM_RADIUS_M = 30
+
+/**
+ * Width assumed for a fixed structure charted as a line, metres — a jetty,
+ * breakwater, pier, dam, causeway, dyke, gate, or land too narrow to draw as
+ * an area. The chart gives only the centreline; a rubble-mound jetty is
+ * wider than this at the waterline, which is what the crew's stand-off is on
+ * top of.
+ */
+export const STRUCTURE_WIDTH_M = 5
+
+/**
+ * Width assumed for a light structure charted as a line, metres — a floating
+ * dock, pontoon or mooring facility — and for an obstruction line.
+ */
+export const LIGHT_STRUCTURE_WIDTH_M = 3
 
 /* -------------------------------------------------------------------------
  * Querying
@@ -687,7 +865,148 @@ function describeCatalogue(payload: unknown, matched: LayerRef[]): string {
 }
 
 /**
- * Everything the router needs for one area.
+ * What a point feature of each role becomes: its kind on the leg card and the
+ * footprint the router gives it. Roles not listed here are never read as
+ * points (see `ROLE_GEOMETRY`), and a stray point from one of them is skipped
+ * rather than guessed at.
+ */
+const POINT_HAZARDS: Partial<
+  Record<ChartRole, { kind: PointHazard['kind']; radiusM: number; label: string }>
+> = {
+  wreck: { kind: 'wreck', radiusM: HAZARD_RADIUS_M, label: 'wreck' },
+  obstruction: { kind: 'obstruction', radiusM: HAZARD_RADIUS_M, label: 'obstruction' },
+  rock: { kind: 'rock', radiusM: HAZARD_RADIUS_M, label: 'rock' },
+  pile: { kind: 'pile', radiusM: PILE_RADIUS_M, label: 'pile' },
+  pylon: { kind: 'pylon', radiusM: PYLON_RADIUS_M, label: 'bridge pylon' },
+  land: { kind: 'islet', radiusM: ISLET_RADIUS_M, label: 'islet' },
+  platform: { kind: 'platform', radiusM: PLATFORM_RADIUS_M, label: 'offshore platform' },
+}
+
+/**
+ * What a line feature of each role becomes. The chart gives a centreline; the
+ * width is the structure the router must not put the boat inside, and the
+ * crew's stand-off is applied beyond it.
+ */
+const LINE_HAZARDS: Partial<
+  Record<ChartRole, { kind: LineHazard['kind']; widthM: number; label: string }>
+> = {
+  shoreline: { kind: 'structure', widthM: STRUCTURE_WIDTH_M, label: 'jetty, pier or breakwater' },
+  land: { kind: 'structure', widthM: STRUCTURE_WIDTH_M, label: 'narrow land' },
+  dam: { kind: 'structure', widthM: STRUCTURE_WIDTH_M, label: 'dam' },
+  causeway: { kind: 'structure', widthM: STRUCTURE_WIDTH_M, label: 'causeway' },
+  dyke: { kind: 'structure', widthM: STRUCTURE_WIDTH_M, label: 'dyke' },
+  gate: { kind: 'structure', widthM: STRUCTURE_WIDTH_M, label: 'gate' },
+  floatingDock: { kind: 'structure', widthM: LIGHT_STRUCTURE_WIDTH_M, label: 'floating dock' },
+  pontoon: { kind: 'structure', widthM: LIGHT_STRUCTURE_WIDTH_M, label: 'pontoon' },
+  mooring: { kind: 'structure', widthM: LIGHT_STRUCTURE_WIDTH_M, label: 'mooring facility' },
+  obstruction: { kind: 'obstruction', widthM: LIGHT_STRUCTURE_WIDTH_M, label: 'obstruction' },
+}
+
+/** Every point out of GeoJSON or Esri JSON, including the multipoint forms. */
+function pointsOf(geometry: unknown): { lat: number; lon: number }[] {
+  const one = pointOf(geometry)
+  if (one) return [one]
+  if (!geometry || typeof geometry !== 'object') return []
+  const g = geometry as { type?: unknown; coordinates?: unknown; points?: unknown }
+  const list = Array.isArray(g.points)
+    ? (g.points as unknown[])
+    : g.type === 'MultiPoint' && Array.isArray(g.coordinates)
+      ? (g.coordinates as unknown[])
+      : []
+  const out: { lat: number; lon: number }[] = []
+  for (const raw of list) {
+    const v = vertexOf(raw)
+    if (v) out.push({ lon: v[0], lat: v[1] })
+  }
+  return out
+}
+
+/** Where the features of one band end up. */
+interface FeatureSink {
+  depthAreas: DepthPolygon[]
+  channels: ChannelPolygon[]
+  land: LandPolygon[]
+  hazards: PointHazard[]
+  lines: LineHazard[]
+}
+
+/**
+ * Sort one feature into the shapes the router uses.
+ *
+ * Dispatch is on the geometry the feature actually has, not on the layer's
+ * declared type, so a service that hands back an area on a "point" layer is
+ * still read as the area it is.
+ */
+function readFeature(role: ChartRole, f: RawFeature, sink: FeatureSink): void {
+  switch (role) {
+    case 'depth':
+    case 'dredged': {
+      const d = pickNumber(f.properties, DEPTH_FIELDS)
+      const rings = ringsOf(f.geometry)
+      if (d !== null && rings.length > 0) sink.depthAreas.push({ minDepthM: d, rings })
+      if (role === 'dredged' && rings.length > 0) {
+        sink.channels.push({ kind: 'dredged', rings })
+      }
+      return
+    }
+    case 'fairway': {
+      // No depth is read here on purpose: a fairway does not carry one,
+      // and inventing a depth for marked water is the guess this app
+      // refuses everywhere else. It is preferable water, not usable water
+      // — a depth area has to say so independently.
+      const rings = ringsOf(f.geometry)
+      if (rings.length > 0) sink.channels.push({ kind: 'fairway', rings })
+      return
+    }
+    case 'bridge':
+      // Bridges are read for air draft only; they do not block the water.
+      // Their piers do, and are the `pylon` role.
+      return
+    default:
+      break
+  }
+
+  // Everything else stops a boat. An area of any of them — a breakwater, a
+  // wreck charted as an area, a pylon's footprint, a platform, a dam, a hulk
+  // — is land as far as the hull is concerned.
+  const rings = ringsOf(f.geometry)
+  if (rings.length > 0) {
+    sink.land.push({ rings })
+    return
+  }
+
+  // A charted sounding deeper than any boat here is still left in — the
+  // router decides, not the fetcher — but it goes on the label so the leg
+  // card can say what is there.
+  const sounding = pickNumber(f.properties, SOUNDING_FIELDS)
+
+  const paths = pathsOf(f.geometry)
+  if (paths.length > 0) {
+    const spec = LINE_HAZARDS[role]
+    if (!spec) return
+    sink.lines.push({
+      kind: spec.kind,
+      paths,
+      widthM: spec.widthM,
+      label: sounding !== null ? `${spec.label} ${sounding} m` : spec.label,
+    })
+    return
+  }
+
+  const spec = POINT_HAZARDS[role]
+  if (!spec) return
+  for (const p of pointsOf(f.geometry)) {
+    sink.hazards.push({
+      ...p,
+      radiusM: spec.radiusM,
+      kind: spec.kind,
+      label: sounding !== null ? `${spec.label} ${sounding} m` : spec.label,
+    })
+  }
+}
+
+/**
+ * Everything the router needs for one area, from one band.
  *
  * A dredged area is recorded twice, and that is the point rather than a
  * duplication: it carries a `DRVAL1` like any depth area — a dredged cut is
@@ -697,13 +1016,15 @@ function describeCatalogue(payload: unknown, matched: LayerRef[]): string {
  * is marked water carrying no depth at all, so it becomes a channel and never
  * a depth area.
  *
- * Land and shoreline construction both become land: a breakwater is not land,
- * but it stops a boat exactly like land does.
+ * Land, shoreline construction and every other fixed structure charted as an
+ * area become land: a breakwater is not land, but it stops a boat exactly like
+ * land does. The same structures charted as lines become `lines`, and small
+ * things charted as points become `hazards` with a footprint of their own.
  */
 export async function fetchChartFeatures(
   bounds: ChartBounds,
   options: { fetcher?: Fetcher; band?: EncBand } = {},
-): Promise<ChartFeatures> {
+): Promise<ChartFeatures & { lines: LineHazard[] }> {
   const fetcher = options.fetcher ?? defaultFetcher
   const band = options.band ?? bandForSpan(boundsSpanNM(bounds))
 
@@ -757,73 +1078,15 @@ export async function fetchChartFeatures(
     })),
   )
 
-  const depthAreas: DepthPolygon[] = []
-  const channels: ChannelPolygon[] = []
-  const land: LandPolygon[] = []
-  const hazards: PointHazard[] = []
+  const sink: FeatureSink = { depthAreas: [], channels: [], land: [], hazards: [], lines: [] }
   let complete = true
 
   for (const { layer, features, complete: ok } of results) {
     if (!ok) complete = false
-    for (const f of features) {
-      switch (layer.role) {
-        case 'depth':
-        case 'dredged': {
-          const d = pickNumber(f.properties, DEPTH_FIELDS)
-          const rings = ringsOf(f.geometry)
-          if (d !== null && rings.length > 0) depthAreas.push({ minDepthM: d, rings })
-          if (layer.role === 'dredged' && rings.length > 0) {
-            channels.push({ kind: 'dredged', rings })
-          }
-          break
-        }
-        case 'fairway': {
-          // No depth is read here on purpose: a fairway does not carry one,
-          // and inventing a depth for marked water is the guess this app
-          // refuses everywhere else. It is preferable water, not usable water
-          // — a depth area has to say so independently.
-          const rings = ringsOf(f.geometry)
-          if (rings.length > 0) channels.push({ kind: 'fairway', rings })
-          break
-        }
-        case 'land':
-        case 'shoreline': {
-          const rings = ringsOf(f.geometry)
-          if (rings.length > 0) land.push({ rings })
-          break
-        }
-        case 'wreck':
-        case 'obstruction':
-        case 'rock':
-        case 'pile': {
-          // An area hazard is land as far as the boat is concerned; a point one
-          // gets a footprint. A charted sounding deeper than any boat here is
-          // still left in — the router decides, not the fetcher.
-          const rings = ringsOf(f.geometry)
-          if (rings.length > 0) {
-            land.push({ rings })
-            break
-          }
-          const p = pointOf(f.geometry)
-          if (p) {
-            hazards.push({
-              ...p,
-              radiusM: layer.role === 'pile' ? PILE_RADIUS_M : HAZARD_RADIUS_M,
-              kind: layer.role,
-              label: pickNumber(f.properties, SOUNDING_FIELDS) !== null
-                ? `${layer.role} ${pickNumber(f.properties, SOUNDING_FIELDS)} m`
-                : layer.role,
-            })
-          }
-          break
-        }
-        case 'bridge':
-          // Bridges are read for air draft only; they do not block the water.
-          break
-      }
-    }
+    for (const f of features) readFeature(layer.role, f, sink)
   }
 
+  const { depthAreas, channels, land, hazards, lines } = sink
   if (depthAreas.length === 0) {
     // Zero depths because every depth query failed is NOT an empty sea, and
     // saying so sent a crew a straight line through a bank with "no charted
@@ -838,15 +1101,282 @@ export async function fetchChartFeatures(
     }
     // Channels deliberately do not rescue coverage: marked water over water
     // nobody surveyed is not a route.
-    return { depthAreas: [], channels, land, hazards, coverage: 'none' }
+    return { depthAreas: [], channels, land, hazards, lines, coverage: 'none' }
   }
   return {
     depthAreas,
     channels,
     land,
     hazards,
+    lines,
     coverage: complete ? 'full' : 'partial',
   }
+}
+
+/* -------------------------------------------------------------------------
+ * Detail near the ends of a passage
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Half the side of the box the finest charts are fetched over around each end
+ * of a passage, NM.
+ *
+ * A long passage's box is too big to ask the harbour band about — thousands
+ * of polygons — so `bandsForSpan` leaves it out, and the coastal band that is
+ * left marks almost every inch of Galveston's water as 0 m. Every long route
+ * then failed at its first and last mile, which is exactly where the docks,
+ * the cuts and the jetties are. So the harbour (and approach) band is fetched
+ * again over a small box round each end: two miles either side is the whole
+ * harbour approach at a scale the service answers quickly.
+ */
+export const DETAIL_HALF_NM = 2
+
+/** The bands fetched over the small boxes round each end, finest first. */
+export const DETAIL_BAND_IDS: readonly string[] = ['harbour', 'approach']
+
+/** A square box `halfNM` either side of a position. */
+export function detailBox(p: LatLon, halfNM = DETAIL_HALF_NM): ChartBounds {
+  const dLat = halfNM / 60
+  // Floored so a position at a pole does not ask for the whole world.
+  const cos = Math.max(Math.cos((p.lat * Math.PI) / 180), 0.01)
+  const dLon = halfNM / (60 * cos)
+  return {
+    minLat: p.lat - dLat,
+    maxLat: p.lat + dLat,
+    minLon: p.lon - dLon,
+    maxLon: p.lon + dLon,
+  }
+}
+
+/** The overlap of two boxes, or null when they do not overlap. */
+export function intersectBounds(a: ChartBounds, b: ChartBounds): ChartBounds | null {
+  const out = {
+    minLat: Math.max(a.minLat, b.minLat),
+    minLon: Math.max(a.minLon, b.minLon),
+    maxLat: Math.min(a.maxLat, b.maxLat),
+    maxLon: Math.min(a.maxLon, b.maxLon),
+  }
+  return out.minLat < out.maxLat && out.minLon < out.maxLon ? out : null
+}
+
+/** The smallest box holding both. */
+export function unionBounds(a: ChartBounds, b: ChartBounds): ChartBounds {
+  return {
+    minLat: Math.min(a.minLat, b.minLat),
+    minLon: Math.min(a.minLon, b.minLon),
+    maxLat: Math.max(a.maxLat, b.maxLat),
+    maxLon: Math.max(a.maxLon, b.maxLon),
+  }
+}
+
+function boxArea(b: ChartBounds): number {
+  return (b.maxLat - b.minLat) * (b.maxLon - b.minLon)
+}
+
+/**
+ * Join boxes that overlap, where joining them costs no more area than asking
+ * for both separately — two ends a mile apart become one query rather than
+ * two that return the same polygons. Boxes along a diagonal are left apart:
+ * their union would be mostly water nobody asked about, and a big enough
+ * union would push the harbour band past the size it is fetched at.
+ */
+export function mergeOverlapping(boxes: ChartBounds[]): ChartBounds[] {
+  const out = boxes.map((b) => ({ ...b }))
+  for (let merged = true; merged; ) {
+    merged = false
+    search: for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        if (!intersectBounds(out[i], out[j])) continue
+        const u = unionBounds(out[i], out[j])
+        if (boxArea(u) > boxArea(out[i]) + boxArea(out[j])) continue
+        out[i] = u
+        out.splice(j, 1)
+        merged = true
+        break search
+      }
+    }
+  }
+  return out
+}
+
+function isPosition(p: LatLon | null | undefined): p is LatLon {
+  return (
+    !!p &&
+    Number.isFinite(p.lat) &&
+    Number.isFinite(p.lon) &&
+    Math.abs(p.lat) <= 90 &&
+    Math.abs(p.lon) <= 180
+  )
+}
+
+/**
+ * The detail box round each position, cut to the area being planned in.
+ *
+ * Cut because nothing outside the planning box is routed over; a position
+ * outside the box altogether (a caller's mistake, not a real passage) keeps
+ * its whole box rather than being silently ignored.
+ */
+export function detailBoxes(
+  bounds: ChartBounds,
+  points: readonly LatLon[] = [],
+  halfNM = DETAIL_HALF_NM,
+): ChartBounds[] {
+  return points.filter(isPosition).map((p) => {
+    const box = detailBox(p, halfNM)
+    return intersectBounds(box, bounds) ?? box
+  })
+}
+
+/** The detail bands a box needs beyond what the whole-area query already asks. */
+function detailBandsFor(
+  box: ChartBounds,
+  bounds: ChartBounds,
+  mainIds: ReadonlySet<string>,
+): EncBand[] {
+  // A box inside the main area already gets the main bands over it; one
+  // poking outside does not, so it asks for every detail band itself.
+  const inside = containsBounds(bounds, box)
+  const span = boundsSpanNM(box)
+  return ENC_BANDS.filter(
+    (b) =>
+      DETAIL_BAND_IDS.includes(b.id) &&
+      !(inside && mainIds.has(b.id)) &&
+      span <= (MAX_FETCH_SPAN_NM[b.id] ?? Infinity),
+  )
+}
+
+/** One box and the bands asked about it. */
+export interface ChartRegion {
+  bounds: ChartBounds
+  bands: EncBand[]
+  /** False for the whole planning area, true for a box round one end. */
+  detail: boolean
+}
+
+/**
+ * Every query a chart load makes: the whole area in the bands its size calls
+ * for, then each end of the passage in the detail bands the whole-area query
+ * left out. A short hop already asks the harbour band about everything and
+ * adds nothing here.
+ */
+export function planChartRegions(
+  bounds: ChartBounds,
+  options: { bands?: EncBand[]; detailAround?: readonly LatLon[] } = {},
+): ChartRegion[] {
+  const main = options.bands ?? bandsForSpan(boundsSpanNM(bounds))
+  const mainIds = new Set(main.map((b) => b.id))
+  const regions: ChartRegion[] = [{ bounds, bands: main, detail: false }]
+  for (const box of mergeOverlapping(detailBoxes(bounds, options.detailAround))) {
+    const bands = detailBandsFor(box, bounds, mainIds)
+    if (bands.length > 0) regions.push({ bounds: box, bands, detail: true })
+  }
+  return regions
+}
+
+/**
+ * A box and the bands that were actually read over it — or, as a need, the
+ * bands a request wants read over it.
+ *
+ * "Read" means the band answered: with polygons, or with a genuinely empty sea
+ * (Galveston has no approach-band chart at all, and asking again will not make
+ * one). A band that failed is not listed, so the next request asks again.
+ */
+export interface LoadedRegion {
+  bounds: ChartBounds
+  bands: string[]
+}
+
+/**
+ * What a request for `bounds` needs read before already-loaded data can stand
+ * in for it: the bands its size calls for over the whole box, and the detail
+ * bands round each end.
+ *
+ * `spanOf` is the box the band choice is made from, when that differs from
+ * the box that must be covered — the store pads a box before fetching it, and
+ * picks its bands from the padded size, so a need is judged the same way.
+ */
+export function chartNeeds(
+  bounds: ChartBounds,
+  options: { detailAround?: readonly LatLon[]; spanOf?: ChartBounds } = {},
+): LoadedRegion[] {
+  const main = bandsForSpan(boundsSpanNM(options.spanOf ?? bounds))
+  const mainIds = new Set(main.map((b) => b.id))
+  const needs: LoadedRegion[] = [{ bounds, bands: main.map((b) => b.id) }]
+  // Not merged: each end is judged on its own box, which is never bigger than
+  // the merged box it was fetched as part of.
+  for (const box of detailBoxes(bounds, options.detailAround)) {
+    const bands = detailBandsFor(box, bounds, mainIds).map((b) => b.id)
+    if (bands.length > 0) needs.push({ bounds: box, bands })
+  }
+  return needs
+}
+
+/**
+ * Does what has been read satisfy every need? Each band a need asks for must
+ * have been read over a box that contains the need's box whole. A coastal-only
+ * load of a big area never satisfies a short hop that needs the harbour band,
+ * however well its box contains the hop.
+ */
+export function regionsSatisfy(
+  have: readonly LoadedRegion[],
+  needs: readonly LoadedRegion[],
+): boolean {
+  return needs.every((need) =>
+    need.bands.every((id) =>
+      have.some((h) => h.bands.includes(id) && containsBounds(h.bounds, need.bounds)),
+    ),
+  )
+}
+
+/* -------------------------------------------------------------------------
+ * The whole area
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A filter that lets each feature through once.
+ *
+ * Overlapping queries of the same band — two detail boxes that both touch one
+ * big depth area — return the same polygon twice. Keeping both is harmless to
+ * the answer but doubles the router's work on the biggest features. The
+ * signature is cheap; two features are only called the same after a full
+ * comparison, because dropping a real, different polygon on a signature clash
+ * would drop land.
+ */
+function onceEach<T>(signature: (t: T) => string): (t: T) => boolean {
+  const seen = new Map<string, T[]>()
+  return (t) => {
+    const key = signature(t)
+    const list = seen.get(key)
+    if (!list) {
+      seen.set(key, [t])
+      return true
+    }
+    // Only a clash pays for the full comparison, and a clash is almost always
+    // the same feature returned twice.
+    const full = JSON.stringify(t)
+    if (list.some((o) => JSON.stringify(o) === full)) return false
+    list.push(t)
+    return true
+  }
+}
+
+function ringsSignature(rings: Ring[]): string {
+  const first = rings[0] ?? []
+  return `${rings.length}|${rings.map((r) => r.length).join(',')}|${first[0]}|${first[first.length >> 1]}`
+}
+
+/** Everything `fetchChartArea` returns: the merged features and how they were got. */
+export interface ChartArea extends ChartFeatures {
+  lines: LineHazard[]
+  /** Bands that contributed anything, finest first. */
+  bands: string[]
+  /**
+   * Bands that were asked for and could not be read, finest first — also set
+   * on the features (`ChartFeatures.failedBands`) so the router can warn.
+   */
+  failedBands: string[]
+  /** What was read, box by box: the whole area first, then each end. */
+  regions: LoadedRegion[]
 }
 
 /**
@@ -860,23 +1390,35 @@ export async function fetchChartFeatures(
  * shoalest-wins, is the right rule across scales. Hazards and channels are a
  * plain union: a wreck on any chart is a wreck.
  *
+ * `detailAround` adds the finest bands over a small box round each position
+ * given — the start and destination of the passage — when the area is too big
+ * to ask them about as a whole (see `DETAIL_HALF_NM`). They merge by the same
+ * finest-wins levels, so near the ends the harbour chart speaks and between
+ * them the coarser one does.
+ *
  * A band that failed does not sink the others; one that answered with real
- * depths is real data about real water. Only when no band produced a depth is
- * a failure reported, so "the chart could not be read" is still never passed
- * off as empty sea.
+ * depths is real data about real water. But it is not passed off as the whole
+ * story either: the coverage becomes `partial` and the band is named in
+ * `failedBands`, so the plan can say it was made on coarser charts than it
+ * should have been. Only when no band produced a depth is a failure thrown,
+ * so "the chart could not be read" is still never passed off as empty sea.
  */
 export async function fetchChartArea(
   bounds: ChartBounds,
-  options: { fetcher?: Fetcher; bands?: EncBand[] } = {},
-): Promise<ChartFeatures & { bands: string[] }> {
-  const bands = options.bands ?? bandsForSpan(boundsSpanNM(bounds))
+  options: { fetcher?: Fetcher; bands?: EncBand[]; detailAround?: readonly LatLon[] } = {},
+): Promise<ChartArea> {
+  const plan = planChartRegions(bounds, options)
+  const jobs = plan.flatMap((region) => region.bands.map((band) => ({ region, band })))
   const settled = await Promise.all(
-    bands.map(async (band) => {
+    jobs.map(async ({ region, band }) => {
       try {
-        const features = await fetchChartFeatures(bounds, { fetcher: options.fetcher, band })
-        return { band, features, error: null as unknown }
+        const features = await fetchChartFeatures(region.bounds, {
+          fetcher: options.fetcher,
+          band,
+        })
+        return { region, band, features, error: null as unknown }
       } catch (e) {
-        return { band, features: null, error: e }
+        return { region, band, features: null, error: e }
       }
     }),
   )
@@ -885,20 +1427,56 @@ export async function fetchChartArea(
   const channels: ChannelPolygon[] = []
   const land: LandPolygon[] = []
   const hazards: PointHazard[] = []
-  const used: string[] = []
+  const lines: LineHazard[] = []
+  const used = new Set<string>()
+  const failed = new Set<string>()
   let partial = false
 
-  for (const { band, features: f } of settled) {
+  const newDepth = onceEach<DepthPolygon>(
+    (p) => `${p.level}|${p.minDepthM}|${ringsSignature(p.rings)}`,
+  )
+  const newLand = onceEach<LandPolygon>((p) => `${p.level}|${ringsSignature(p.rings)}`)
+  const newChannel = onceEach<ChannelPolygon>((c) => `${c.kind}|${ringsSignature(c.rings)}`)
+  const newHazard = onceEach<PointHazard>((h) => `${h.kind}|${h.lat}|${h.lon}`)
+  const newLine = onceEach<LineHazard>(
+    (l) => `${l.level}|${l.kind}|${l.paths.length}|${l.paths[0]?.[0]}`,
+  )
+
+  for (const { band, features: f, error } of settled) {
+    if (error != null) {
+      failed.add(band.id)
+      continue
+    }
     if (!f || f.coverage === 'none') continue
     // Finer bands sit earlier in ENC_BANDS, so they get the higher level.
     const level = ENC_BANDS.length - ENC_BANDS.indexOf(band)
-    for (const p of f.depthAreas) depthAreas.push({ ...p, level })
-    for (const p of f.land) land.push({ ...p, level })
-    channels.push(...f.channels)
-    hazards.push(...f.hazards)
+    for (const p of f.depthAreas) {
+      const tagged = { ...p, level }
+      if (newDepth(tagged)) depthAreas.push(tagged)
+    }
+    for (const p of f.land) {
+      const tagged = { ...p, level }
+      if (newLand(tagged)) land.push(tagged)
+    }
+    for (const l of f.lines ?? []) {
+      const tagged = { ...l, level }
+      if (newLine(tagged)) lines.push(tagged)
+    }
+    for (const c of f.channels) if (newChannel(c)) channels.push(c)
+    for (const h of f.hazards) if (newHazard(h)) hazards.push(h)
     if (f.coverage === 'partial') partial = true
-    used.push(band.id)
+    used.add(band.id)
   }
+
+  const inOrder = (ids: Set<string>) =>
+    ENC_BANDS.map((b) => b.id).filter((id) => ids.has(id))
+  const regions: LoadedRegion[] = plan.map((region) => ({
+    bounds: region.bounds,
+    bands: settled
+      .filter((s) => s.region === region && s.error == null)
+      .map((s) => s.band.id),
+  }))
+  const failedBands = inOrder(failed)
 
   if (depthAreas.length === 0) {
     // Prefer an `unreachable` over a `no-layers`: a service that did not
@@ -908,7 +1486,17 @@ export async function fetchChartArea(
       errors.find((e) => e instanceof ChartUnavailableError && e.kind === 'unreachable') ??
       errors[0]
     if (pick) throw pick
-    return { depthAreas: [], channels, land, hazards, coverage: 'none', bands: [] }
+    return {
+      depthAreas: [],
+      channels,
+      land,
+      hazards,
+      lines,
+      coverage: 'none',
+      bands: [],
+      failedBands,
+      regions,
+    }
   }
 
   return {
@@ -916,8 +1504,14 @@ export async function fetchChartArea(
     channels,
     land,
     hazards,
-    coverage: partial ? 'partial' : 'full',
-    bands: used,
+    lines,
+    // A band that could not be read is a hole in what was checked, exactly
+    // like a query that overflowed its transfer limit — the same word, and
+    // the same warning.
+    coverage: partial || failedBands.length > 0 ? 'partial' : 'full',
+    failedBands,
+    bands: inOrder(used),
+    regions,
   }
 }
 
