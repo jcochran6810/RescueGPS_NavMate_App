@@ -123,10 +123,10 @@ export function SatelliteMap({
    *  like everything else, so it is exact even when imagery is not. */
   route?: { lat: number; lon: number }[]
   /**
-   * The line is a fallback, not a plotted course — nothing about it has been
-   * checked against the chart. Drawn so it cannot be mistaken for one: a
-   * straight line through land in the same amber dash as a real route is the
-   * most dangerous thing this screen can show.
+   * The line is not a fully safe course — the router's best effort, with
+   * legs that break the boat's depth or stand-off. Drawn so it cannot be
+   * mistaken for one: a flagged route in the same amber dash as a safe one
+   * is the most dangerous thing this screen can show.
    */
   routeUnverified?: boolean
   /** Draw place names and boundaries over the imagery. */
@@ -970,8 +970,8 @@ export function SatelliteMap({
             line is looking here. */}
         {placed && routeUnverified && route.length > 0 ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-red-950/80 px-3 py-1.5 text-center text-xs font-semibold text-red-100">
-            Not a course — a straight line to the destination. Nothing on it has
-            been checked for depth, land or obstructions.
+            Not a safe course — the safest route found. Some legs break your
+            depth or stand-off; read the flagged legs before you steer it.
           </div>
         ) : null}
 

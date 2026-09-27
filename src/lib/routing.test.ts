@@ -1303,6 +1303,33 @@ describe('planRoute against the real geometry', () => {
     expectTidy(plan)
   })
 
+  it('keeps the stand-off from land lying just beyond the planning box', () => {
+    // A wall forces the route east, round its end, close to the edge of the
+    // planning box — and the shore starts half a metre past that edge. The
+    // chart index used to be clipped to the planning box, so the vector
+    // check could not see that shore: a leg 97.8 m off it passed a 100 m
+    // stand-off and the plan still said 'charted'.
+    const from = at(0, -500)
+    const to = at(0, 500)
+    const edgeX = xy({ lat: from.lat, lon: planningBounds(from, to).maxLon }).x
+    const features = sea({
+      land: [
+        { rings: [rect(-12000, -50, edgeX - 200, 50)] },
+        { rings: [rect(edgeX + 0.5, -12000, 12000, 12000)] },
+      ],
+    })
+    const rules = { ...boat, clearanceM: 100 }
+    const plan = planRoute({ from, to, ...rules, features })
+    expect(plan.source).not.toBe('none')
+    // Whatever it is, nothing it calls safe breaks the stand-off.
+    expect(independentCheck(plan, features, rules)).toEqual([])
+    for (const leg of plan.legs) {
+      if (leg.caution === 'ok' && leg.minClearanceM !== null) {
+        expect(leg.minClearanceM).toBeGreaterThanOrEqual(100 - 0.01)
+      }
+    }
+  })
+
   it('goes round a jetty charted as a line, keeping the stand-off from its end', () => {
     const features = sea({
       lines: [{ kind: 'structure', paths: [[ll(-12000, 0), ll(300, 0)]], widthM: 5, label: 'jetty' }],
@@ -1373,6 +1400,40 @@ describe('planRoute against the real geometry', () => {
     expect(Math.max(...plan.points.map((p) => xy(p).x))).toBeGreaterThan(2600)
     expect(independentCheck(plan, features, { ...boat, clearanceM: 30 })).toEqual([])
     expectTidy(plan)
+  })
+
+  it('repairs a long leg only where it fails, on a grid fine enough to see the gap', () => {
+    // A 20 km diagonal across a 4 m bar that runs the whole width of the
+    // chart, open only in a 30 m gap. The bar is laid between two rows of
+    // cell centres, so the optimistic read sees no bar at all and proposes
+    // the straight line; the conservative read closes the gap outright. The
+    // chart check then catches the line on the bar, and the repair must see
+    // a 30 m gap — which a repair grid over the whole 20 km leg (a 15 km
+    // square) is far too coarse to do. Only the stretch that failed is
+    // re-planned.
+    const from = at(-7000, -7000)
+    const to = at(7000, 7000)
+    const g = makeGrid(from, to)
+    const row = Math.round(toGrid(g, at(0, 0)).row - 0.5)
+    const yc = xy(toLatLon(g, 0, row)).y
+    const y0 = yc + g.cellM * 0.3
+    const features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 0.5, rings: [rect(-12000, y0, 0, y0 + 4)] },
+        { minDepthM: 0.5, rings: [rect(30, y0, 12000, y0 + 4)] },
+      ],
+    })
+    const plan = planRoute({ from, to, ...boat, clearanceM: 0, features })
+    expect(plan.source).toBe('charted')
+    expect(independentCheck(plan, features, { ...boat, clearanceM: 0, stepM: 1 })).toEqual([])
+    // Through the gap, and nearly straight: nothing like a detour.
+    const direct = haversineNM(from.lat, from.lon, to.lat, to.lon)
+    expect(plan.totalNM).toBeLessThan(direct * 1.02)
+    // A handful of legs, none a stub. (The turn at the gap is a fraction of a
+    // degree, and it stays: the straight line misses the gap by 16 m.)
+    expect(plan.legs.length).toBeLessThanOrEqual(3)
+    for (const leg of plan.legs) expect(metresBetween(leg.from, leg.to)).toBeGreaterThanOrEqual(20)
   })
 })
 
@@ -1541,6 +1602,55 @@ describe('planRoute when nothing fully safe exists', () => {
     for (const l of bad) expect(l.minChartedDepthM).toBeCloseTo(1.2, 5)
     expect(plan.warnings.join(' ')).toMatch(/crosses 4 ft \(1\.2 m\) near leg \d/)
     expect(independentCheck(plan, features, { ...boat, clearanceM: 30 })).toEqual([])
+  })
+
+  it('does not let a best-effort turn cut its corner into shoaler water', () => {
+    // A 200 m bar at 0.4 m with one 50 m notch at 1.2 m, and a dog-leg
+    // through the notch. The early switch at the turn before the bar must
+    // not cut the corner across the 0.4 m either side of the notch — the
+    // last rung's own check ignores depth, so that has to be asked
+    // separately: the chord may be no shoaler than the legs it replaces.
+    const features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, -100)] },
+        { minDepthM: 10, rings: [rect(-12000, 100, 12000, 12000)] },
+        { minDepthM: 0.4, rings: [rect(-12000, -100, 300, 100)] },
+        { minDepthM: 1.2, rings: [rect(300, -100, 350, 100)] },
+        { minDepthM: 0.4, rings: [rect(350, -100, 12000, 100)] },
+      ],
+    })
+    const from = at(-600, -600)
+    const to = at(-600, 600)
+    const plan = planRoute({ from, to, ...boat, clearanceM: 0, features, arrivalFt: 200 })
+    expect(plan.source).toBe('best-effort')
+    for (const l of plan.legs) {
+      if (l.caution === 'unsafe-depth') expect(l.minChartedDepthM).toBeCloseTo(1.2, 5)
+    }
+    const shoalest = (a: LatLon, b: LatLon): number => {
+      const n = Math.max(1, Math.ceil(metresBetween(a, b)))
+      let min = Infinity
+      for (let k = 0; k <= n; k++) {
+        const s = bruteState(features, a.lat + ((b.lat - a.lat) * k) / n, a.lon + ((b.lon - a.lon) * k) / n)
+        min = Math.min(min, s)
+      }
+      return min
+    }
+    for (let i = 1; i + 1 < plan.points.length; i++) {
+      // 30 ft is the floor: the radius is never cut below it, whatever the
+      // chord does (a turn hard against a bank is steered to closely).
+      if (plan.arrivalFt[i] <= 30) continue
+      const a = plan.points[i - 1]
+      const p = plan.points[i]
+      const b = plan.points[i + 1]
+      const r = plan.arrivalFt[i] * 0.3048
+      const lin = metresBetween(a, p)
+      const e = r >= lin ? a : {
+        lat: p.lat + ((a.lat - p.lat) * r) / lin,
+        lon: p.lon + ((a.lon - p.lon) * r) / lin,
+      }
+      const legs = Math.min(shoalest(e, p), shoalest(p, b))
+      expect(shoalest(e, b)).toBeGreaterThanOrEqual(Math.min(legs, 1.5))
+    }
   })
 })
 
@@ -2012,6 +2122,16 @@ describe('describeUnusable', () => {
     expect(why).not.toMatch(/NaN/)
   })
 
+  it('says "right against" land that only clips a corner of the cell, not "on land"', () => {
+    const g = gridFromAscii(['.....', '.....'])
+    g.hard[0] = 1 // land somewhere in the cell; its centre is still water
+    prepareGrid(g, 1.5)
+    const p = passability(g, 0, 1.5)
+    const why = describeUnusable(g, pos(g, 0, 0), p).why
+    expect(why).toMatch(/right against land/i)
+    expect(why).not.toMatch(/^on land/i)
+  })
+
   it('says when the water was never surveyed rather than calling it shallow', () => {
     const g = gridFromAscii([
       '?????',
@@ -2274,5 +2394,79 @@ describe('planRoute on the Galveston chart', () => {
     expect(
       independentCheck(plan, features, { safeDepthM: 2.5, clearanceM: 60, stepM: 3, ringEveryM: 25 }),
     ).toEqual([])
+  })
+
+  // Every boat the settings allow, on the canonical passage, and a handful
+  // of other passages across the bay and the channel — each re-measured
+  // against the raw polygons with nothing shared with the planner.
+  const boats = [0.6, 1.5, 2.5].flatMap((safeDepthM) =>
+    [5, 30].map((clearanceM) => ({ safeDepthM, clearanceM })),
+  )
+  it.each(boats)(
+    'is charted and really in water for a $safeDepthM m boat keeping $clearanceM m off',
+    ({ safeDepthM, clearanceM }) => {
+      const plan = planRoute({ from, to, safeDepthM, clearanceM, speedKn: 20, features })
+      expect(plan.source).toBe('charted')
+      expect(plan.arrivalFt).toHaveLength(plan.points.length)
+      expect(
+        independentCheck(plan, features, { safeDepthM, clearanceM, stepM: 4, ringEveryM: 40 }),
+      ).toEqual([])
+      for (const leg of plan.legs) {
+        expect(metresBetween(leg.from, leg.to)).toBeGreaterThanOrEqual(20)
+      }
+    },
+  )
+
+  const passages: [string, LatLon, LatLon, number, number][] = [
+    ['bay to channel', { lat: 29.3724, lon: -94.8064 }, { lat: 29.3147, lon: -94.785 }, 1.5, 30],
+    ['along the bay', { lat: 29.3806, lon: -94.7965 }, { lat: 29.3561, lon: -94.7993 }, 2.5, 5],
+    ['across the bay', { lat: 29.3718, lon: -94.8046 }, { lat: 29.3333, lon: -94.7782 }, 0.6, 30],
+  ]
+  it.each(passages)('plans %s as a charted route', (_name, a, b, safeDepthM, clearanceM) => {
+    const plan = planRoute({ from: a, to: b, safeDepthM, clearanceM, speedKn: 20, features })
+    expect(plan.source).toBe('charted')
+    expect(plan.points[0]).toEqual(a)
+    expect(plan.points[plan.points.length - 1]).toEqual(b)
+    expect(
+      independentCheck(plan, features, { safeDepthM, clearanceM, stepM: 4, ringEveryM: 40 }),
+    ).toEqual([])
+  })
+
+  it('moves a destination the chart puts on land, and runs no other leg over land', () => {
+    const a = { lat: 29.312, lon: -94.8088 }
+    const b = { lat: 29.3667, lon: -94.7767 }
+    expect(bruteState(features, b.lat, b.lon)).toBe(-Infinity)
+    const plan = planRoute({ from: a, to: b, safeDepthM: 1.5, clearanceM: 30, speedKn: 20, features })
+    expect(plan.source).toBe('best-effort')
+    expect(plan.needsConfirm).toBe(true)
+    expect(plan.movedEnd).not.toBeNull()
+    expect(plan.warnings.join(' ')).toMatch(/chart shows your destination on land/i)
+    // Only the last leg, off the charted land onto the water, may touch land.
+    plan.legs.slice(0, -1).forEach((leg) => {
+      const n = Math.ceil(metresBetween(leg.from, leg.to) / 3)
+      for (let k = 0; k <= n; k++) {
+        const s = bruteState(
+          features,
+          leg.from.lat + ((leg.to.lat - leg.from.lat) * k) / n,
+          leg.from.lon + ((leg.to.lon - leg.from.lon) * k) / n,
+        )
+        expect(s).not.toBe(-Infinity)
+      }
+    })
+    expect(independentCheck(plan, features, { safeDepthM: 1.5, clearanceM: 30, stepM: 4, ringEveryM: 40 })).toEqual([])
+  })
+
+  it('draws nothing from a start on land far from any water, and says why', () => {
+    const plan = planRoute({
+      from: { lat: 29.3339, lon: -94.8008 },
+      to: { lat: 29.37, lon: -94.82 },
+      safeDepthM: 1.5,
+      clearanceM: 30,
+      speedKn: 20,
+      features,
+    })
+    expect(plan.source).toBe('none')
+    expect(plan.points).toEqual([])
+    expect(plan.failure).toMatch(/your start is on land/i)
   })
 })

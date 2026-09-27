@@ -333,6 +333,12 @@ const PLAN_MAX_MARGIN_M = 25 * NM_TO_METERS
 
 /** How far an endpoint may be nudged to find usable water. */
 const SNAP_RADIUS_M = 400
+/**
+ * How far the chart index reaches beyond the planning box, over and above
+ * the stand-off measuring distance: room for a grid grown by a cell or two
+ * past the box (cells are at most ~150 m on the widest box).
+ */
+const INDEX_PAD_M = 500
 
 /** The approach stretch at each end, metres. */
 const DEFAULT_APPROACH_M = 120
@@ -353,6 +359,13 @@ const MAX_LOCAL_CELL_M = 10
 const MAX_REPAIR_DEPTH = 3
 /** Total repairs one plan may spend — bounded work whatever the chart. */
 const REPAIR_BUDGET = 40
+/**
+ * A failing leg longer than twice this is checked in pieces this long, and
+ * only the stretch that fails is re-planned. A repair grid is a box round
+ * the stretch, so a 10 km diagonal repaired whole would be a 7 km square —
+ * far too coarse at the cell cap to see what the leg hit.
+ */
+const REPAIR_WINDOW_M = 500
 
 /**
  * How much shorter the optimistic read's route must be before it replaces the
@@ -1503,10 +1516,17 @@ export function describeUnusable(
   if (inside) {
     const i = row0 * g.cols + col0
     const d = g.depth[i]
-    if (g.hard[i] & HARD_LAND) {
+    // The centre layers say what the chart shows AT the position's cell; the
+    // conservative ones what lies anywhere in it. Land or a hazard only in a
+    // corner of the cell is "right against" it, not "on" it.
+    if (g.cHard[i] & HARD_LAND) {
       why = 'on land, or on a structure the chart draws as land'
-    } else if (g.hard[i] & HARD_HAZARD) {
+    } else if (g.cHard[i] & HARD_HAZARD) {
       why = 'inside the footprint of a charted hazard (a wreck, obstruction, rock, pile or pylon)'
+    } else if (g.hard[i] & HARD_LAND) {
+      why = 'right against land, or a structure the chart draws as land'
+    } else if (g.hard[i] & HARD_HAZARD) {
+      why = 'right against the footprint of a charted hazard (a wreck, obstruction, rock, pile or pylon)'
     } else if (!Number.isNaN(d) && d < pass.safeDepthM) {
       why = describeDepth(d)
     } else if (g.unknown[i] === 1 || Number.isNaN(d)) {
@@ -1888,6 +1908,13 @@ interface Ctx {
   toBlocked: boolean
   grids: Map<string, RouteGrid>
   budget: number
+  /**
+   * The planning box, in the index's metres. Every route and repair stays
+   * inside it; the index itself reaches `INDEX_PAD_M` (or more) further, so
+   * the stand-off from a leg near the box edge is measured to land that lies
+   * just beyond it rather than to nothing.
+   */
+  lim: { x0: number; y0: number; x1: number; y1: number }
 }
 
 type Failure = 'start' | 'end' | 'path'
@@ -1917,6 +1944,41 @@ function passes(ctx: Ctx, mode: Mode, a: XY, b: XY): boolean {
   const r = check(ctx, mode.clearanceM, a, b)
   if (mode.allowShallow) return !r.crossesLand && r.clearanceOk
   return r.ok
+}
+
+/**
+ * May segment a–b stand in for the run of legs `parts`?
+ *
+ * Used where a leg is replaced by a shortcut the grid never proposed — a stub
+ * or near-straight turn merged away, or the early-switch chord a turn point's
+ * capture radius allows. On a fully safe route the answer is simply "does
+ * the shortcut keep every rule". On the best-effort ladder `passes` alone is
+ * too lenient: its own mode ignores depth (last rung) or accepts a reduced
+ * stand-off, so a shortcut could quietly cross more of the shoal — or pass
+ * closer to the rocks — than the route A* paid to avoid. So there the
+ * shortcut must also be no worse than what it replaces: no shoaler water, no
+ * less stand-off, and no unsurveyed water the parts did not already cross.
+ */
+function noWorse(ctx: Ctx, mode: Mode, a: XY, b: XY, parts: [XY, XY][]): boolean {
+  const full = check(ctx, ctx.clearanceM, a, b)
+  if (full.ok) return true
+  const strict = !mode.allowShallow && mode.clearanceM >= ctx.clearanceM
+  if (strict) return false
+  if (!passes(ctx, mode, a, b)) return false
+  if (full.crossesLand || full.entersHazard) return false
+  let shoal = Infinity
+  let close = Infinity
+  let unsurveyed = false
+  for (const [p, q] of parts) {
+    const r = check(ctx, ctx.clearanceM, p, q)
+    if (r.shallow && r.minDepthOutsideM !== null) shoal = Math.min(shoal, r.minDepthOutsideM)
+    if (!r.clearanceOk) close = Math.min(close, r.entersHazard ? 0 : r.clearanceOutsideM)
+    if (r.unsurveyed) unsurveyed = true
+  }
+  if (full.unsurveyed && !unsurveyed) return false
+  if (full.shallow && !(full.minDepthOutsideM !== null && full.minDepthOutsideM >= shoal)) return false
+  if (!full.clearanceOk && !(full.clearanceOutsideM >= close - 1e-6)) return false
+  return true
 }
 
 /** Cells lying wholly inside an approach zone. */
@@ -2095,10 +2157,11 @@ function repairLeg(ctx: Ctx, mode: Mode, a: XY, b: XY, parentCellM: number, dept
   let box: { x0: number; y0: number; x1: number; y1: number } | null = null
   let cell = Infinity
   for (const margin of margins) {
-    const x0 = Math.max(ix.x0, Math.min(a.x, b.x) - margin)
-    const x1 = Math.min(ix.x1, Math.max(a.x, b.x) + margin)
-    const y0 = Math.max(ix.y0, Math.min(a.y, b.y) - margin)
-    const y1 = Math.min(ix.y1, Math.max(a.y, b.y) + margin)
+    const lim = ctx.lim
+    const x0 = Math.max(lim.x0, Math.min(a.x, b.x) - margin)
+    const x1 = Math.min(lim.x1, Math.max(a.x, b.x) + margin)
+    const y0 = Math.max(lim.y0, Math.min(a.y, b.y) - margin)
+    const y1 = Math.min(lim.y1, Math.max(a.y, b.y) + margin)
     if (!(x1 > x0 && y1 > y0)) return null
     cell = Math.max(want, Math.sqrt(((x1 - x0) * (y1 - y0)) / LOCAL_MAX_CELLS))
     box = { x0, y0, x1, y1 }
@@ -2146,10 +2209,49 @@ function repairPolyline(
       out.push(b)
       continue
     }
-    const fixed = repairLeg(ctx, mode, a, b, cellM, depth)
+    const fixed = repairSpan(ctx, mode, a, b, cellM, depth)
     if (fixed) out.push(...fixed.slice(1))
     else out.push(b)
   }
+  return out
+}
+
+/**
+ * Repair a failing leg, narrowing a long one to the stretch that fails.
+ *
+ * The leg is cut into `REPAIR_WINDOW_M` pieces and each checked; each run of
+ * failing pieces, with one passing piece either side for room, is re-planned
+ * on its own fine grid and spliced in between the untouched straight parts
+ * (which `simplify` then merges back into single legs). The ends of a passing
+ * piece are good water by construction, so every splice starts and ends on
+ * a position that already passed the check. Should any window fail, the whole
+ * leg is repaired as one — the detour may need more room than a window has.
+ */
+function repairSpan(ctx: Ctx, mode: Mode, a: XY, b: XY, cellM: number, depth: number): XY[] | null {
+  const len = distXY(a, b)
+  if (len <= 2 * REPAIR_WINDOW_M) return repairLeg(ctx, mode, a, b, cellM, depth)
+  const n = Math.ceil(len / REPAIR_WINDOW_M)
+  const at = (k: number): XY =>
+    k <= 0 ? a : k >= n ? b : { x: a.x + ((b.x - a.x) * k) / n, y: a.y + ((b.y - a.y) * k) / n }
+  const bad: boolean[] = []
+  for (let k = 0; k < n; k++) bad.push(!passes(ctx, mode, at(k), at(k + 1)))
+  if (bad.every(Boolean)) return repairLeg(ctx, mode, a, b, cellM, depth)
+  const out: XY[] = [a]
+  let done = 0
+  for (let k = 0; k < n; k++) {
+    if (!bad[k]) continue
+    let j = k
+    while (j < n && bad[j]) j++
+    const s = Math.max(done, k - 1)
+    const e = Math.min(n, j + 1)
+    const fixed = repairLeg(ctx, mode, at(s), at(e), cellM, depth)
+    if (!fixed) return repairLeg(ctx, mode, a, b, cellM, depth)
+    if (s > done) out.push(at(s))
+    out.push(...fixed.slice(1))
+    done = e
+    k = e - 1
+  }
+  if (done < n) out.push(b)
   return out
 }
 
@@ -2183,7 +2285,7 @@ function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: 
       const b = out[i + 1]
       const stub = distXY(a, p) < STUB_LEG_M || distXY(p, b) < STUB_LEG_M
       if (!stub && turnDeg(a, p, b) >= STRAIGHT_TURN_DEG) continue
-      if (!passes(ctx, mode, a, b)) continue
+      if (!noWorse(ctx, mode, a, b, [[a, p], [p, b]])) continue
       out.splice(i, 1)
       changed = true
       break
@@ -2238,7 +2340,9 @@ function cautionOf(r: SegmentCheck): LegCaution {
  * corner. At each turn the radius is the largest (up to what the crew asked
  * for) for which that early-switch line — from the point on the inbound leg
  * `r` short of the turn, to the next point — still passes the same check as
- * the legs. Binary search; never below 30 ft.
+ * the legs (on a best-effort plan: is no worse than the legs it cuts, see
+ * `noWorse`). Binary search; never below 30 ft, which is a floor, not a
+ * promise — a turn point hard against a bank is steered to closely.
  */
 function arrivalRadii(ctx: Ctx, mode: Mode, pts: XY[], requestedFt: number): number[] {
   const out = pts.map(() => requestedFt)
@@ -2250,7 +2354,7 @@ function arrivalRadii(ctx: Ctx, mode: Mode, pts: XY[], requestedFt: number): num
     const ok = (ft: number): boolean => {
       const r = ft * FT_TO_M
       const e = r >= lin ? a : { x: p.x + ((a.x - p.x) * r) / lin, y: p.y + ((a.y - p.y) * r) / lin }
-      return passes(ctx, mode, e, b)
+      return noWorse(ctx, mode, e, b, [[e, p], [p, b]])
     }
     if (ok(requestedFt)) continue
     if (!ok(MIN_ARRIVAL_FT)) {
@@ -2364,7 +2468,20 @@ export function planRoute(req: RouteRequest): RoutePlan {
     : DEFAULT_ARRIVAL_FT
 
   const planBox = planningBounds(req.from, req.to)
-  const ix = chartIndexFor(features, planBox)
+  // The index reaches past the planning box. It clips every polygon to its
+  // own box and reads beyond it as unsurveyed, so land lying just outside
+  // an index the size of the planning box was invisible to the stand-off
+  // check of a leg running along the box edge — a leg 15 m off a shore
+  // passed a 30 m stand-off. Routes stay inside the planning box (grids are
+  // at most a cell bigger); the pad is what their stand-off is measured in.
+  const pad = Math.max(CLEARANCE_MEASURE_M, 2 * clearanceM) + INDEX_PAD_M
+  const ix = chartIndexFor(features, boxAround(
+    { lat: planBox.minLat, lon: planBox.minLon },
+    { lat: planBox.maxLat, lon: planBox.maxLon },
+    pad,
+  ))
+  const limSW = toXY(ix.proj, { lat: planBox.minLat, lon: planBox.minLon })
+  const limNE = toXY(ix.proj, { lat: planBox.maxLat, lon: planBox.maxLon })
   const from = toXY(ix.proj, req.from)
   const to = toXY(ix.proj, req.to)
   const blocked = (p: XY) =>
@@ -2383,6 +2500,7 @@ export function planRoute(req: RouteRequest): RoutePlan {
     toBlocked: blocked(to),
     grids: new Map(),
     budget: REPAIR_BUDGET,
+    lim: { x0: limSW.x, y0: limSW.y, x1: limNE.x, y1: limNE.y },
   }
 
   const strict: Mode = { clearanceM, wantClearanceM: clearanceM, allowShallow: false, optimistic: false }
