@@ -45,10 +45,15 @@ export function NavBanner({ onOpen }: { onOpen: () => void }) {
           tone
         }
       >
-        <span className="min-w-0">
-          <span className="tnum block truncate text-sm font-semibold">{b.primary}</span>
+        {/* Nothing here is cut off with an ellipsis: the status ("Round WP
+            10 first", "Slow down — GPS poor here") has a line of its own, and
+            the waypoint, its bearing and distance wrap rather than vanish —
+            a status in front of them used to push them off a 320 px screen. */}
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {b.status && <span className="block text-xs font-semibold">{b.status}</span>}
+          <span className="tnum block text-sm font-semibold">{b.status ? b.wp : b.primary}</span>
           {b.secondary && (
-            <span className="tnum block truncate text-xs opacity-80">
+            <span className="tnum block text-xs opacity-80">
               {b.tone === 'stale' ? 'GPS signal lost · ' : ''}
               {b.secondary}
             </span>

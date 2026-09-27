@@ -43,11 +43,6 @@ export function NavCard() {
   }
 
   const grey = v.stale ? 'opacity-45' : ''
-  // The course to steer differs from the bearing to the point only when the
-  // boat is off the line into it: then both are shown — the point's bearing
-  // and distance (what the crew is heading for), and the course back onto
-  // the line (what to steer).
-  const splitCourse = !!v.pointBearing && !!v.bearing && v.pointBearing !== v.bearing
   return (
     <section
       aria-label="Steering"
@@ -64,7 +59,7 @@ export function NavCard() {
           role="alert"
           className="mb-2 rounded-lg bg-red-600 px-3 py-2 text-center text-lg font-bold tracking-wide text-white"
         >
-          Slow down — GPS not accurate enough here
+          {v.slowText}
         </p>
       )}
       {/* The circle note goes under the title when the two do not fit side
@@ -81,34 +76,36 @@ export function NavCard() {
         <span className="tnum ml-auto text-[11px] text-slate-400">{v.radiusText}</span>
       </div>
 
-      {/* The two numbers the crew steers by. They share a line when they fit
-          and the distance drops under the bearing when they do not — never
-          off the edge: on a 320 px phone "5.22 NM" used to lose its M. */}
-      <div
-        className={
-          'mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 ' + grey
-        }
-      >
-        <span className="tnum text-5xl leading-none font-bold text-slate-50 max-[359px]:text-[2.5rem]">
-          {v.atMark ? 'Here' : (v.bearing ?? '—')}
-          {splitCourse && (
-            <span className="ml-1 align-middle text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              steer
-            </span>
-          )}
-        </span>
-        <span className="tnum ml-auto text-3xl leading-none font-semibold whitespace-nowrap text-slate-100 max-[359px]:text-2xl">
-          {v.distance}
+      {/* Two rows, always the same two, labelled: the course to STEER (the
+          big number), then the waypoint — its bearing and how far (rule 4).
+          The layout never changes with the numbers: a second line that came
+          and went whenever the course and the waypoint's bearing differed by
+          a degree reflowed the card and the map under it every other fix. */}
+      <div className={'mt-1 flex items-baseline gap-2 ' + grey}>
+        <span className="tnum text-5xl leading-none font-bold whitespace-nowrap text-slate-50 max-[359px]:text-[2.5rem]">
+          <span className="mr-2 align-middle text-xs font-semibold tracking-wide text-slate-400 uppercase">
+            Steer
+          </span>
+          {v.bearing ?? '—'}
         </span>
       </div>
-
-      {splitCourse && (
-        <p className={'tnum mt-1 text-sm text-slate-300 ' + grey}>
-          {v.title.replace(/^To /, '').replace(/ — don’t cut the corner$/, '')}: {v.pointBearing} · {v.distance}
-        </p>
-      )}
+      <p
+        className={
+          'tnum mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-slate-300 ' + grey
+        }
+      >
+        <span className="text-base font-semibold whitespace-nowrap">{v.wpLabel}</span>
+        <span className="text-base whitespace-nowrap">
+          · {v.inCircle ? 'at the mark' : (v.pointBearing ?? '—')} ·
+        </span>
+        <span className="text-3xl leading-none font-semibold whitespace-nowrap text-slate-100 max-[359px]:text-2xl">
+          {v.distance}
+        </span>
+      </p>
       {v.backOnLine && (
-        <p className={'mt-1 text-sm font-semibold text-amber-200 ' + grey}>{v.backOnLine}</p>
+        <p className={'mt-1 text-sm font-semibold text-amber-200 ' + grey}>
+          {keepUnitsTogether(v.backOnLine)}
+        </p>
       )}
 
       {v.turn && (
@@ -281,6 +278,8 @@ const NOTICE_TONE: Record<NavNotice['kind'], string> = {
   'round-first': 'border-amber-400/60 bg-amber-500/15 text-amber-100',
   'gps-margin': 'border-amber-400/40 bg-amber-500/10 text-amber-100',
   'gps-slow': 'border-red-400/70 bg-red-500/25 text-red-50',
+  estimated: 'border-amber-400/50 bg-amber-500/10 text-amber-100',
+  'turn-slow': 'border-red-400/70 bg-red-500/25 text-red-50',
 }
 
 function Notice({ notice }: { notice: NavNotice }) {

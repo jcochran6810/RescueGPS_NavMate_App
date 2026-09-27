@@ -30,6 +30,7 @@ import {
   type NavCardInput,
 } from './navView'
 import { projectPosition } from './sar'
+import { bearingDeg } from './geo'
 import { FT_PER_NM, ROUTE_ARRIVAL_FT_CHOICES } from './steer'
 import { declinationAt } from './geomag'
 import type { LatLon } from './search'
@@ -254,11 +255,17 @@ describe('navCardView', () => {
     expect(navCardView(input({ bearingPref: 'magnetic', declination: null })).bearing).toBe('090°T')
   })
 
-  it('withholds the bearing inside the arrival circle', () => {
+  it('inside the arrival circle: no bearing to the point, but the course of the leg into it', () => {
+    // Behaviour changed on purpose (rc3 F6): the card used to show no course
+    // at all at the mark, and the helm held whatever it had while the store
+    // waited to switch (a fix still settling). The bearing to the point is
+    // still withheld — GPS jitter that close — but the leg's own course is
+    // steered on.
     const v = navCardView(input({ fix: { ...go(C, 270, ft(60)), timestamp: NOW, heading: 90 } }))
     expect(v.atMark).toBe(true)
-    expect(v.bearing).toBeNull()
-    expect(v.turn).toBeNull()
+    expect(v.pointBearing).toBeNull()
+    expect(v.bearing).toBe(bearingText(bearingDeg(B.lat, B.lon, C.lat, C.lon), 'true', null))
+    expect(v.turn).toEqual({ kind: 'ahead', text: 'Steady — on course' })
   })
 
   it('says which way to turn from the course over ground', () => {
@@ -376,6 +383,9 @@ describe('navBannerView', () => {
     const b = navBannerView(navCardView(input({ status: 'arrived' })))
     expect(b).toEqual({
       primary: 'You have arrived at Datum',
+      // The banner now carries its status and waypoint lines apart (UI3 #2).
+      status: null,
+      wp: 'You have arrived at Datum',
       secondary: null,
       tone: 'arrived',
       alertText: null,
@@ -640,7 +650,11 @@ describe('rounding a turn point first (C1)', () => {
       /straight line from here to waypoint 2 is not clear.*Steer for waypoint 1 until it is/,
     )
     const b = navBannerView(v)
-    expect(b.primary).toBe('Round WP 1 first · 000°T · 150 ft')
+    // UI3 #2: the status on its own line; the waypoint, its bearing and
+    // distance always after it (they were pushed off a 320 px banner).
+    expect(b.status).toBe('Round WP 1 first')
+    expect(b.wp).toBe('WP 1 · 000°T · 150 ft')
+    expect(b.primary).toBe('Round WP 1 first · WP 1 · 000°T · 150 ft')
     expect(b.tone).toBe('alert')
   })
 
@@ -767,7 +781,10 @@ describe('the card off the line, and on a poor fix (F3, F4)', () => {
     // Back onto the line means steering left of the point (north of east).
     expect(Number(v.bearing!.slice(0, 3))).toBeLessThan(Number(v.pointBearing!.slice(0, 3)))
     expect(v.xteFt).toBeCloseTo(46, -1)
-    expect(v.backOnLine).toMatch(/^Steer \d+° left to get back on the line · 4\d ft off track$/)
+    // UI3 #4: one turn cue only — `turn`, from the heading. This line now
+    // says just where the boat is (it used to give a second "steer N° left",
+    // measured from the waypoint's bearing, that disagreed with it).
+    expect(v.backOnLine).toMatch(/^4\d ft right of the line$/)
     // The turn cue answers the course to steer, not the bearing to the point.
     expect(v.turn?.kind === 'turn' && v.turn.side).toBe('left')
   })
@@ -784,7 +801,9 @@ describe('the card off the line, and on a poor fix (F3, F4)', () => {
     expect(v.slowDown).toBe(true)
     const n = v.notices.find((x) => x.kind === 'gps-slow')!
     expect(n.tone).toBe('alert')
-    expect(n.text).toMatch(/^Slow down — GPS not accurate enough here/)
+    // UI3 #11: the headline above the card says "Slow down"; the notice
+    // explains it without saying it twice.
+    expect(n.text).toMatch(/^Your position is good to ±59 ft only/)
     // It replaces the amber margin notice rather than repeating it.
     expect(v.notices.some((x) => x.kind === 'gps-margin')).toBe(false)
     const b = navBannerView(v)

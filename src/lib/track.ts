@@ -160,7 +160,77 @@ const ADOPT_SPAN_S = 3
 const SETTLE_FIXES = 3
 
 /** Refused fixes remembered for judging whether they agree, at most. */
-const RUN_KEEP = 8
+const RUN_KEEP = 12
+
+/**
+ * A run of refused fixes is believed only when the jump to it could be the
+ * boat: from the position the filter was running on (dead reckoning), no
+ * harder than this (a planing hull's hardest turn), sustained, since the
+ * last fix it believed, once both errors are allowed for. 100 m sideways is
+ * then believed after 5 s, not 4 — and put back if the old track returns:
+ * a four-to-six-fix multipath excursion claiming ±4 m used to be adopted,
+ * reported at ±6 m, and the true fixes that followed refused. m/s².
+ */
+const ADOPT_ACCEL_MPS2 = 6
+
+/**
+ * After a jump is believed, for this long (seconds) the reported accuracy
+ * still includes the jump — fading to nothing — and a fix back where the old
+ * track was going puts the filter back on it (the jump was a reflection that
+ * lasted long enough to be believed).
+ */
+const ADOPT_HOLD_S = 10
+/** …and over at most this many fixes that bear the jump out. */
+const HOLD_FIXES = 3
+
+/**
+ * A consistent track refused for this long (seconds, at least this many
+ * fixes) is believed even where dead reckoning says the boat could not have
+ * got there: after that long, the filter is the one that is wrong. Longer
+ * than a multipath excursion lasts.
+ */
+const ADOPT_ANYWAY_S = 8
+const ADOPT_ANYWAY_FIXES = 5
+
+/**
+ * Refusing fixes for longer than this (ms) no longer means saying nothing:
+ * the filter hands out its dead-reckoned position with an accuracy that
+ * covers the refused fixes too (`Fix.estimate`), so the card warns — or
+ * greys — instead of freezing on a position that reads as live.
+ */
+const REFUSE_QUIET_MS = 3_000
+
+/**
+ * A fix worse than the crew's gate is still used after `REFUSE_QUIET_MS` of
+ * nothing better — flagged `poor`, at its own accuracy — if it is no worse
+ * than this, metres. Beyond it is a cell-tower position, not a GPS fix.
+ */
+const POOR_MAX_M = 100
+
+/** The extra acceleration a dead-reckoned position is allowed, m/s² — its error grows ½·a·t². */
+const DR_ACCEL_MPS2 = 2
+
+/**
+ * A fix back on the old track (after a believed jump) is within this, plus
+ * twice its own step noise, of where the old track was going — metres.
+ */
+const RETURN_NEAR_M = 10
+
+/**
+ * The receiver's Doppler speed does not jump with a reflected position. A
+ * step from the last fix taken faster than `DOPPLER_FACTOR` times it, plus
+ * `DOPPLER_SLACK_MPS` (once both fixes' errors are allowed for), is the
+ * position jumping, not the boat — and a filter velocity that fast, run on
+ * between fixes, is brought back to it. rc3 drift-6 (lies): a 110 m jump
+ * claiming ±4 m, taken in "as a turn" (the receiver's own course was
+ * swinging), dragged the velocity to 45 m/s; dead-reckoned on, the position
+ * ran 630 m from the boat while the true fixes were refused. Used only
+ * while the receiver says the boat is making way (`DOPPLER_MIN_MPS`): a
+ * phone that reports 0 for "no idea" must not hold a moving boat still.
+ */
+const DOPPLER_FACTOR = 1.5
+const DOPPLER_SLACK_MPS = 3
+const DOPPLER_MIN_MPS = 1
 
 /**
  * A sudden jump the filter took in (a fix well off the prediction with no
@@ -295,6 +365,24 @@ interface Snapshot {
   jy: number
   /** Fixes taken since. */
   count: number
+  /** The last fix looked like a return to the old track (see `push`). */
+  revertSeen?: boolean
+}
+
+/** The filter as it was just before it believed a jump — see `ADOPT_HOLD_S`. */
+interface Adopted {
+  x: Axis
+  y: Axis
+  t: number
+  lat0: number
+  lon0: number
+  mLat: number
+  mLon: number
+  lastRaw: LocalFix | null
+  moving: boolean
+  /** When the jump was believed, ms, and how far it moved the position, m. */
+  at: number
+  jumpM: number
 }
 
 /** Chi-square of a fix against an axis pair predicted `dt` on with `q`. */
@@ -329,6 +417,30 @@ function reachable(
   return dv - noise / dt - 3 * sigmaV <= MAX_ACCEL_MPS2 * dt
 }
 
+/** The receiver's Doppler speed, when it says the boat is making way; else null. */
+function dopplerOf(raw: Fix): number | null {
+  const v = raw.speed
+  return v != null && Number.isFinite(v) && v >= DOPPLER_MIN_MPS ? v : null
+}
+
+/**
+ * Bring a filter velocity faster than the Doppler speed allows back to that
+ * speed, keeping its course, and widen its variance to match.
+ */
+function capToDoppler(ax: Axis, ay: Axis, doppler: number | null): void {
+  if (doppler == null) return
+  const v = Math.hypot(ax.v, ay.v)
+  if (!(v > DOPPLER_FACTOR * doppler + DOPPLER_SLACK_MPS)) return
+  const k = doppler / v
+  ax.v *= k
+  ay.v *= k
+  const vv = Math.max(ax.vv, ay.vv, (v - doppler) ** 2 / 4)
+  ax.vv = vv
+  ay.vv = vv
+  ax.pv = 0
+  ay.pv = 0
+}
+
 export class TrackFilter {
   private opts: Required<TrackFilterOptions>
   private lat0 = 0
@@ -360,6 +472,12 @@ export class TrackFilter {
   private runJump = false
   /** The filter before a sudden jump it took in, while that jump is on probation. */
   private snap: Snapshot | null = null
+  /** The filter before it believed a jump, while `ADOPT_HOLD_S` lasts. */
+  private adopted: Adopted | null = null
+  /** A jump the position took (believed, or let in as a manoeuvre): when, and how far. */
+  private held: { at: number; jumpM: number; fixes: number } | null = null
+  /** The fix being processed is a poor one let past the gate (`POOR_MAX_M`). */
+  private poorPass = false
 
   /** Is this disagreement on the same side as the last one? */
   private sameSide(x: number, y: number): boolean {
@@ -394,6 +512,8 @@ export class TrackFilter {
     this.run = []
     this.runJump = false
     this.snap = null
+    this.adopted = null
+    this.held = null
     this.lastRaw = null
     this.settle = 0
     this.rejected.accuracy = 0
@@ -412,7 +532,18 @@ export class TrackFilter {
       ? raw.accuracy
       : null
 
-    if (gate > 0 && (acc == null || acc > gate)) {
+    // Worse than the gate — but fixes keep arriving, and nothing better has
+    // for a while: a GPS fix at its own honest (poor) accuracy says more
+    // than silence, which read on the card as "signal lost". Used, and
+    // flagged so nothing is switched on it.
+    this.poorPass =
+      gate > 0 &&
+      acc != null &&
+      acc > gate &&
+      acc <= POOR_MAX_M &&
+      this.x !== null &&
+      raw.timestamp - this.t > REFUSE_QUIET_MS
+    if (gate > 0 && (acc == null || acc > gate) && !this.poorPass) {
       this.rejected.accuracy++
       return {
         accepted: false,
@@ -454,6 +585,14 @@ export class TrackFilter {
       return this.emit(raw, raw, { speed: false, heading: false })
     }
 
+    // A jump believed a few seconds ago, and this fix is back where the old
+    // track was going (and not where the new one is): the jump was a
+    // reflection after all. Put the filter back as it was before it.
+    if (this.adopted) {
+      if ((raw.timestamp - this.adopted.at) / 1000 > ADOPT_HOLD_S) this.adopted = null
+      else if (this.returnsToOld(raw, r)) this.unadopt()
+    }
+
     const { x: zx, y: zy } = this.toLocal(raw.lat, raw.lon)
     const here: LocalFix = { x: zx, y: zy, acc: sigma, t: raw.timestamp }
 
@@ -461,8 +600,17 @@ export class TrackFilter {
     // the boat was going before it: that was a reflection. Put the filter back
     // as it was and judge this fix against that.
     if (this.snap) {
-      if (this.reverts(here, r)) this.rollback()
-      else if (++this.snap.count >= SNAP_FIXES) this.snap = null
+      if (this.reverts(here, r)) {
+        // One fix back on the old track undoes a jump only one or two fixes
+        // old. A jump two fixes have already borne out (a hard turn) is not
+        // undone by one fix that happens to lie where the old track was
+        // going — that is as likely a reflection itself: it takes two.
+        if (this.snap.count < 2 || this.snap.revertSeen) this.rollback()
+        else this.snap.revertSeen = true
+      } else {
+        this.snap.revertSeen = false
+        if (++this.snap.count >= SNAP_FIXES) this.snap = null
+      }
     }
     const dtNow = (raw.timestamp - this.t) / 1000
 
@@ -488,7 +636,26 @@ export class TrackFilter {
     // let the next one in behind it.
     const stepM = Math.hypot(zx - this.x.p, zy - this.y.p)
     if (stepM / dtNow > this.opts.maxSpeedMps) {
+      if (this.run.length === 0) this.runJump = true
       return this.refuse(raw, here, r, `Fix jumped ${Math.round(stepM)} m in ${dtNow.toFixed(1)} s`)
+    }
+
+    // Faster than the receiver's own Doppler speed allows, from the last fix
+    // taken: the position has jumped, whatever the course is doing.
+    const doppler = dopplerOf(raw)
+    if (doppler != null && this.lastRaw) {
+      const dtR = (raw.timestamp - this.lastRaw.t) / 1000
+      const stepR = Math.hypot(zx - this.lastRaw.x, zy - this.lastRaw.y)
+      const noiseR = STEP_NOISE * Math.hypot(this.lastRaw.acc, sigma)
+      if (dtR > 0 && (stepR - noiseR) / dtR > DOPPLER_FACTOR * doppler + DOPPLER_SLACK_MPS) {
+        if (this.run.length === 0) this.runJump = true
+        return this.refuse(
+          raw,
+          here,
+          r,
+          `Fix jumped ${Math.round(stepR)} m in ${dtR.toFixed(1)} s — faster than the receiver's own speed (${doppler.toFixed(1)} m/s)`,
+        )
+      }
     }
 
     // A step the boat could not have made from the last fix taken, at the
@@ -510,6 +677,23 @@ export class TrackFilter {
         here,
         r,
         `Fix jumped ${Math.round(Math.hypot(zx - this.lastRaw.x, zy - this.lastRaw.y))} m in ${dtNow.toFixed(1)} s — more than the boat could move`,
+      )
+    }
+
+    // After refusing a run that began with a jump no boat could make, the
+    // statistical gate below is wide — the
+    // prediction has run on for seconds, at a manoeuvre's allowance — and a
+    // multipath excursion four fixes long got through it as "the boat
+    // turning" (140 m in 4 s at 20 kn), dragging the velocity to 60 m/s. A
+    // fix after refusals must also be one the boat could have reached from
+    // where dead reckoning puts it (`plausibleJump`); until then it joins
+    // the refused run.
+    if (this.run.length > 0 && this.runJump && this.plausibleJump(here) == null) {
+      return this.refuse(
+        raw,
+        here,
+        r,
+        `Fix ${Math.round(Math.hypot(zx - (this.x.p + this.x.v * dtNow), zy - (this.y.p + this.y.v * dtNow)))} m from where the boat was heading`,
       )
     }
 
@@ -610,6 +794,10 @@ export class TrackFilter {
         jy: first.y,
         count: 0,
       }
+      // Taken in as a manoeuvre, but sudden: until it is borne out the
+      // position may be the old one, and the reported error says so.
+      const jumpM = Math.hypot(first.x, first.y)
+      if (jumpM > 2 * sigma) this.held = { at: raw.timestamp, jumpM, fixes: 0 }
     }
     this.inManoeuvre = d2 > MANOEUVRE_CHI2 || q > this.opts.accelNoise
     this.lastInnov = { x: ix.y, y: iy.y }
@@ -664,6 +852,7 @@ export class TrackFilter {
     this.moving = s.moving
     this.rejected.jump += s.count + 1
     this.snap = null
+    this.held = null
     this.run = []
     this.runJump = false
   }
@@ -681,20 +870,177 @@ export class TrackFilter {
     this.run.push(here)
     if (this.run.length > RUN_KEEP) this.run.shift()
     const agreed = this.agreeingTail()
-    if (agreed) {
+    let jumpM = agreed ? this.plausibleJump(agreed[agreed.length - 1]) : null
+    // Refusing a consistent track for long enough is the filter being
+    // wrong, whatever dead reckoning says — its own velocity can be what is
+    // off (after a reflection it half-followed). Believed then, jump held in
+    // the accuracy as ever.
+    if (
+      agreed &&
+      jumpM == null &&
+      agreed.length >= ADOPT_ANYWAY_FIXES &&
+      (raw.timestamp - this.t) / 1000 >= ADOPT_ANYWAY_S &&
+      this.x &&
+      this.y
+    ) {
+      const last = agreed[agreed.length - 1]
+      const T = (last.t - this.t) / 1000
+      jumpM = Math.hypot(last.x - (this.x.p + this.x.v * T), last.y - (this.y.p + this.y.v * T))
+    }
+    if (agreed && jumpM != null) {
       const first = agreed[0]
       const last = agreed[agreed.length - 1]
       const span = (last.t - first.t) / 1000
       const vx = (last.x - first.x) / span
       const vy = (last.y - first.y) / span
       const sv = (STEP_NOISE * Math.hypot(first.acc, last.acc)) / span / 3
+      const before: Adopted | null =
+        this.x && this.y
+          ? {
+              x: { ...this.x },
+              y: { ...this.y },
+              t: this.t,
+              lat0: this.lat0,
+              lon0: this.lon0,
+              mLat: this.mLat,
+              mLon: this.mLon,
+              lastRaw: this.lastRaw,
+              moving: this.moving,
+              at: raw.timestamp,
+              jumpM,
+            }
+          : null
       // The velocity is measured in the old frame, before `begin` moves the
       // origin to this fix — a difference, so the frame does not matter.
       this.begin(raw, r, { vx, vy, vv: Math.max(sv * sv, 0.25) })
+      capToDoppler(this.x as Axis, this.y as Axis, dopplerOf(raw))
       this.settle = SETTLE_FIXES
+      this.adopted = before
+      this.held = { at: raw.timestamp, jumpM, fixes: 0 }
       return this.finish(raw)
     }
+    if (this.x && raw.timestamp - this.t > REFUSE_QUIET_MS) return this.deadReckon(raw, here)
     return { accepted: false, reason: 'jump', raw, detail }
+  }
+
+  /**
+   * How far the jump to `last` moves the position from where the filter's
+   * dead reckoning puts the boat at that time, metres — when a boat could
+   * have got there (no harder than `ADOPT_ACCEL_MPS2` since the last fix
+   * believed, errors allowed for); null when it could not, yet.
+   */
+  private plausibleJump(last: LocalFix): number | null {
+    if (!this.x || !this.y) return 0
+    const T = (last.t - this.t) / 1000
+    const ax = { ...this.x }
+    const ay = { ...this.y }
+    predict(ax, T, this.opts.accelNoise)
+    predict(ay, T, this.opts.accelNoise)
+    const off = Math.hypot(last.x - ax.p, last.y - ay.p)
+    // The prediction's own spread (its velocity was not known exactly
+    // either), and both fixes' errors.
+    const est = CIRCLE_68 * Math.sqrt((ax.pp + ay.pp) / 2)
+    const noise = STEP_NOISE * Math.hypot(last.acc, est)
+    return off <= 0.5 * ADOPT_ACCEL_MPS2 * T * T + noise ? off : null
+  }
+
+  /**
+   * The position the filter runs on to when it has refused everything for
+   * `REFUSE_QUIET_MS`: its own prediction, nothing updated, flagged
+   * `estimate: 'dead-reckoned'` (and settling), with an accuracy that covers
+   * both where dead reckoning puts the boat and where the refused fix does
+   * — one of them is wrong, and the filter cannot yet say which.
+   */
+  private deadReckon(raw: Fix, here: LocalFix): AcceptedFix {
+    const ax = { ...(this.x as Axis) }
+    const ay = { ...(this.y as Axis) }
+    const dt = (raw.timestamp - this.t) / 1000
+    capToDoppler(ax, ay, dopplerOf(raw))
+    const q = Math.max(this.opts.accelNoise, this.boost)
+    predict(ax, dt, q)
+    predict(ay, dt, q)
+    const { lat, lon } = this.toDegrees(ax.p, ay.p)
+    const est = CIRCLE_68 * Math.sqrt((ax.pp + ay.pp) / 2) + 0.5 * DR_ACCEL_MPS2 * dt * dt
+    const toRaw = Math.hypot(here.x - ax.p, here.y - ay.p) + here.acc
+    const accuracy = Math.max(est, toRaw)
+    const vMps = Math.hypot(ax.v, ay.v)
+    const heading =
+      this.moving && vMps >= COURSE_MIN_MPS
+        ? ((Math.atan2(ax.v, ay.v) * 180) / Math.PI + 360) % 360
+        : raw.heading
+    return {
+      accepted: true,
+      fix: {
+        ...raw,
+        lat,
+        lon,
+        accuracy,
+        speed: this.moving ? vMps : 0,
+        heading,
+        settling: true,
+        estimate: 'dead-reckoned',
+      },
+      raw,
+      derived: { speed: true, heading: heading !== raw.heading },
+      settling: true,
+    }
+  }
+
+  /**
+   * Is this fix back on the track the filter was running before it believed
+   * the jump (`adopted`) — consistent with it, and much less so with the
+   * track since?
+   */
+  private returnsToOld(raw: Fix, r: number): boolean {
+    const o = this.adopted
+    if (!o || !this.x || !this.y) return false
+    const dtO = (raw.timestamp - o.t) / 1000
+    const dtN = (raw.timestamp - this.t) / 1000
+    if (!(dtO > 0) || !(dtN > 0)) return false
+    const zo = {
+      x: (raw.lon - o.lon0) * o.mLon,
+      y: (raw.lat - o.lat0) * o.mLat,
+    }
+    const q = this.opts.manoeuvreAccel
+    const d2o = d2Against(o.x, o.y, dtO, q, zo.x, zo.y, r)
+    if (d2o > MANOEUVRE_CHI2) return false
+    const zn = this.toLocal(raw.lat, raw.lon)
+    const d2n = d2Against(this.x, this.y, dtN, q, zn.x, zn.y, r)
+    if (d2n <= GATE_CHI2) return false
+    // …and actually ON the old track, not merely inside a manoeuvre's worth
+    // of doubt about where it went: seconds after the jump that doubt is a
+    // hundred metres wide, and a second reflection 110 m off both tracks
+    // (rc3 dock-0, lies) passed for "the old track", put the filter back six
+    // seconds and took the reflection in at 55 m/s.
+    const dOld = Math.hypot(zo.x - (o.x.p + o.x.v * dtO), zo.y - (o.y.p + o.y.v * dtO))
+    const dNew = Math.hypot(zn.x - (this.x.p + this.x.v * dtN), zn.y - (this.y.p + this.y.v * dtN))
+    const sigma = Math.sqrt(r)
+    return dOld <= RETURN_NEAR_M + 2 * STEP_NOISE * sigma && dOld < 0.5 * dNew
+  }
+
+  /** Put the filter back as it was before it believed the jump. */
+  private unadopt(): void {
+    const o = this.adopted
+    if (!o) return
+    this.lat0 = o.lat0
+    this.lon0 = o.lon0
+    this.mLat = o.mLat
+    this.mLon = o.mLon
+    this.x = { ...o.x }
+    this.y = { ...o.y }
+    this.t = o.t
+    this.lastRaw = o.lastRaw
+    this.moving = o.moving
+    this.boost = 0
+    this.inManoeuvre = false
+    this.lastInnov = null
+    this.bias = { x: 0, y: 0 }
+    this.snap = null
+    this.run = []
+    this.runJump = false
+    this.settle = 0
+    this.adopted = null
+    this.held = null
   }
 
   /**
@@ -765,6 +1111,8 @@ export class TrackFilter {
     this.run = []
     this.runJump = false
     this.snap = null
+    this.adopted = null
+    this.held = null
     this.settle = 0
     this.moving = false
     this.lastRaw = { x: 0, y: 0, acc: Math.sqrt(r), t: raw.timestamp }
@@ -804,7 +1152,27 @@ export class TrackFilter {
     const est = CIRCLE_68 * Math.sqrt((ax.pp + ay.pp) / 2)
     const floor = (raw.accuracy ?? est) * ACCURACY_FLOOR
     const lag = raw.accuracy != null && residualM > raw.accuracy ? residualM : 0
-    const accuracy = Math.max(est, floor, lag)
+    // Just believed a jump: until it is borne out, the old position is as
+    // likely as the new, and the reported error says so — fading over
+    // `ADOPT_HOLD_S`. A ±4 m claim straight after a 100 m jump was the
+    // filter vouching for a reflection.
+    // It fades as fixes bear the new position out: all of it on the first,
+    // two thirds on the next, and so on — and never longer than
+    // `ADOPT_HOLD_S`. (Held for the whole ten seconds, a jump borne out at
+    // once still kept a boat at its destination from being told it had
+    // arrived.)
+    const h = this.held
+    let held = 0
+    if (h) {
+      const left = Math.min(
+        1 - h.fixes / HOLD_FIXES,
+        1 - (raw.timestamp - h.at) / 1000 / ADOPT_HOLD_S,
+      )
+      held = h.jumpM * Math.max(0, left)
+      h.fixes++
+      if (held <= 0) this.held = null
+    }
+    const accuracy = Math.max(est, floor, lag, held)
 
     const vMps = Math.hypot(ax.v, ay.v)
     // How uncertain that velocity is, from the filter's own covariance. A
@@ -829,12 +1197,22 @@ export class TrackFilter {
 
     // Just adopted after a jump, or a sudden jump still on probation: not
     // yet borne out — nothing is to be switched or arrived on it.
-    const settling = this.settle > 0 || this.snap != null
+    const poor = this.poorPass
+    const settling = this.settle > 0 || this.snap != null || poor
     if (this.settle > 0) this.settle--
 
     return {
       accepted: true,
-      fix: { ...raw, lat, lon, accuracy, speed, heading, ...(settling ? { settling: true } : {}) },
+      fix: {
+        ...raw,
+        lat,
+        lon,
+        accuracy,
+        speed,
+        heading,
+        ...(settling ? { settling: true } : {}),
+        ...(poor ? { estimate: 'poor' as const } : {}),
+      },
       raw,
       derived: {
         speed: derivedSpeed && speed != null,

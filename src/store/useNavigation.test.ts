@@ -120,7 +120,7 @@ vi.mock('@/store/useTeams', async () => {
   return { useTeams: create(() => ({ activeTeamId: null as string | null })) }
 })
 
-import { liveShortcut, planningBounds, planRoute } from '@/lib/routing'
+import { liveShortcut, planningBounds, planRoute, widePlanningBounds } from '@/lib/routing'
 import { useChartData } from '@/store/useChartData'
 import { useVessels } from '@/store/useVessels'
 import { useTracker } from '@/store/useTracker'
@@ -317,8 +317,36 @@ describe('planning', () => {
     expect(planRouteMock.mock.calls[1][0].from).toEqual({ lat: origin.lat, lon: origin.lon })
   })
 
-  it('reports a route that cannot be drawn as failed, with the router’s reason', async () => {
+  it('reads the chart over the wider box and plans again before settling for best-effort (rc3 F4)', async () => {
+    // The first plan, on the planning box, could not keep every rule; the
+    // one on the wider chart can (the way round lay just outside the box).
     planRouteMock.mockImplementationOnce(() =>
+      mkPlan([A, B, C], { source: 'best-effort', needsConfirm: true }),
+    )
+    const D = go(B, 45, 0.3)
+    planRouteMock.mockImplementationOnce(() => mkPlan([A, D, C]))
+    await useNavigation.getState().setDestination(DEST, null)
+    const s = useNavigation.getState()
+    expect(s.status).toBe('preview')
+    expect(s.plan!.source).toBe('charted')
+    expect(s.plan!.points[1]).toEqual(D)
+    const wide = widePlanningBounds({ lat: A.lat, lon: A.lon }, { lat: DEST.lat, lon: DEST.lon })
+    expect(vi.mocked(useChartData.getState().load).mock.calls.map((c) => c[0])).toContainEqual(wide)
+    // …and the reload after a restart replays that load too.
+    expect(s.chartLoads.map((l) => l.bounds)).toContainEqual(wide)
+  })
+
+  it('keeps the best-effort plan when the wider chart finds nothing better', async () => {
+    planRouteMock.mockImplementation(() => mkPlan([A, B, C], { source: 'best-effort', needsConfirm: true }))
+    await useNavigation.getState().setDestination(DEST, null)
+    const s = useNavigation.getState()
+    expect(s.plan!.source).toBe('best-effort')
+    expect(planRouteMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a route that cannot be drawn as failed, with the router’s reason', async () => {
+    // Planned twice now — the planning box, then the wider chart (rc3 F4).
+    planRouteMock.mockImplementation(() =>
       mkPlan([], { source: 'none', failure: 'No water path to the destination.' }),
     )
     await useNavigation.getState().setDestination(DEST, null)
@@ -418,7 +446,7 @@ describe('starting', () => {
   })
 
   it('will not steer a best-effort route until the crew confirms it', async () => {
-    planRouteMock.mockImplementationOnce((req) =>
+    planRouteMock.mockImplementation((req) =>
       mkPlan([req.from, B, req.to], { source: 'best-effort', needsConfirm: true }),
     )
     await useNavigation.getState().setDestination(DEST, null)
@@ -469,12 +497,27 @@ describe('onFix — advancing and arriving', () => {
     expect(s.targetIdx).toBe(2)
   })
 
-  it('moves one point per fix, however far the fix jumped', async () => {
+  it('moves through several points on one fix only while the boat is inside each circle in turn', async () => {
+    // Behaviour changed on purpose (rc3 F1): one point per fix left the card
+    // with no course while the boat was already inside the next circle of a
+    // short leg — at 25 kn a 42 m leg is gone between two fixes. The boat is
+    // at D, inside B's circle AND on D itself: both are passed, and the card
+    // steers for C (the line on from here judged as at any switch).
     const D = go(B, 90, m(30))
     await navigating(mkPlan([A, B, D, C]))
     useNavigation.getState().onFix(fixAt(D))
-    expect(useNavigation.getState().targetIdx).toBe(2)
+    expect(useNavigation.getState().targetIdx).toBe(3)
     expect(useNavigation.getState().status).toBe('navigating')
+  })
+
+  it('still never skips a point it is not inside the circle of, however far the fix jumped', async () => {
+    const D = go(B, 90, m(300))
+    await navigating(mkPlan([A, B, D, C]))
+    // A fix jumped onto D, 300 m past B: not inside B's circle, so B is not
+    // passed on it (the jump is the filter's business, and the off-course
+    // rule's), and D is never reached without B.
+    useNavigation.getState().onFix(fixAt(D))
+    expect(useNavigation.getState().targetIdx).toBe(1)
   })
 
   it('does nothing on a stale fix', async () => {
@@ -596,7 +639,7 @@ describe('onFix — off course and re-routing', () => {
   it('keeps steering the current route when a re-route finds nothing', async () => {
     await navigating()
     const before = useNavigation.getState().plan
-    planRouteMock.mockImplementationOnce(() =>
+    planRouteMock.mockImplementation(() =>
       mkPlan([], { source: 'none', failure: 'No water path from here.' }),
     )
     useNavigation.getState().onFix(fixAt(off()))
@@ -613,7 +656,7 @@ describe('onFix — off course and re-routing', () => {
 
   it('clears a failed re-route’s message once the boat is back on the route', async () => {
     await navigating()
-    planRouteMock.mockImplementationOnce(() => mkPlan([], { source: 'none', failure: 'No water path.' }))
+    planRouteMock.mockImplementation(() => mkPlan([], { source: 'none', failure: 'No water path.' }))
     useNavigation.getState().onFix(fixAt(off()))
     vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
     useNavigation.getState().onFix(fixAt(off()))
@@ -1325,11 +1368,22 @@ describe('the simulated-voyage re-check (F1, F5, F7, F8)', () => {
 describe('round first — held on several clear fixes, re-checked on every fix (F2, F6)', () => {
   const verdict = vi.mocked(liveShortcut)
   afterEach(() => verdict.mockReset())
+  /**
+   * The last check of a line FROM THE FIX — the shortcut and the steered
+   * line. (The store now also checks the arc a boat swings round a turn,
+   * from points on the route, for the speed-aware turn — rc3 F1.)
+   */
+  const lastFromFix = () => {
+    const calls = verdict.mock.calls.filter((c) => c[1] !== c[2])
+    return calls[calls.length - 1]
+  }
 
   /** Steering to B, switched 130 ft short of it with the line on unsafe. */
   async function rounding(plan?: RoutePlan) {
     if (plan?.needsConfirm) {
-      planRouteMock.mockImplementationOnce(() => plan)
+      // Both plans — the planning box, then the wider chart (rc3 F4) — come
+      // back the same best-effort route.
+      planRouteMock.mockImplementation(() => plan)
       await useNavigation.getState().setDestination(DEST, null)
       useNavigation.getState().confirmBestEffort()
       expect(useNavigation.getState().start()).toBe(true)
@@ -1366,7 +1420,7 @@ describe('round first — held on several clear fixes, re-checked on every fix (
 
   it('checks the line with the 95 % circle of the fix’s error, not the 68 % one', async () => {
     await rounding()
-    const call = verdict.mock.calls[verdict.mock.calls.length - 1]
+    const call = lastFromFix()
     expect(call[4]).toBeCloseTo(1.6 * 5, 5)
   })
 
@@ -1403,12 +1457,12 @@ describe('round first — held on several clear fixes, re-checked on every fix (
 
   it('holds a best-effort route to "no worse than its own leg" (F6)', async () => {
     await rounding(mkPlan([A, B, C], { source: 'best-effort', needsConfirm: true }))
-    const call = verdict.mock.calls[verdict.mock.calls.length - 1]
+    const call = lastFromFix()
     expect(call[5]).toBe(false)
   })
 
   it('holds a route that meets the rules to the rules', async () => {
     await rounding()
-    expect(verdict.mock.calls[verdict.mock.calls.length - 1][5]).toBe(true)
+    expect(lastFromFix()[5]).toBe(true)
   })
 })

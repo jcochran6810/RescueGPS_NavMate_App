@@ -21,6 +21,7 @@ import {
   chartStateAt,
   depthMarginFor,
   planRoute,
+  widePlanningBounds,
   prepareGrid,
   recomputeArrivalRadii,
   recheckPlan,
@@ -2631,6 +2632,9 @@ describe('planRoute on the Galveston chart — the depth margin', () => {
       speedKn: 5,
       arrivalFt: 100,
       depthMarginM: 0,
+      // And without the planning buffer beyond the stand-off (added later,
+      // F8), which on its own happens to keep this route off the shoal too.
+      planBufferM: 0,
       features,
     })
     expect(marginCheck(old, features, 2.5, 10, 10)).not.toEqual([])
@@ -2841,5 +2845,64 @@ describe('a position on the shared edge of two pieces of land (UI-4)', () => {
     const text = [plan.failure ?? '', ...plan.warnings].join(' ')
     expect(text).toMatch(/destination (is )?on land/)
     expect(text).not.toMatch(/never surveyed/)
+  })
+})
+
+describe('rc3 router findings', () => {
+  const galveston = loadGalveston()
+
+  it('F4: searches wider before calling a passage unsafe — the way round lies just outside the planning box', () => {
+    // A compliant route exists via 29.3151,-94.8230 → 29.3120,-94.7957 →
+    // 29.3224,-94.7764 → …, east of the planning box (-94.778 at its edge).
+    // It came back "no safe route" and a best-effort line through 0 m water.
+    const from = { lat: 29.31885390426229, lon: -94.83115704708305 }
+    const to = { lat: 29.378834054966084, lon: -94.81971725750603 }
+    const box = planningBounds(from, to)
+    const wide = widePlanningBounds(from, to)
+    expect(wide.maxLon).toBeGreaterThan(box.maxLon)
+    const plan = planRoute({ from, to, safeDepthM: 0.6, clearanceM: 30, speedKn: 10, features: galveston, arrivalFt: 150 })
+    expect(plan.source).toBe('charted')
+    expect(plan.needsConfirm).toBe(false)
+    // …and it really is outside the planning box, and really in water.
+    expect(Math.max(...plan.points.map((p) => p.lon))).toBeGreaterThan(box.maxLon)
+    expect(
+      independentCheck(plan, galveston, { safeDepthM: 0.6, clearanceM: 30, stepM: 4, ringEveryM: 40 }),
+    ).toEqual([])
+  })
+
+  it('F8: plans with room beyond the stand-off where it fits, and on the stand-off itself where it does not', () => {
+    // Open water with one island: a leg that has to pass it keeps the
+    // stand-off plus max(3 m, 10 %) — not exactly the stand-off.
+    const features = sea({ land: [{ rings: [rect(-2000, -50, 20, 50)] }] })
+    const plan = planRoute({ from: at(0, -1500), to: at(0, 1500), safeDepthM: 1.5, clearanceM: 30, speedKn: 20, features })
+    expect(plan.source).toBe('charted')
+    const least = Math.min(...plan.legs.map((l) => l.minClearanceM ?? Infinity))
+    expect(least).toBeGreaterThanOrEqual(33 - 0.5)
+    expect(
+      independentCheck(plan, features, { safeDepthM: 1.5, clearanceM: 33, stepM: 4, ringEveryM: 20 }),
+    ).toEqual([])
+    // A 40 m gap between bridge piers still passes a 15 m stand-off (18 m
+    // with the buffer would not): the planner falls back to the exact rule.
+    const hazards = []
+    for (let x = -600; x <= 600; x += 60) {
+      hazards.push({ ...at(x, 0), radiusM: 10, kind: 'pylon' as const, label: 'bridge pylon' })
+    }
+    const piers = sea({ hazards })
+    const through = planRoute({ from: SOUTH, to: NORTH, safeDepthM: 1.5, clearanceM: 15, speedKn: 20, features: piers })
+    expect(through.source).toBe('charted')
+    expect(Math.max(...through.points.map((p) => Math.abs(xy(p).x)))).toBeLessThan(100)
+  })
+
+  it('merges a micro-leg shorter than the arrival circle where the legs that replace it pass', () => {
+    // A dog-leg the grid can leave: two turn points 25 m apart in open
+    // water. Nothing is in the way, so the route is one straight leg.
+    const features = sea()
+    const plan = planRoute({ from: at(0, -1500), to: at(0, 1500), safeDepthM: 1.5, clearanceM: 5, speedKn: 20, features, arrivalFt: 200 })
+    expect(plan.points).toHaveLength(2)
+    // With an island to go round, no leg is shorter than the 200 ft circle.
+    const island = sea({ land: [{ rings: [rect(-300, -40, 300, 40)] }] })
+    const round = planRoute({ from: at(0, -1500), to: at(0, 1500), safeDepthM: 1.5, clearanceM: 30, speedKn: 20, features: island, arrivalFt: 200 })
+    expect(round.source).toBe('charted')
+    for (const leg of round.legs) expect(metresBetween(leg.from, leg.to)).toBeGreaterThanOrEqual(200 * 0.3048)
   })
 })

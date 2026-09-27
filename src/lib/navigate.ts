@@ -15,10 +15,15 @@
  *
  * Three refusals worth knowing before any of them is "fixed":
  *
- * **At most one point per fix.** A coarse fix can land near a point two turns
- * ahead; advancing through several points on one fix is how a crew ends up
- * steering at a mark across a shoal it never rounded. Passing a mark the boat
- * really has passed is `recoverTarget`'s job, and that one asks for evidence.
+ * **One point per step.** A coarse fix can land near a point two turns
+ * ahead; jumping straight to it is how a crew ends up steering at a mark
+ * across a shoal it never rounded. `stepTarget` moves on one point, and only
+ * for a boat inside that point's circle, past it abeam, or gone round it
+ * (`goneRound`). The store may take several steps on one fix — each one
+ * earned the same way, and each switch judged against the chart — because at
+ * speed a short leg is gone between two fixes. Passing a mark the boat
+ * really has passed from a later leg is `recoverTarget`'s job, and that one
+ * asks for evidence.
  *
  * **A poor fix never widens a circle past the point's own radius.** Every
  * point is captured in the crew's own circle (`plan.arrivalFt[i]`, 100–200
@@ -86,6 +91,10 @@ export interface NavFix extends SteerFix {
    * present, the age is measured from this, not from `timestamp`.
    */
   receivedAt?: number | null
+  /** The track filter's own estimate rather than a fix it believes (see `Fix.estimate`). */
+  estimate?: 'dead-reckoned' | 'poor'
+  /** Just jumped, not yet borne out: nothing is switched on it (see `Fix.settling`). */
+  settling?: boolean
 }
 
 /* -------------------------------------------------------------------------
@@ -125,6 +134,8 @@ export const MIN_SOG_KN = 1
  * slowing for a no-wake zone shows within half a minute.
  */
 export const SPEED_TAU_S = 15
+/** Time constant for speed coming UP (getting under way), seconds. */
+export const SPEED_RISE_TAU_S = 2
 
 /** Radius of the sphere `haversineNM` uses (geo.ts), NM. */
 const EARTH_RADIUS_NM = 3440.065
@@ -413,7 +424,8 @@ export interface StepResult {
  * One fix's worth of progress down the route: stay, advance ONE point, or
  * arrive.
  *
- * Two ways to have reached a point, as in `shouldAdvance` (steer.ts):
+ * Three ways to have reached a point — the first two as in `shouldAdvance`
+ * (steer.ts):
  *
  *   1. Inside its circle — `arrivalRadiusFt`: the planned radius, widened by
  *      the fix's error but never past the point's own safe radius.
@@ -424,8 +436,11 @@ export interface StepResult {
  *      because of a shoal or a jetty, and "past it" half a football field
  *      later is not rounding it. It is what catches a mark a poor fix could
  *      not resolve inside the circle.
+ *   3. Gone round it wide (`goneRound`, not for the destination): beyond the
+ *      turn point on the leg into it and not behind the leg out of it,
+ *      however far out — the way on is the leg ahead, never back astern.
  *
- * At the destination both rules mean "arrived" and the index stays put.
+ * At the destination the first two mean "arrived" and the index stays put.
  */
 export function stepTarget(
   plan: NavPlan,
@@ -446,10 +461,48 @@ export function stepTarget(
     reached =
       range <= passLimit && pastMark({ courseDeg: courseOf(plan, idx - 1) }, target, fix)
   }
+  if (!reached && idx >= 1 && idx < n - 1) reached = goneRound(plan, idx, fix)
 
   const measured = { rangeFt: range, radiusFt }
   if (idx === n - 1) return { targetIdx: idx, arrived: reached, gpsPoor, ...measured }
   return { targetIdx: reached ? idx + 1 : idx, arrived: false, gpsPoor, ...measured }
+}
+
+/**
+ * Has the boat gone round turn point `idx` wide — however far out?
+ *
+ * The circle and the pass-abeam rule both stop at 200 ft. A boat that ran
+ * through a turn further out than that (a GPS dropout at the turn, a
+ * sluggish helm at speed) is past the turn point on the leg into it AND not
+ * behind the start of the leg out of it — it is in the quarter beyond the
+ * corner, where the way on is the next leg ahead, never back to the mark:
+ * steering it back there pointed the card dead astern until a re-route. So,
+ * by geometry alone, regardless of the 200 ft limit:
+ *
+ *   - past the turn point along the leg into it;
+ *   - ahead on the leg out of it (or within a quarter of the overshoot
+ *     short of its start line — a turn a little over 90°);
+ *   - and the turn point behind the boat: with a heading, more than 90° off
+ *     it; without one, clearly along the leg out (30 m) and nearer to it
+ *     than to the leg in.
+ *
+ * Round a hairpin the leg out runs back past the overshoot, so it is never
+ * "ahead" there, and the boat is (rightly) sent back round the mark.
+ */
+export function goneRound(plan: NavPlan, idx: number, fix: SteerFix): boolean {
+  const n = plan.points.length
+  if (idx < 1 || idx >= n - 1) return false
+  const turn = plan.points[idx]
+  const inb = legGeometry(plan.points[idx - 1], turn, fix)
+  const past = inb.alongM - inb.lengthM
+  if (!(past > 0)) return false
+  const out = legGeometry(turn, plan.points[idx + 1], fix)
+  if (out.alongM < -0.25 * past) return false
+  if (hasHeading(fix)) {
+    const toTurn = bearingDeg(fix.lat, fix.lon, turn.lat, turn.lon)
+    return angleBetween(fix.heading, toTurn) > SAME_WAY_DEG
+  }
+  return out.alongM >= ON_TRACK_MIN_M && out.distM <= inb.distM
 }
 
 /**
@@ -982,11 +1035,34 @@ export function isOffCourse(
   const idx = clampIdx(plan, targetIdx)
   const threshold =
     positive(opts.thresholdM) ?? offCourseThresholdM(plan, idx, fix, opts)
-  const dist =
+  return routeDistM(plan, idx, fix) > threshold
+}
+
+/**
+ * How far the boat is from the route where it is running it, metres: the
+ * nearest of the leg into point `targetIdx`, the leg before it and the leg
+ * after it (steering to the first point: that point, and the first leg).
+ *
+ * The leg into the target alone is not enough. The target is switched up to
+ * 200 ft BEFORE the turn point, and for that last stretch the boat is still
+ * running the previous leg, dead on its line — yet up to 200 ft from the new
+ * leg's segment, which begins at the turn. At a slow speed that stretch
+ * takes longer than the 10 s off-course hold, and a boat exactly on the
+ * route was being re-routed after every early switch. Measured to the route
+ * round the turn, it is where it should be. A boat that overshot a turn, or
+ * wandered off, is still far from all of them.
+ */
+export function routeDistM(plan: NavPlan, targetIdx: number, fix: LatLon): number {
+  const n = plan.points.length
+  if (n === 0) return Infinity
+  const idx = clampIdx(plan, targetIdx)
+  let d =
     idx >= 1
       ? legGeometry(plan.points[idx - 1], plan.points[idx], fix).distM
       : haversineNM(fix.lat, fix.lon, plan.points[0].lat, plan.points[0].lon) * NM_TO_METERS
-  return dist > threshold
+  if (idx >= 2) d = Math.min(d, legGeometry(plan.points[idx - 2], plan.points[idx - 1], fix).distM)
+  if (idx + 1 < n) d = Math.min(d, legGeometry(plan.points[idx], plan.points[idx + 1], fix).distM)
+  return d
 }
 
 /**
@@ -997,14 +1073,87 @@ export function isOffCourse(
  * stale too — an age that cannot be known cannot be trusted.
  */
 export function isStale(
-  fix: { timestamp?: number | null; receivedAt?: number | null } | null | undefined,
+  fix:
+    | { timestamp?: number | null; receivedAt?: number | null; speed?: number | null }
+    | null
+    | undefined,
   now: number = Date.now(),
-  maxAgeS: number = STALE_FIX_S,
+  maxAgeS?: number,
 ): boolean {
   if (!fix) return true
   const ts = fixTime(fix)
   if (ts == null) return true
-  return now - ts > maxAgeS * 1000
+  return now - ts > (maxAgeS ?? staleAfterS(fix)) * 1000
+}
+
+/** The least age a fix is shown as live for, seconds, however fast the boat. */
+export const STALE_MIN_S = 5
+/**
+ * How far the boat may run on a fix before it is no longer "where the boat
+ * is", metres. At 25 kn the old flat 15 s was 190 m of passage steered on a
+ * frozen position shown as live.
+ */
+export const STALE_RUN_M = 60
+
+/**
+ * How old a fix may be and still be steered by, seconds: the time the boat
+ * takes to run `STALE_RUN_M` at the fix's own speed, never less than
+ * `STALE_MIN_S` nor more than `STALE_FIX_S` (the old flat limit, still the
+ * one for a boat barely moving or a fix with no speed).
+ */
+export function staleAfterS(fix: { speed?: number | null } | null | undefined): number {
+  const v = fix?.speed
+  if (v == null || !Number.isFinite(v) || v <= 0) return STALE_FIX_S
+  return Math.min(STALE_FIX_S, Math.max(STALE_MIN_S, STALE_RUN_M / v))
+}
+
+/** Below this age a fix is used as it is, seconds — one fix interval. */
+const DR_AFTER_S = 1.5
+/**
+ * How fast a dead-reckoned position's error grows, as an acceleration, m/s²:
+ * the boat may turn or change speed after the last fix, and after `t`
+ * seconds it may be ½·a·t² from where running on at the old velocity puts
+ * it. 2 m/s² is a firm turn for a planing boat.
+ */
+const DR_ACCEL_MPS2 = 2
+/** Without a course and speed, the error grows this fast instead, m/s. */
+const DR_BLIND_MPS = 5
+
+/**
+ * Where the boat is NOW on the strength of a fix `now − fixTime` old: run on
+ * at the fix's course and speed, with the accuracy widened for the time since
+ * (see `DR_ACCEL_MPS2`). A fix under a fix interval old is returned as it
+ * is. `deadReckoned` says the position is an estimate between fixes.
+ *
+ * Between the last fix and "stale" (`staleAfterS`) the card works its numbers
+ * from this, so a boat running on through a short dropout is not shown
+ * steering from where it was seconds ago — and the growing error is shown.
+ */
+export function deadReckon<F extends NavFix>(fix: F, now: number): F & { deadReckoned?: boolean } {
+  const ts = fixTime(fix)
+  if (ts == null) return fix
+  const age = (now - ts) / 1000
+  if (!(age > DR_AFTER_S)) return fix
+  const acc =
+    fix.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0 ? fix.accuracy : 0
+  const v = fix.speed
+  const h = fix.heading
+  if (v == null || !Number.isFinite(v) || v < 0 || h == null || !Number.isFinite(h)) {
+    return { ...fix, accuracy: acc + DR_BLIND_MPS * age, deadReckoned: true }
+  }
+  const run = v * age
+  const rad = (h * Math.PI) / 180
+  const dy = run * Math.cos(rad)
+  const dx = run * Math.sin(rad)
+  const lat = fix.lat + dy / M_PER_DEG
+  const lon = fix.lon + dx / (M_PER_DEG * Math.cos((fix.lat * Math.PI) / 180))
+  return {
+    ...fix,
+    lat,
+    lon,
+    accuracy: acc + 0.5 * DR_ACCEL_MPS2 * age * age,
+    deadReckoned: true,
+  }
 }
 
 /**
@@ -1049,6 +1198,15 @@ export function smoothSpeedKn(
   const kn = raw * MPS_TO_KNOTS
   if (prev == null) return kn
   const dt = Number.isFinite(dtS) && dtS > 0 ? dtS : 1
-  const alpha = 1 - Math.exp(-dt / SPEED_TAU_S)
+  // Getting under way from a standstill, the smoothed figure used to crawl
+  // up from 0 with the full time constant: a minute after Start the ETA was
+  // still worked at a few knots, up to 17 times too long. Below a knot the
+  // old figure says nothing (the card uses the cruise speed there anyway),
+  // so a boat that starts making way takes its speed at once; and speed
+  // coming up is followed on a short time constant — a boat accelerating is
+  // not noise — while speed dropping keeps the long one.
+  if (prev < MIN_SOG_KN && kn >= MIN_SOG_KN) return kn
+  const tau = kn > prev ? SPEED_RISE_TAU_S : SPEED_TAU_S
+  const alpha = 1 - Math.exp(-dt / tau)
   return prev + alpha * (kn - prev)
 }

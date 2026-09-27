@@ -232,6 +232,11 @@ export interface RouteRequest {
    * `depthMarginFor(clearanceM)`; 0 turns it off.
    */
   depthMarginM?: number
+  /**
+   * Room planned beyond the stand-off, metres, where it fits. Default
+   * max(3 m, 10 % of the stand-off); 0 plans on the stand-off itself.
+   */
+  planBufferM?: number
 }
 
 /** Least and most lateral depth margin, metres. */
@@ -458,8 +463,31 @@ const REPAIR_WINDOW_M = 500
 const OPTIMISTIC_GAIN = 0.05
 
 /** Legs shorter than this, and turns smaller than this, are merged away. */
-const STUB_LEG_M = 20
 const STRAIGHT_TURN_DEG = 3
+
+/**
+ * Room planned beyond the stand-off, so a leg is not laid exactly on it: at
+ * least this many metres, or this share of the stand-off, whichever is more.
+ * A leg planned at exactly 5 m from a bank left the boat's own helm error —
+ * a few metres at any speed — inside the stand-off. Where the buffer does not
+ * fit (a narrow channel) the route is planned on the stand-off itself.
+ */
+const PLAN_BUFFER_MIN_M = 3
+const PLAN_BUFFER_FRACTION = 0.1
+/**
+ * The route with the buffer is taken unless it is longer than the route on
+ * the stand-off itself by more than this factor and distance together.
+ */
+const BUFFER_DETOUR_FACTOR = 1.03
+const BUFFER_DETOUR_M = 50
+
+/**
+ * The wider search before any rule is bent: the planning box with its margin
+ * multiplied by this, clipped to the chart actually loaded. A compliant way
+ * round lying just outside the planning box used to turn into "no safe
+ * route" and a best-effort line through 0 m water.
+ */
+const WIDE_MARGIN_FACTOR = 2.2
 
 /**
  * The best-effort ladder: the stand-off is reduced to these fractions of what
@@ -735,6 +763,44 @@ export function planningBounds(from: LatLon, to: LatLon): Bounds {
     Math.max(PLAN_MIN_MARGIN_M, directM * PLAN_MARGIN_FRACTION),
   )
   return boxAround(from, to, marginM)
+}
+
+/**
+ * The widest box the planner searches before bending a rule (`planRoute`):
+ * the planning box with `WIDE_MARGIN_FACTOR` times its margin, still clamped
+ * to 25 NM. The navigation store loads the chart over it when a plan on the
+ * planning box could not keep every rule.
+ */
+export function widePlanningBounds(from: LatLon, to: LatLon): Bounds {
+  const directM = haversineNM(from.lat, from.lon, to.lat, to.lon) * NM_TO_METERS
+  const marginM = Math.min(
+    PLAN_MAX_MARGIN_M,
+    WIDE_MARGIN_FACTOR * Math.max(PLAN_MIN_MARGIN_M, directM * PLAN_MARGIN_FRACTION),
+  )
+  return boxAround(from, to, marginM)
+}
+
+/** The box the loaded chart's depth areas span, or null for none. Cached per chart. */
+const extentCache = new WeakMap<ChartFeatures, Bounds | null>()
+function chartExtent(f: ChartFeatures): Bounds | null {
+  if (extentCache.has(f)) return extentCache.get(f) ?? null
+  let minLat = Infinity
+  let minLon = Infinity
+  let maxLat = -Infinity
+  let maxLon = -Infinity
+  for (const a of f.depthAreas) {
+    for (const ring of a.rings) {
+      for (const [lon, lat] of ring) {
+        if (lat < minLat) minLat = lat
+        if (lat > maxLat) maxLat = lat
+        if (lon < minLon) minLon = lon
+        if (lon > maxLon) maxLon = lon
+      }
+    }
+  }
+  const out = Number.isFinite(minLat) ? { minLat, minLon, maxLat, maxLon } : null
+  extentCache.set(f, out)
+  return out
 }
 
 /**
@@ -2427,7 +2493,7 @@ function turnDeg(a: XY, p: XY, b: XY): number {
 }
 
 /**
- * Merge away stub legs (under `STUB_LEG_M`) and turns too small to steer
+ * Merge away stub legs (shorter than the arrival circle) and turns too small to steer
  * (under `STRAIGHT_TURN_DEG`) — but only where the leg that replaces them
  * passes the same check. A splice from a repair, or the join from an exact
  * endpoint to its cell, leaves exactly these; a crew does not want a
@@ -2450,19 +2516,59 @@ function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: 
       const a = out[i - 1]
       const p = out[i]
       const b = out[i + 1]
+      // A leg shorter than the arrival circle anywhere along the route is
+      // a micro-leg: the boat is inside the next circle before it reaches
+      // this one, and at speed it is gone between two fixes. Dropped where
+      // the leg that replaces it passes the same check.
       const stub =
-        distXY(a, p) < STUB_LEG_M ||
-        distXY(p, b) < STUB_LEG_M ||
-        (i === out.length - 2 && distXY(p, b) < endStubM) ||
-        (i === 1 && distXY(a, p) < endStubM)
+        distXY(a, p) < endStubM ||
+        distXY(p, b) < endStubM
       if (!stub && turnDeg(a, p, b) >= STRAIGHT_TURN_DEG) continue
       if (!noWorse(ctx, mode, a, b, [[a, p], [p, b]])) continue
       out.splice(i, 1)
       changed = true
       break
     }
+    if (changed) continue
+    // A micro-leg neither end of which can simply go (a dog-leg round a
+    // shoal): both its ends replaced by one point — where the legs either
+    // side of it meet, or its middle — when the two legs that makes pass.
+    for (let i = 1; i + 2 < out.length; i++) {
+      if (snapStart && i === 1) continue
+      if (snapEnd && i + 1 === out.length - 2) continue
+      const a = out[i - 1]
+      const p = out[i]
+      const q = out[i + 1]
+      const b = out[i + 2]
+      if (distXY(p, q) >= endStubM) continue
+      const cands: XY[] = []
+      const x = lineMeet(a, p, q, b)
+      if (x && distXY(x, p) + distXY(x, q) <= 3 * distXY(p, q) + 1e-9) cands.push(x)
+      cands.push({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 })
+      const parts: [XY, XY][] = [[a, p], [p, q], [q, b]]
+      const m = cands.find(
+        (c) => noWorse(ctx, mode, a, c, parts) && noWorse(ctx, mode, c, b, parts),
+      )
+      if (!m) continue
+      out.splice(i, 2, m)
+      changed = true
+      break
+    }
   }
   return out
+}
+
+/** Where line a→p (extended) meets line q→b (extended); null when they are parallel. */
+function lineMeet(a: XY, p: XY, q: XY, b: XY): XY | null {
+  const d1x = p.x - a.x
+  const d1y = p.y - a.y
+  const d2x = b.x - q.x
+  const d2y = b.y - q.y
+  const den = d1x * d2y - d1y * d2x
+  if (Math.abs(den) < 1e-9) return null
+  const t = ((q.x - a.x) * d2y - (q.y - a.y) * d2x) / den
+  if (!(t > 0)) return null
+  return { x: a.x + t * d1x, y: a.y + t * d1y }
 }
 
 /** Plan in one mode over one box: route, repair, tidy. */
@@ -2656,13 +2762,13 @@ function channelTest(
  * indexed over the planning box and a pad, the ends in its metres, the
  * approach zones, the depth margin and the channel test.
  */
-function makeCtx(req: RouteRequest): Ctx {
+function makeCtx(req: RouteRequest, box?: Bounds): Ctx {
   const { features } = req
   const safeDepthM = Number.isFinite(req.safeDepthM) ? Math.max(0, req.safeDepthM) : 0
   const clearanceM = Number.isFinite(req.clearanceM) ? Math.max(0, req.clearanceM) : 0
   const approachM = Number.isFinite(req.approachM) ? Math.max(0, req.approachM as number) : DEFAULT_APPROACH_M
 
-  const planBox = planningBounds(req.from, req.to)
+  const planBox = box ?? planningBounds(req.from, req.to)
   // The index reaches past the planning box. It clips every polygon to its
   // own box and reads beyond it as unsurveyed, so land lying just outside
   // an index the size of the planning box was invisible to the stand-off
@@ -2754,13 +2860,13 @@ export function planRoute(req: RouteRequest): RoutePlan {
 
   const strict: Mode = { clearanceM, wantClearanceM: clearanceM, allowShallow: false, optimistic: false }
   let lastFailure: Failure = 'path'
-  const tryMode = (box: Bounds, mode: Mode): Built | null => {
-    const b = attempt(ctx, box, mode)
+  const tryMode = (c: Ctx, box: Bounds, mode: Mode): Built | null => {
+    const b = attempt(c, box, mode)
     if (typeof b === 'string') {
       lastFailure = b
       return null
     }
-    return accepted(ctx, b) ? b : null
+    return accepted(c, b) ? b : null
   }
 
   // Each mode is searched on the conservative grid first. When that finds a
@@ -2771,19 +2877,62 @@ export function planRoute(req: RouteRequest): RoutePlan {
   // closes. When the conservative grid finds nothing, the optimistic read is
   // the second chance.
   const directM = distXY(from, to)
-  const tryBox = (box: Bounds, mode: Mode): Built | null => {
-    const safe = tryMode(box, mode)
+  const tryBox = (c: Ctx, box: Bounds, mode: Mode): Built | null => {
+    const safe = tryMode(c, box, mode)
     // Nothing can be 5 % shorter than a route already within 5 % of the
     // straight line — the open-water case, which is most of them.
     if (safe && lengthOf(safe.pts) * (1 - OPTIMISTIC_GAIN) <= directM) return safe
-    const bold = tryMode(box, { ...mode, optimistic: true })
+    const bold = tryMode(c, box, { ...mode, optimistic: true })
     if (!safe) return bold
     if (bold && lengthOf(bold.pts) < lengthOf(safe.pts) * (1 - OPTIMISTIC_GAIN)) return bold
     return safe
   }
 
-  // 1–2: every rule intact — the ordinary box, then the wide one.
-  let built = tryBox(routeBounds(req.from, req.to), strict) ?? tryBox(planBox, strict)
+  // 1: every rule intact, with room to spare — the stand-off plus a buffer
+  // (`PLAN_BUFFER_MIN_M`), in the ordinary box and then the wide one. The
+  // same chart index and grids; only the stand-off the search keeps grows.
+  const buffer =
+    req.planBufferM != null && Number.isFinite(req.planBufferM)
+      ? Math.max(0, req.planBufferM)
+      : clearanceM > 0
+        ? Math.max(PLAN_BUFFER_MIN_M, PLAN_BUFFER_FRACTION * clearanceM)
+        : 0
+  let built: Built | null = null
+  if (buffer > 0) {
+    const roomy: Ctx = { ...ctx, clearanceM: clearanceM + buffer, budget: REPAIR_BUDGET }
+    const mode: Mode = { ...strict, clearanceM: clearanceM + buffer, wantClearanceM: clearanceM + buffer }
+    built = tryBox(roomy, routeBounds(req.from, req.to), mode) ?? tryBox(roomy, planBox, mode)
+  }
+
+  // 2: every rule intact, on the stand-off itself — a narrow channel that
+  // has no room for the buffer is still a channel. Also where the buffer
+  // only fits a long way round: 3 m more room is not worth going round a
+  // bridge for when the gap between its piers keeps the stand-off.
+  if (!built || lengthOf(built.pts) > directM * (1 + OPTIMISTIC_GAIN)) {
+    ctx.budget = REPAIR_BUDGET
+    const tight = tryBox(ctx, routeBounds(req.from, req.to), strict) ?? tryBox(ctx, planBox, strict)
+    if (
+      tight &&
+      (!built || lengthOf(built.pts) > lengthOf(tight.pts) * BUFFER_DETOUR_FACTOR + BUFFER_DETOUR_M)
+    ) {
+      built = tight
+    }
+  }
+
+  // 3: every rule intact, further afield — a wider box, as far as the chart
+  // that is loaded reaches, before any rule is bent.
+  let use = ctx
+  if (!built) {
+    const wide = clipTo(widePlanningBounds(req.from, req.to), chartExtent(features), planBox)
+    if (wide) {
+      const wideCtx = makeCtx(req, wide)
+      const got = tryBox(wideCtx, wide, strict)
+      if (got) {
+        built = got
+        use = wideCtx
+      }
+    }
+  }
 
   // Is there any water path at all? The most relaxed mode answers in one
   // sweep (per view of the grid), and saves climbing down a ladder that ends
@@ -2814,23 +2963,44 @@ export function planRoute(req: RouteRequest): RoutePlan {
     if (reason) return nonePlan(req, failureText(reason, ctx), baseWarnings)
   }
 
-  // 3: the stand-off, a step at a time.
+  // 4: the stand-off, a step at a time.
   if (!built && clearanceM > CLEARANCE_FLOOR_M) {
     const rungs = [...new Set(
       [...LADDER_FRACTIONS.map((f) => clearanceM * f), CLEARANCE_FLOOR_M]
         .map((c) => Math.max(CLEARANCE_FLOOR_M, c)),
     )]
     for (const c of rungs) {
-      built = tryBox(planBox, { clearanceM: c, wantClearanceM: clearanceM, allowShallow: false, optimistic: false })
+      built = tryBox(ctx, planBox, { clearanceM: c, wantClearanceM: clearanceM, allowShallow: false, optimistic: false })
       if (built) break
     }
   }
 
-  // 4: shallow water, at a price.
-  if (!built) built = tryBox(planBox, shallowMode)
+  // 5: shallow water, at a price.
+  if (!built) built = tryBox(ctx, planBox, shallowMode)
   if (!built) return nonePlan(req, failureText(lastFailure, ctx), baseWarnings)
 
-  return finish(ctx, built, arrivalReq, baseWarnings)
+  return finish(use, built, arrivalReq, baseWarnings)
+}
+
+/**
+ * `box`, clipped to the chart's extent — but never smaller than `floor` (the
+ * planning box, which the chart was loaded for). Null when the clip leaves
+ * nothing beyond the floor to search.
+ */
+function clipTo(box: Bounds, extent: Bounds | null, floor: Bounds): Bounds | null {
+  const e = extent ?? floor
+  const out = {
+    minLat: Math.min(floor.minLat, Math.max(box.minLat, e.minLat)),
+    minLon: Math.min(floor.minLon, Math.max(box.minLon, e.minLon)),
+    maxLat: Math.max(floor.maxLat, Math.min(box.maxLat, e.maxLat)),
+    maxLon: Math.max(floor.maxLon, Math.min(box.maxLon, e.maxLon)),
+  }
+  const grows =
+    out.minLat < floor.minLat - 1e-9 ||
+    out.minLon < floor.minLon - 1e-9 ||
+    out.maxLat > floor.maxLat + 1e-9 ||
+    out.maxLon > floor.maxLon + 1e-9
+  return grows ? out : null
 }
 
 function lengthOf(pts: XY[]): number {
@@ -3377,6 +3547,101 @@ export function liveShortcut(
   const leg = checkSegment(ix, t.x, t.y, g.x, g.y, opts)
   if (leg.ok) return 'unsafe'
   return noWorseThanLeg(line, leg) ? 'clear' : 'unsafe'
+}
+
+/**
+ * May the boat steer straight from the fix to `target` instead of along the
+ * path fix → `via`… → target? The line is checked like a leg, with the fix's
+ * error added to the stand-off and the depth margin (see `liveShortcut`).
+ * `clear` when it passes; when it does not, `clear` still if the path it
+ * replaces fails too (with that error added) and the line is no worse than
+ * the worst of the path, rule by rule — never less water, less room or more
+ * unsurveyed water than the way it stands in for — or if the line meets the
+ * rules with the smaller allowance `plainM` added. `unsafe` otherwise; null
+ * without a chart for it.
+ *
+ * Used to turn a boat onto the leg out of a turn point before it gets there
+ * ("Round waypoint N first"). The path is judged from the first `via` point
+ * on — the planned stretches — never from where the boat happens to be.
+ */
+export function livePathShortcut(
+  req: LiveChartRequest,
+  fix: LatLon,
+  via: readonly LatLon[],
+  target: LatLon,
+  accuracyM?: number | null,
+  plainM?: number | null,
+): ShortcutVerdict | null {
+  const ctx = liveCtx(req)
+  if (!ctx) return null
+  const { ix } = ctx
+  const pts = [fix, ...via, target].map((p) => toXY(ix.proj, p))
+  if (!pts.every((p) => insideIndex(ix, p))) return null
+  const acc = accuracyOf(accuracyM)
+  const opts = {
+    safeDepthM: ctx.safeDepthM,
+    clearanceM: ctx.clearanceM + acc,
+    zones: ctx.zones,
+    depthMarginM: ctx.depthMarginM + acc,
+    inChannel: ctx.inChannel,
+  }
+  const p = pts[0]
+  const g = pts[pts.length - 1]
+  const line = checkSegment(ix, p.x, p.y, g.x, g.y, opts)
+  if (line.ok) return 'clear'
+  // The path's standard is its planned stretches — from the first `via`
+  // point on — not the boat's own position: measured from the fix, a boat
+  // already close along a bank set its own (lower) bar, and each fix's line
+  // was allowed a little closer than the last.
+  let worst: SegmentCheck | null = null
+  for (let i = via.length > 0 ? 1 : 0; i + 1 < pts.length; i++) {
+    const a = pts[i]
+    const b = pts[i + 1]
+    if (Math.hypot(b.x - a.x, b.y - a.y) < 0.5) continue
+    const r = checkSegment(ix, a.x, a.y, b.x, b.y, opts)
+    worst = worst ? worstOf(worst, r) : r
+  }
+  if (worst && !worst.ok && noWorseThanLeg(line, worst)) return 'clear'
+  // Or the line meets the rules every planned leg meets with `plainM` (the
+  // fix's 68 % error, rather than its 95 %) added. A turn started a few
+  // metres early cuts inside the corner by a few metres; where the route
+  // hugs a bank on the outside, "no worse than the path" refused every such
+  // line, and the boat was sent on at the mark and turned there — too late.
+  const plainAcc = plainM == null ? null : accuracyOf(plainM)
+  if (plainAcc != null && plainAcc < acc) {
+    const plain = checkSegment(ix, p.x, p.y, g.x, g.y, {
+      ...opts,
+      clearanceM: ctx.clearanceM + plainAcc,
+      depthMarginM: ctx.depthMarginM + plainAcc,
+    })
+    if (plain.ok) return 'clear'
+  }
+  return 'unsafe'
+}
+
+/** The worse of two checks, rule by rule — a path's standard is its worst stretch. */
+function worstOf(a: SegmentCheck, b: SegmentCheck): SegmentCheck {
+  const minN = (x: number | null, y: number | null) =>
+    x == null ? y : y == null ? x : Math.min(x, y)
+  return {
+    ok: a.ok && b.ok,
+    depthOk: a.depthOk && b.depthOk,
+    clearanceOk: a.clearanceOk && b.clearanceOk,
+    crossesLand: a.crossesLand || b.crossesLand,
+    entersHazard: a.entersHazard || b.entersHazard,
+    usedApproach: a.usedApproach || b.usedApproach,
+    approachDepth: a.approachDepth || b.approachDepth,
+    approachClearance: a.approachClearance || b.approachClearance,
+    nearShoal: a.nearShoal || b.nearShoal,
+    nearShoalDepthM: minN(a.nearShoalDepthM, b.nearShoalDepthM),
+    nearShoalDistM: minN(a.nearShoalDistM, b.nearShoalDistM),
+    shallow: a.shallow || b.shallow,
+    unsurveyed: a.unsurveyed || b.unsurveyed,
+    minDepthM: minN(a.minDepthM, b.minDepthM),
+    minDepthOutsideM: minN(a.minDepthOutsideM, b.minDepthOutsideM),
+    minClearanceM: minN(a.minClearanceM, b.minClearanceM),
+    clearanceOutsideM: Math.min(a.clearanceOutsideM, b.clearanceOutsideM),
+  }
 }
 
 /** What lies close to the line ahead — see `liveAhead`. */

@@ -267,9 +267,15 @@ describe('stepTarget — passing abeam', () => {
     expect(stepTarget(plan, 1, past, { arrivalFt: 150 }).targetIdx).toBe(2)
   })
 
+  // A turn sharper than a right angle (120°): a boat run on past the mark is
+  // NOT ahead on the leg out of it, so only the pass-abeam rule can move it
+  // on. (Round a right angle or less it has gone round by geometry — see
+  // `goneRound` — however far out; behaviour changed on purpose, rc3 F3.)
+  const sharp = { points: [A, B, go(B, 120, 1)], arrivalFt: [150, 50, 150] }
+
   it('not beyond two circles', () => {
     const past = { ...go(B, 0, ft(130)), heading: 0 }
-    expect(stepTarget(plan, 1, past, { arrivalFt: 150 }).targetIdx).toBe(1)
+    expect(stepTarget(sharp, 1, past, { arrivalFt: 150 }).targetIdx).toBe(1)
   })
 
   it('never beyond 200 ft, however wide the circle — the crew’s 100–200 ft rule', () => {
@@ -279,17 +285,23 @@ describe('stepTarget — passing abeam', () => {
     // outside anything the planner's corner check measured. Old rule before
     // that: 3 × 150 = 450 ft.
     expect(PASS_ABEAM_MAX_FT).toBe(200)
-    const wide = { points: [A, B, C], arrivalFt: [200, 200, 200] }
+    const wide = { points: [A, B, go(B, 120, 1)], arrivalFt: [200, 200, 200] }
     const at190 = { ...go(B, 0, ft(190)), heading: 0 }
     const at250 = { ...go(B, 0, ft(250)), heading: 0 }
     const at390 = { ...go(B, 0, ft(390)), heading: 0 }
     expect(stepTarget(wide, 1, at190, { arrivalFt: 200 }).targetIdx).toBe(2)
     expect(stepTarget(wide, 1, at250, { arrivalFt: 200 }).targetIdx).toBe(1)
     expect(stepTarget(wide, 1, at390, { arrivalFt: 200 }).targetIdx).toBe(1)
-    // At the 150 ft setting: 256 ft and 298 ft past (the drift runs) no
-    // longer switch.
-    expect(stepTarget(L, 1, { ...go(B, 0, ft(256)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
-    expect(stepTarget(L, 1, { ...go(B, 0, ft(298)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
+    // At the 150 ft setting: 256 ft and 298 ft past no longer switch by
+    // pass-abeam…
+    const sharpL = { points: [A, B, go(B, 120, 1)] }
+    expect(stepTarget(sharpL, 1, { ...go(B, 0, ft(256)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
+    expect(stepTarget(sharpL, 1, { ...go(B, 0, ft(298)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
+    // …but round a right angle the boat run on past the mark is beyond the
+    // corner on both legs: it has gone round (rc3 F3), however far out, and
+    // the card must not point it back astern at the mark.
+    expect(stepTarget(L, 1, { ...go(B, 0, ft(298)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(2)
+    expect(stepTarget(L, 1, at390, { arrivalFt: 200 }).targetIdx).toBe(2)
   })
 
   it('gives the mark back to a boat that is coming round again', () => {

@@ -25,10 +25,12 @@ import { bearingDeg, formatDuration, haversineNM } from './geo'
 import { declinationAt } from './geomag'
 import {
   arrivalRadiusFt,
+  deadReckon,
   fixTime,
   isStale,
   navProgress,
   steerCourse,
+  stepTarget,
   XTE_CUE_M,
   STALE_FIX_S,
   type NavFix,
@@ -409,6 +411,14 @@ export interface NavCardInput {
    */
   roundIdx?: number | null
   /**
+   * While rounding: the point the store found the boat can steer for on a
+   * line the chart clears — on the leg out of the turn point where it can,
+   * so the boat is turned onto that leg rather than driven at the mark and
+   * turned there (`useNavigation.roundAim`). The course to steer is to it;
+   * the bearing and distance to the turn point are still shown beside it.
+   */
+  roundAim?: LatLon | null
+  /**
    * Speed made good along the route, knots (`routeSpeedKn`) — what the ETA
    * is worked at when known; the smoothed speed over the ground otherwise.
    */
@@ -425,6 +435,11 @@ export interface NavCardInput {
    * (`useNavigation.gpsSlow`): the card goes red — slow down.
    */
   gpsSlow?: boolean
+  /**
+   * The next turn is too tight for the boat's speed (`useNavigation.turnSlow`):
+   * the card goes red — "Slow down for the turn".
+   */
+  turnSlow?: boolean
   /** How depths are written on this card (default feet first). */
   formatDepth?: (m: number) => string
   destLabel?: string | null
@@ -449,6 +464,8 @@ export interface NavNotice {
     | 'round-first'
     | 'gps-margin'
     | 'gps-slow'
+    | 'estimated'
+    | 'turn-slow'
   text: string
   /** How loud: red for a rule broken, amber for "check this". */
   tone?: 'alert' | 'caution'
@@ -472,10 +489,18 @@ export interface NavCardView {
    */
   pointBearing: string | null
   /**
-   * Off the line into the point: "Steer 12° right to get back on the line ·
-   * 45 ft off track". Null on the line (within `XTE_CUE_M`), or with no fix.
+   * Off the line into the point: "45 ft right of the line", or, well off
+   * it, "Off the route by 820 ft — re-routing if you stay off". The only
+   * turn cue on the card is `turn` (from the heading to the course to
+   * steer); this says only where the boat is. Null on the line (within
+   * `XTE_CUE_M`), while rounding, or with no fix.
    */
   backOnLine: string | null
+  /**
+   * The point the second row is about: "WP 3", "Dest", "Start" — always
+   * shown with its bearing (`pointBearing`, or "at the mark") and distance.
+   */
+  wpLabel: string
   /** Distance off the line into the point, feet, + = right of it; null without one. */
   xteFt: number | null
   /**
@@ -483,8 +508,16 @@ export interface NavCardView {
    * See `NavCardInput.gpsSlow`.
    */
   slowDown: boolean
-  /** Inside the arrival circle of the target. */
+  /** The headline when `slowDown`: why to slow down, in a few words. */
+  slowText: string | null
+  /** Inside the arrival circle of the target, on a fix the store switches on. */
   atMark: boolean
+  /**
+   * Inside the arrival circle by the fix shown — also on a fix still
+   * settling, which the store does not switch on (`atMark` false then).
+   * The waypoint row says "at the mark" rather than a bearing that is jitter.
+   */
+  inCircle: boolean
   /** "850 ft" / "1.24 NM" / "—". */
   distance: string
   turn: TurnCue | null
@@ -529,8 +562,28 @@ function accuracyText(m: number): string {
   return `±${Math.round(m * M_TO_FEET)} ft`
 }
 
+/** Beyond this far off the line (metres) the card says the boat is off the route. */
+const OFF_ROUTE_CUE_M = 60
+
+/** A fix must claim this much more error than the safety margin before the card says so, metres. */
+const MARGIN_SLACK_M = 1
+
 /** Turn-cue deadband, degrees: inside it the boat is "on course". */
 export const ON_COURSE_DEG = 5
+
+/**
+ * The course of the leg into point `idx` (the first leg, for the start),
+ * degrees true; null for a one-point plan.
+ */
+function legCourse(plan: Pick<RoutePlan, 'points'>, idx: number): number | null {
+  const pts = plan.points
+  if (pts.length < 2) return null
+  const i = Math.max(1, Math.min(idx, pts.length - 1))
+  const a = pts[i - 1]
+  const b = pts[i]
+  if (haversineNM(a.lat, a.lon, b.lat, b.lon) * 1852 < 1) return null
+  return bearingDeg(a.lat, a.lon, b.lat, b.lon)
+}
 
 /**
  * Everything the big card (and the banner) shows, from the store's state and
@@ -542,7 +595,21 @@ export function navCardView(input: NavCardInput): NavCardView {
   const n = plan.points.length
   const last = n - 1
   const clampIdx = (i: number) => Math.min(Math.max(i, 0), Math.max(n - 1, 0))
-  const logical = clampIdx(input.targetIdx ?? 1)
+  const stale = !fix || isStale(fix, now)
+  // Between fixes — a fix interval late up to stale — the numbers are worked
+  // from where the boat has run on to since (course and speed from the last
+  // fix), with the error that grows with it: a boat at 25 kn covers 60 m in
+  // the 5 s a frozen fix used to be shown as live for.
+  const here = fix && !stale ? deadReckon(fix, now) : fix
+  const stored = clampIdx(input.targetIdx ?? 1)
+  // …and a boat run on past its mark between fixes (a dropout at a turn) is
+  // shown the next point, as the store will once a fix comes — not the mark
+  // behind it.
+  const reckoned = !!here && here !== fix && 'deadReckoned' in here && !!here.deadReckoned
+  const logical =
+    reckoned && input.status === 'navigating' && input.roundIdx == null && here
+      ? clampIdx(stepTarget(plan, stored, here, { arrivalFt: input.arrivalFt }).targetIdx)
+      : stored
   // Rounding a turn point first: everything on the card — bearing, distance,
   // the leg, what comes next, the distance to go — is worked to the turn
   // point, the one the crew is actually steering for.
@@ -553,8 +620,7 @@ export function navCardView(input: NavCardInput): NavCardView {
     clampIdx(input.roundIdx) < logical
   const idx = rounding ? clampIdx(input.roundIdx as number) : logical
 
-  const stale = !fix || isStale(fix, now)
-  const { radiusFt } = arrivalRadiusFt(plan, idx, fix?.accuracy, { arrivalFt: input.arrivalFt })
+  const { radiusFt } = arrivalRadiusFt(plan, idx, here?.accuracy, { arrivalFt: input.arrivalFt })
   const depth = input.formatDepth ?? feetFirst
   // The leg being run is the one INTO the target: legs[idx − 1].
   const leg = idx >= 1 ? (plan.legs?.[idx - 1] ?? null) : null
@@ -564,47 +630,86 @@ export function navCardView(input: NavCardInput): NavCardView {
     input.routeSpeedKn != null && Number.isFinite(input.routeSpeedKn) && input.routeSpeedKn > 0
       ? input.routeSpeedKn
       : null
-  const prog = fix
-    ? navProgress(plan, idx, fix, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now })
+  const prog = here
+    ? navProgress(plan, idx, here, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now })
     : null
   const madeGood = made != null && prog?.speedSource === 'gps'
 
   const distFt = prog ? prog.distanceNM * FT_PER_NM : null
   // Rounding, the bearing to the turn point is the whole point of the card:
   // it is shown however close the boat is to it.
-  const atMark = !rounding && distFt != null && distFt <= radiusFt
+  const inCircle = !rounding && distFt != null && distFt <= radiusFt
+  // "At the mark" only when the store can act on it: a fix still settling
+  // (or the filter's own estimate) is shown inside the circle, with the leg's
+  // course, but the point is not switched on it — the card must not say it is.
+  const atMark = inCircle && !here?.settling && !here?.estimate
   const pointBearing =
     prog && !atMark ? bearingText(prog.bearingDeg, input.bearingPref, input.declination) : null
   // The course to steer: back onto the line into the point, not a new
   // straight line to it (a cross-current set a card-following helm onto the
   // bank that way). On the line it is the bearing to the point.
-  const course = prog && !atMark ? steerCourse(plan, idx, fix) : null
-  const courseDeg = course?.bearingDeg ?? prog?.bearingDeg ?? null
+  //
+  // Between fixes the course is NOT worked again from the position run on
+  // to: dead reckoning carries the boat straight on along the last fix's
+  // course, while a helm that follows the card turns — and a course worked
+  // from where the boat is not kept asking for more of the same turn (rc3
+  // dropturn-0: 47° in five seconds of a dropout, the boat led 70 m off the
+  // mark). The course from the last fix stands; only when the run-on
+  // carries the boat past the mark is it the course of the leg on.
+  const steerFrom = reckoned && fix ? fix : here
+  const course =
+    prog && !inCircle && steerFrom && !(reckoned && logical !== stored)
+      ? steerCourse(plan, idx, steerFrom)
+      : null
+  const nextLegCourse = reckoned && logical !== stored && !inCircle ? legCourse(plan, idx) : null
+  // Rounding: toward the point the store cleared on the chart — on the leg
+  // out of the turn point where it could, so the turn is made, not
+  // overshot.
+  const aim = rounding && input.roundAim && steerFrom ? input.roundAim : null
+  // At the mark — inside its circle, the switch not yet made (a fix still
+  // settling, the store holding it for a turn) — the bearing to the point
+  // is GPS jitter, but a card with no course at all left the helm holding
+  // whatever it had: the course of the leg into the point is steered on.
+  // Not at the destination: there is no leg on to turn onto, and a boat
+  // that came into the last circle at an angle to the last leg was shown
+  // that leg's course, 94° off its heading, until it was told it had
+  // arrived (rc3 dock-15). There the course is the bearing to it.
+  const markCourse = prog && inCircle && idx < last ? legCourse(plan, idx) : null
+  const courseDeg = aim && steerFrom
+    ? bearingDeg(steerFrom.lat, steerFrom.lon, aim.lat, aim.lon)
+    : (markCourse ?? nextLegCourse ?? course?.bearingDeg ?? prog?.bearingDeg ?? null)
   const bearing =
-    courseDeg != null && !atMark ? bearingText(courseDeg, input.bearingPref, input.declination) : null
+    courseDeg != null ? bearingText(courseDeg, input.bearingPref, input.declination) : null
   const xteM = course?.xteM ?? null
   let backOnLine: string | null = null
-  // Not while still coming round the turn onto the leg: "off track" is then
-  // the distance from a line the boat has not reached yet.
+  // Not while still coming round the turn onto the leg — "off track" is
+  // then the distance from a line the boat has not reached yet — and not
+  // while rounding a turn point. Where the boat is, only: the one cue that
+  // says which way to turn is `turn`, measured from the heading to the
+  // course to steer (a second "steer N° left" measured from the waypoint's
+  // bearing disagreed with it). Nor from a position run on between fixes:
+  // "N ft off the line" is a measurement, and dead reckoning on the course
+  // of the last fix, seconds after a turn, put a boat on the new line
+  // 60–100 ft off it (UI re-check, fixes 2.5 s apart).
   if (
     course &&
     prog &&
     xteM != null &&
     Math.abs(xteM) >= XTE_CUE_M &&
     (course.alongM ?? 0) >= 0 &&
-    !stale
+    !stale &&
+    !reckoned &&
+    !rounding
   ) {
-    const d = ((course.bearingDeg - prog.bearingDeg + 540) % 360) - 180
-    const deg = Math.round(Math.abs(d))
-    const off = `${Math.round(Math.abs(xteM) * M_TO_FEET)} ft off track`
+    const ft = Math.round(Math.abs(xteM) * M_TO_FEET)
     backOnLine =
-      deg >= 1
-        ? `Steer ${deg}° ${d > 0 ? 'right' : 'left'} to get back on the line · ${off}`
-        : `Back on the line ahead · ${off}`
+      input.offCourseSince != null || Math.abs(xteM) >= OFF_ROUTE_CUE_M
+        ? `Off the route by ${ft} ft — re-routing if you stay off`
+        : `${ft} ft ${xteM > 0 ? 'right' : 'left'} of the line`
   }
 
   let turn: TurnCue | null = null
-  if (courseDeg != null && !atMark && !stale) {
+  if (courseDeg != null && !stale) {
     const t = turnToward(courseDeg, fix?.heading)
     if (t != null) {
       const deg = Math.round(Math.abs(t))
@@ -656,10 +761,47 @@ export function navCardView(input: NavCardInput): NavCardView {
           }`
       : null
 
-  const slowDown = input.status === 'navigating' && !!input.gpsSlow && !stale && !!fix
+  const slowGps = input.status === 'navigating' && !!input.gpsSlow && !stale && !!fix
+  const slowTurn = input.status === 'navigating' && !!input.turnSlow && !stale && !!fix
+  const slowDown = slowGps || slowTurn
+  const slowText = slowGps
+    ? 'Slow down — GPS not accurate enough here'
+    : slowTurn
+      ? 'Slow down for the turn'
+      : null
   const notices: NavNotice[] = []
   if (!fix) {
     notices.push({ kind: 'waiting', text: 'Waiting for a GPS fix…' })
+  } else if (!stale && fix.estimate === 'poor') {
+    notices.push({
+      kind: 'estimated',
+      tone: 'alert',
+      text:
+        `GPS too inaccurate${fix.accuracy != null && Number.isFinite(fix.accuracy) ? ` (${accuracyText(fix.accuracy)})` : ''} — ` +
+        'its fixes are worse than your accuracy limit, and are used only so you are not left without a ' +
+        'position. Waypoints will not switch on them. Slow down and keep a lookout.',
+    })
+  } else if (!stale && fix.estimate === 'dead-reckoned') {
+    notices.push({
+      kind: 'estimated',
+      tone: 'alert',
+      text:
+        'GPS fixes are jumping about and have been refused — position estimated from your last course ' +
+        `and speed${fix.accuracy != null && Number.isFinite(fix.accuracy) ? ` (${accuracyText(fix.accuracy)})` : ''}. ` +
+        'Slow down and keep a lookout.',
+    })
+  } else if (!stale && here && here !== fix && 'deadReckoned' in here && here.deadReckoned) {
+    const ts = fixTime(fix)
+    const ageS = ts != null ? Math.max(0, Math.round((now - ts) / 1000)) : null
+    notices.push({
+      kind: 'estimated',
+      tone: 'caution',
+      text:
+        `No GPS fix for ${ageS != null ? formatAge(ageS) : 'a moment'} — position estimated from your ` +
+        `last course and speed${
+          here.accuracy != null && Number.isFinite(here.accuracy) ? ` (${accuracyText(here.accuracy)})` : ''
+        }. Keep a lookout.`,
+    })
   } else if (stale) {
     const ts = fixTime(fix)
     const ageS = ts != null ? Math.max(0, Math.round((now - ts) / 1000)) : null
@@ -674,7 +816,7 @@ export function navCardView(input: NavCardInput): NavCardView {
   if (input.status === 'navigating') {
     if (input.rerouting) {
       notices.push({ kind: 'rerouting', text: 'Re-routing…' })
-    } else if (input.offCourseSince != null) {
+    } else if (input.offCourseSince != null && !rounding) {
       notices.push({
         kind: 'off-course',
         text: 'Off the route — a new route from here follows if you stay off it.',
@@ -693,20 +835,28 @@ export function navCardView(input: NavCardInput): NavCardView {
       notices.push({
         kind: 'gps-poor',
         text: `GPS accuracy is poor${
-          fix?.accuracy != null ? ` (±${Math.round(fix.accuracy * M_TO_FEET)} ft)` : ''
+          here?.accuracy != null ? ` (±${Math.round(here.accuracy * M_TO_FEET)} ft)` : ''
         } — waypoints switch only when you are clearly there.`,
       })
     }
     const margin = input.safetyMarginM
-    const acc = fix?.accuracy
-    if (slowDown) {
+    const acc = here?.accuracy
+    if (slowTurn) {
+      notices.push({
+        kind: 'turn-slow',
+        tone: 'alert',
+        text:
+          'A turn ahead is too tight to take at speed — the chart leaves no room for the swing. ' +
+          'Slow down, and keep your speed down until you are round it.',
+      })
+    }
+    if (slowGps) {
       notices.push({
         kind: 'gps-slow',
         tone: 'alert',
         text:
-          `Slow down — GPS not accurate enough here. Your position is good to ` +
-          `${acc != null && Number.isFinite(acc) ? accuracyText(acc) : 'only a guess'}, and the chart shows ` +
-          'shallows or land that close to your line ahead. Keep a sharp lookout.',
+          `Your position is good to ${acc != null && Number.isFinite(acc) ? accuracyText(acc) : 'only a guess'} ` +
+          'only, and the chart shows shallows or land that close to your line ahead. Keep a sharp lookout.',
       })
     } else if (
       !stale &&
@@ -715,7 +865,7 @@ export function navCardView(input: NavCardInput): NavCardView {
       margin > 0 &&
       acc != null &&
       Number.isFinite(acc) &&
-      acc > margin
+      acc > margin + MARGIN_SLACK_M
     ) {
       notices.push({
         kind: 'gps-margin',
@@ -786,9 +936,20 @@ export function navCardView(input: NavCardInput): NavCardView {
     bearing,
     pointBearing,
     backOnLine,
+    wpLabel: rounding
+      ? idx === 0
+        ? 'Start'
+        : `WP ${idx}`
+      : idx === 0
+        ? 'Start'
+        : idx === last
+          ? 'Dest'
+          : `WP ${idx}`,
     xteFt: xteM != null ? Math.round(xteM * M_TO_FEET) : null,
     slowDown,
+    slowText,
     atMark,
+    inCircle,
     distance: prog ? formatNavDistance(prog.distanceNM, fmt) : '—',
     turn,
     then,
@@ -830,8 +991,15 @@ export const CARD_STALE_S = STALE_FIX_S
  * ---------------------------------------------------------------------- */
 
 export interface NavBannerView {
-  /** "WP 3 · 047°T · 850 ft" / "Re-routing…" / "You have arrived". */
+  /**
+   * Everything on one line — status first — for a reader that wants one
+   * string: "Round WP 3 first · WP 3 · 047°T · 850 ft".
+   */
   primary: string
+  /** The status alone, on a line of its own: "Round WP 3 first", "Slow down — GPS poor here". */
+  status: string | null
+  /** The waypoint, its bearing (not the course) and distance: "WP 3 · 047°T · 850 ft". */
+  wp: string
   /** "4.2 NM to go · ETA 14:52" */
   secondary: string | null
   tone: 'normal' | 'stale' | 'alert' | 'arrived'
@@ -846,6 +1014,8 @@ export function navBannerView(v: NavCardView): NavBannerView {
   if (v.phase === 'arrived') {
     return {
       primary: v.arrivedText ?? 'You have arrived',
+      status: null,
+      wp: v.arrivedText ?? 'You have arrived',
       secondary: null,
       tone: 'arrived',
       alertText: null,
@@ -861,9 +1031,15 @@ export function navBannerView(v: NavCardView): NavBannerView {
       : v.title.startsWith('To the destination')
         ? 'Dest'
         : `WP ${v.targetIdx}`
-  const parts = [target, v.atMark ? 'at the mark' : v.bearing, v.distance].filter(
-    (x): x is string => !!x && x !== '—',
-  )
+  // The waypoint's own bearing and distance (rule 4) — not the course to
+  // steer, which is the card's; always all three, "—" for one not known.
+  const wp = [
+    v.wpLabel,
+    v.inCircle ? 'at the mark' : (v.pointBearing ?? '—'),
+    v.distance,
+  ].join(' · ')
+  const roundText = v.rounding ? `Round ${v.targetIdx === 0 ? 'the start' : `WP ${v.targetIdx}`} first` : null
+  void target
   const secondary = [
     v.remaining !== '—' ? `${v.remaining} to go` : null,
     etaText(v.eta),
@@ -877,7 +1053,9 @@ export function navBannerView(v: NavCardView): NavBannerView {
   const prefix = pending
     ? 'Re-route needs your OK'
     : v.slowDown && !(shallowNotice && shallowNotice.tone !== 'caution')
-      ? 'Slow down — GPS poor here'
+      ? v.notices.some((x) => x.kind === 'gps-slow')
+        ? 'Slow down — GPS poor here'
+        : 'Slow down for the turn'
       : shallow
       ? shallowNotice?.tone === 'caution'
         ? /land/.test(shallowNotice.text)
@@ -900,8 +1078,11 @@ export function navBannerView(v: NavCardView): NavBannerView {
     rerouting ||
     v.rounding ||
     v.notices.some((x) => x.kind === 'off-course' || x.kind === 'error')
+  const status = [prefix, roundText].filter(Boolean).join(' · ') || null
   return {
-    primary: prefix ? `${prefix} · ${parts.join(' · ')}` : parts.join(' · '),
+    primary: status ? `${status} · ${wp}` : wp,
+    status,
+    wp,
     secondary: secondary || null,
     // A frozen fix greys the banner; but a rule being broken right now is
     // louder than the fix being old.
@@ -919,6 +1100,8 @@ export function navBannerView(v: NavCardView): NavBannerView {
 export function reconfirmBannerView(): NavBannerView {
   return {
     primary: 'Route changed — not fully safe',
+    status: 'Route changed — not fully safe',
+    wp: 'Steering paused',
     secondary: 'Steering paused · tap to review the flagged legs',
     tone: 'alert',
     alertText: 'Route changed — not fully safe. Steering paused.',

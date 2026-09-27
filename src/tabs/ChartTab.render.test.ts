@@ -310,8 +310,10 @@ describe('Chart tab, by navigation state', () => {
     useVessels.setState({ cache: [{ ...useVessels.getState().cache[0], cruise_speed_kn: 0.0536 }] } as never)
     try {
       const r = render('navigating', CHARTED, { speedKn: null })
-      // Bearing and distance share a line only when they fit.
-      expect(r.tab).toContain('mt-1 flex flex-wrap items-baseline justify-between')
+      // Two fixed rows (UI3 #1): STEER and the course; then the waypoint,
+      // its bearing and distance, which wraps rather than running off.
+      expect(r.tab).toContain('>Steer</span>')
+      expect(r.tab).toContain('tnum mt-1 flex flex-wrap items-baseline')
       expect(r.tab).toMatch(/max-\[359px\]:text-\[2\.5rem\]/)
       // The three passage cells may shrink and break; none is nowrap.
       const grid = r.tab.slice(r.tab.indexOf('grid grid-cols-3'), r.tab.indexOf('>End</button>'))
@@ -332,7 +334,10 @@ describe('Chart tab, by navigation state', () => {
     expect(r.tab).toContain('Round waypoint 1 first — don’t cut the corner')
     expect(r.tab).toContain('Then the destination')
     expect(r.tab).toContain('not clear of the shallows, land or your stand-off')
-    expect(r.banner).toContain('Round WP 1 first · 000°T')
+    // UI3 #2: the status on its own line, then the waypoint, its bearing
+    // and distance.
+    expect(r.banner).toContain('Round WP 1 first')
+    expect(r.banner).toContain('WP 1 · 000°T')
   })
 
   it('says when the GPS error is wider than the boat’s margin, and "may be" near a shoal (M1)', () => {

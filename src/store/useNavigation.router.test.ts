@@ -91,7 +91,7 @@ vi.mock('@/store/useTeams', async () => {
   return { useTeams: create(() => ({ activeTeamId: null as string | null })) }
 })
 
-import { chartStateAt, planningBounds } from '@/lib/routing'
+import { chartStateAt, planningBounds, planRoute } from '@/lib/routing'
 import { loadGalveston } from '@/lib/__fixtures__/galveston'
 import { bearingDeg, haversineNM } from '@/lib/geo'
 import { steerCourse } from '@/lib/navigate'
@@ -384,6 +384,27 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
     }
     return min
   }
+  /**
+   * The C1 route, as the planner drew it when C1 was found: on the stand-off
+   * itself. The planner now keeps a buffer beyond the stand-off where it
+   * fits (F8), which draws this passage differently; the corner C1 is about
+   * is reproduced on the route without it, put in place of the store's own.
+   */
+  async function c1Plan() {
+    await useNavigation.getState().setDestination(TO, null)
+    const plan = planRoute({
+      from: useNavigation.getState().plan!.points[0],
+      to: TO,
+      safeDepthM: SAFE_M,
+      clearanceM: 5,
+      speedKn: 12,
+      features: galveston,
+      arrivalFt: 200,
+      planBufferM: 0,
+    })
+    useNavigation.setState({ plan })
+    return plan
+  }
   const card = (f: Fix) => {
     const s = useNavigation.getState()
     return navCardView({
@@ -413,8 +434,7 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
     try {
       chart.features = galveston
       useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
-      await useNavigation.getState().setDestination(TO, null)
-      const plan = useNavigation.getState().plan!
+      const plan = await c1Plan()
       expect(plan.source).toBe('charted')
       expect(plan.points).toHaveLength(13)
       const WP10 = plan.points[10]
@@ -514,8 +534,7 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
     try {
       chart.features = galveston
       useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
-      await useNavigation.getState().setDestination(TO, null)
-      const plan = useNavigation.getState().plan!
+      const plan = await c1Plan()
       expect(useNavigation.getState().start()).toBe(true)
       useNavigation.setState({ targetIdx: 10, resume: false, roundIdx: null })
       const WP10 = plan.points[10]

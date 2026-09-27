@@ -220,9 +220,12 @@ export const useTracker = create<TrackerState>()(
 
             const { trail, intervalS } = get()
             const last = trail[trail.length - 1]
-            const next = shouldRecord(last, result.fix, intervalS)
-              ? [...trail, result.fix]
-              : trail
+            // An estimate (dead-reckoned, or a fix worse than the gate) is
+            // steered by, never recorded: the track is where the boat was.
+            const next =
+              !result.fix.estimate && shouldRecord(last, result.fix, intervalS)
+                ? [...trail, result.fix]
+                : trail
 
             set({
               fix: result.fix,

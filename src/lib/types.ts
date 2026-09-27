@@ -417,4 +417,20 @@ export interface Fix {
    * waypoints or declare arrival on it. Absent otherwise.
    */
   settling?: boolean
+  /**
+   * Set by the track filter when this is not a fix it believes, but the
+   * best estimate it has, because nothing better arrived for a few seconds:
+   *
+   *   - `'dead-reckoned'` — every fix for over 3 s was refused (a jump no
+   *     boat could make): the position is run on from the last one believed,
+   *     at its course and speed, and `accuracy` is widened to cover where the
+   *     refused fixes put the boat too;
+   *   - `'poor'` — fixes kept arriving worse than the crew's accuracy gate
+   *     (but still a GPS fix, ±100 m or better): used, at their own honest
+   *     accuracy, rather than going silent and reading as "signal lost".
+   *
+   * Always `settling` too: nothing is switched or arrived on it. Never
+   * recorded in the track.
+   */
+  estimate?: 'dead-reckoned' | 'poor'
 }
