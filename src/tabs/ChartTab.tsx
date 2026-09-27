@@ -129,7 +129,14 @@ export function ChartTab() {
   const origin = useNavigation((s) => s.origin)
   const plan = useNavigation((s) => s.plan)
   const status = useNavigation((s) => s.status)
-  const targetIdx = useNavigation((s) => s.targetIdx)
+  const logicalTarget = useNavigation((s) => s.targetIdx)
+  const roundIdx = useNavigation((s) => s.roundIdx)
+  // The point actually being steered for: the turn point still to be
+  // rounded, while the card says "Round waypoint N first".
+  const targetIdx =
+    status === 'navigating' && roundIdx != null && logicalTarget != null && roundIdx < logicalTarget
+      ? roundIdx
+      : logicalTarget
   const navError = useNavigation((s) => s.error)
   const confirmed = useNavigation((s) => s.confirmed)
   const lastPlannedAt = useNavigation((s) => s.lastPlannedAt)

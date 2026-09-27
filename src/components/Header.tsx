@@ -2,7 +2,7 @@ import { useTeams } from '@/store/useTeams'
 import { useTracker } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
-import { useNow } from '@/hooks/useNow'
+import { useClock } from '@/hooks/useNow'
 import { gpsChip, type GpsChip as GpsChipState } from '@/lib/navView'
 import { NavMenu, type TabId } from '@/components/NavMenu'
 import { AccountButton } from '@/components/AccountButton'
@@ -114,7 +114,8 @@ const CHIP_TONE: Record<GpsChipState['kind'], string> = {
 function GpsChip() {
   const watching = useTracker((s) => s.watching)
   const fix = useTracker((s) => s.fix)
-  const now = useNow(1000).getTime()
+  // The same clock the steering card reads, so the two never disagree.
+  const now = useClock()
   const chip = gpsChip(watching, fix, now)
   return (
     <span

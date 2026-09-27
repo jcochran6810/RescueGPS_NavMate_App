@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import { useFormat } from '@/hooks/useFormat'
-import { useNow } from '@/hooks/useNow'
-import { declinationFor, navCardView, type NavCardView } from '@/lib/navView'
+import { useClock } from '@/hooks/useNow'
+import { routeSpeedKn } from '@/lib/navigate'
+import { declinationFor, navCardView, safetyMarginM, type NavCardView } from '@/lib/navView'
 import { useHeading } from '@/store/useHeading'
 import { useNavigation } from '@/store/useNavigation'
 import { useTeams } from '@/store/useTeams'
@@ -18,7 +19,8 @@ import { routeArrivalFt } from '@/lib/steer'
  *
  * Re-renders every second on its own as well as on every fix: a fix that
  * STOPS arriving is exactly the case the card has to show, and nothing else
- * would re-render it then.
+ * would re-render it then. The second is the shared clock (`useClock`) the
+ * header's GPS chip reads too.
  */
 export function useNavCard(): NavCardView | null {
   const status = useNavigation((s) => s.status)
@@ -32,6 +34,9 @@ export function useNavCard(): NavCardView | null {
   const rerouteError = useNavigation((s) => s.rerouteError)
   const pendingReroute = useNavigation((s) => s.pendingPlan != null)
   const shallowHere = useNavigation((s) => s.shallowHere)
+  const roundIdx = useNavigation((s) => s.roundIdx)
+  const progressLog = useNavigation((s) => s.progressLog)
+  const clearanceM = useNavigation((s) => s.plannedFor?.clearanceM ?? null)
   const dest = useNavigation((s) => s.dest)
   const fix = useTracker((s) => s.fix)
   const arrivalFt = useTracker((s) => s.arrivalFt)
@@ -39,7 +44,8 @@ export function useNavCard(): NavCardView | null {
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const cruiseKn = useVessels((s) => s.active(activeTeamId)?.cruise_speed_kn ?? null)
   const fmt = useFormat()
-  const now = useNow(1000).getTime()
+  // The header's GPS chip reads the same clock: they never disagree.
+  const now = useClock()
 
   const live = status === 'navigating' || status === 'arrived'
   const declination = useMemo(
@@ -67,6 +73,9 @@ export function useNavCard(): NavCardView | null {
     rerouteError,
     pendingReroute,
     shallowHere,
+    roundIdx,
+    routeSpeedKn: routeSpeedKn(progressLog),
+    safetyMarginM: safetyMarginM(clearanceM),
     destLabel: dest?.label ?? null,
     formatLength: fmt.length,
     formatDepth: (m) => fmt.depth(m),

@@ -21,7 +21,7 @@ import { useIncidentFeeds } from '@/hooks/useIncidentFeeds'
 import { useNavigationEngine } from '@/hooks/useNavigationEngine'
 import { useNavigation } from '@/store/useNavigation'
 import { useNavUi } from '@/store/useNavUi'
-import { showNavBanner } from '@/lib/navView'
+import { initialTab, showNavBanner } from '@/lib/navView'
 import { useAssignments } from '@/store/useAssignments'
 import { useMessages } from '@/store/useMessages'
 import { useHazards } from '@/store/useHazards'
@@ -49,7 +49,9 @@ import { SettingsTab } from '@/tabs/SettingsTab'
 
 export default function App() {
   const { session, ready, recovering, init } = useAuth()
-  const [tab, setTab] = useState<TabId>('home')
+  // A reload mid-passage opens on the steering card, not the home screen:
+  // the store is rehydrated from storage before this first render.
+  const [tab, setTab] = useState<TabId>(() => initialTab(useNavigation.getState().status))
 
   useEffect(() => init(), [init])
 

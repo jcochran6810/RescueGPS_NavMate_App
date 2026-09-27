@@ -67,14 +67,22 @@ export interface TrackFilterOptions {
   /** Worst accuracy a fix may report and still be used, metres. 0 disables. */
   maxAccuracyM?: number
   /**
-   * Expected acceleration, m/s². This is the filter's whole model of how the
-   * receiver is allowed to move: too low and it lags a turn, too high and it
-   * follows the noise. 0.3 was picked by sweeping it against simulated 1 Hz
-   * fixes — it more than halves the scatter of a phone standing still while
-   * staying within a few metres of a crew that turns 90° at five knots, which
-   * is the shape of the job.
+   * Expected acceleration while cruising, m/s². This is the filter's model of
+   * how the receiver is allowed to move: too low and it lags a turn, too high
+   * and it follows the noise. 0.3 was picked by sweeping it against simulated
+   * 1 Hz fixes — it more than halves the scatter of a phone standing still
+   * while staying within a few metres of a crew that turns 90° at five knots.
+   *
+   * It is a floor, not a ceiling: a boat is not a walker. Turning 20° a
+   * second at 18 kn is 3 m/s² sideways, ten times this, and a filter held to
+   * 0.3 went from 7 to 82 m behind the boat in a 180° turn. So the filter
+   * raises it for a manoeuvre (`manoeuvreAccel`) — when the receiver's own
+   * course and speed say the boat is turning, or when a fix disagrees with
+   * the prediction by more than the noise explains — and lets it decay back.
    */
   accelNoise?: number
+  /** The acceleration a manoeuvre is allowed, m/s² — a planing boat's hard turn. */
+  manoeuvreAccel?: number
   /**
    * Speed above which a step between two fixes is a receiver glitch rather
    * than movement, m/s. 130 m/s is about 253 kn — above a SAR helicopter, so
@@ -88,9 +96,24 @@ export interface TrackFilterOptions {
 const DEFAULTS: Required<TrackFilterOptions> = {
   maxAccuracyM: DEFAULT_GATE_M,
   accelNoise: 0.3,
+  manoeuvreAccel: 4,
   maxSpeedMps: 130,
   resetAfterMs: 60_000,
 }
+
+/**
+ * A fix this far from the prediction (chi-square, two degrees of freedom:
+ * 9 is about 3σ, one fix in ninety by chance) is taken as the boat
+ * manoeuvring, not the receiver's noise: the prediction is re-made allowing
+ * `manoeuvreAccel` before the fix is judged.
+ */
+const MANOEUVRE_CHI2 = 9
+
+/** How much of a manoeuvre's extra allowance is left after each fix. */
+const MANOEUVRE_DECAY = 0.6
+
+/** Weight of the past in the running mean of the filter's disagreements. */
+const BIAS_WEIGHT = 0.5
 
 /**
  * Innovation gate, chi-square with two degrees of freedom. 16 is roughly 4σ:
@@ -186,11 +209,16 @@ function update(a: Axis, y: number, s: number): void {
  * The filter assumes white measurement noise, so with enough fixes it will
  * happily claim centimetres. Real GNSS error is correlated over minutes —
  * ionosphere, multipath, a bad geometry that stays bad — so averaging does not
- * beat it down anything like that fast. Never claiming better than half the
- * receiver's own figure keeps the number honest, which matters because the
- * datum worksheet takes it as an input.
+ * beat it down anything like that fast. This used to be half the receiver's
+ * figure; the filtered position is now never claimed better than the
+ * receiver's own figure at all. The number steers boats as well as feeding
+ * the datum worksheet: the steering card compares it with the boat's safety
+ * margin, and a figure too good to be true is the one thing it must not get.
  */
-const ACCURACY_FLOOR = 0.5
+const ACCURACY_FLOOR = 1
+
+/** Radius of the 68 % circle of a two-dimensional normal error, in σ. */
+const CIRCLE_68 = 1.51
 
 export class TrackFilter {
   private opts: Required<TrackFilterOptions>
@@ -202,6 +230,22 @@ export class TrackFilter {
   private y: Axis | null = null
   private t = 0
   private outliers = 0
+  /** Extra acceleration still allowed after a manoeuvre, m/s² (decays). */
+  private boost = 0
+  /** The receiver's last course, degrees, for its turn rate. */
+  private lastHeading: number | null = null
+  /** The last fix needed the manoeuvre allowance. */
+  private inManoeuvre = false
+  /** The last fix's disagreement with the prediction, metres east/north. */
+  private lastInnov: { x: number; y: number } | null = null
+  /** Running mean of those disagreements, metres east/north. */
+  private bias = { x: 0, y: 0 }
+
+  /** Is this disagreement on the same side as the last one? */
+  private sameSide(x: number, y: number): boolean {
+    const l = this.lastInnov
+    return !!l && l.x * x + l.y * y > 0
+  }
 
   /** Fixes refused since the last reset, by reason. */
   readonly rejected: Record<RejectReason, number> = {
@@ -304,12 +348,63 @@ export class TrackFilter {
       }
     }
 
-    predict(this.x, dt, this.opts.accelNoise)
-    predict(this.y, dt, this.opts.accelNoise)
+    // How hard the boat may be accelerating: the cruising floor, what is
+    // left of a recent manoeuvre, and — when the receiver reports its own
+    // course and speed — the sideways acceleration of the turn it reports.
+    let q = Math.max(this.opts.accelNoise, this.boost)
+    const turnAccel = this.turnAccel(raw, dt)
+    if (turnAccel > q) q = Math.min(turnAccel, this.opts.manoeuvreAccel)
 
-    const ix = innovation(this.x, zx, r)
-    const iy = innovation(this.y, zy, r)
-    const d2 = (ix.y * ix.y) / ix.s + (iy.y * iy.y) / iy.s
+    const x0 = { ...this.x }
+    const y0 = { ...this.y }
+    predict(this.x, dt, q)
+    predict(this.y, dt, q)
+
+    let ix = innovation(this.x, zx, r)
+    let iy = innovation(this.y, zy, r)
+    let d2 = (ix.y * ix.y) / ix.s + (iy.y * iy.y) / iy.s
+
+    // A turn shows first as fixes all falling the same side of the
+    // prediction, each within the noise. Their running mean is the tell: for
+    // white noise it has a third of the variance of one fix, so a mean that
+    // far out is a manoeuvre the prediction is missing.
+    const bx = BIAS_WEIGHT * this.bias.x + (1 - BIAS_WEIGHT) * ix.y
+    const by = BIAS_WEIGHT * this.bias.y + (1 - BIAS_WEIGHT) * iy.y
+    const biasVar = (1 - BIAS_WEIGHT) / (1 + BIAS_WEIGHT)
+    const bias2 = (bx * bx) / (ix.s * biasVar) + (by * by) / (iy.s * biasVar)
+
+    if ((d2 > MANOEUVRE_CHI2 || bias2 > MANOEUVRE_CHI2) && q < this.opts.manoeuvreAccel) {
+      // More than the noise explains: the boat is turning or changing speed
+      // faster than the prediction allowed. Predict again allowing it, then
+      // judge the fix — a hard turn must not be thrown away as multipath.
+      Object.assign(this.x, x0)
+      Object.assign(this.y, y0)
+      q = this.opts.manoeuvreAccel
+      predict(this.x, dt, q)
+      predict(this.y, dt, q)
+      ix = innovation(this.x, zx, r)
+      iy = innovation(this.y, zy, r)
+      d2 = (ix.y * ix.y) / ix.s + (iy.y * iy.y) / iy.s
+    }
+    if (d2 > MANOEUVRE_CHI2 && this.inManoeuvre && this.sameSide(ix.y, iy.y)) {
+      // Still well off after allowing a manoeuvre — and the fix before was
+      // off the same way. That is a turn the filter has fallen behind, not
+      // a reflection (multipath throws one fix, or several in no consistent
+      // direction): stop trusting the prediction as much as it claims, by
+      // just enough to bring this fix to the manoeuvre threshold.
+      const lambda = d2 / MANOEUVRE_CHI2
+      for (const a of [this.x, this.y]) {
+        a.pp *= lambda
+        a.pv *= lambda
+        a.vv *= lambda
+      }
+      ix = innovation(this.x, zx, r)
+      iy = innovation(this.y, zy, r)
+      d2 = (ix.y * ix.y) / ix.s + (iy.y * iy.y) / iy.s
+    }
+    this.inManoeuvre = d2 > MANOEUVRE_CHI2 || q > this.opts.accelNoise
+    this.lastInnov = { x: ix.y, y: iy.y }
+    this.bias = { x: bx, y: by }
 
     if (d2 > GATE_CHI2) {
       this.rejected.jump++
@@ -327,11 +422,34 @@ export class TrackFilter {
     update(this.y, iy.y, iy.s)
     this.t = raw.timestamp
     this.outliers = 0
+    // Keep allowing the manoeuvre for a few fixes, fading, so the next fix
+    // of the same turn is not fought over again.
+    this.boost = q > this.opts.accelNoise ? q * MANOEUVRE_DECAY : 0
 
-    return this.finish(raw)
+    return this.finish(raw, Math.hypot(zx - this.x.p, zy - this.y.p))
+  }
+
+  /**
+   * The sideways acceleration of the turn the receiver itself reports, m/s²:
+   * its speed times its rate of turn. 0 without a course and speed from it.
+   */
+  private turnAccel(raw: Fix, dt: number): number {
+    const h = raw.heading
+    const prev = this.lastHeading
+    this.lastHeading = h != null && Number.isFinite(h) ? h : null
+    if (h == null || prev == null || !Number.isFinite(h) || dt <= 0) return 0
+    const v = raw.speed
+    if (v == null || !Number.isFinite(v) || v <= 0) return 0
+    const dh = Math.abs((((h - prev) % 360) + 540) % 360 - 180)
+    return v * ((dh * Math.PI) / 180 / dt)
   }
 
   private begin(raw: Fix, r: number): void {
+    this.boost = 0
+    this.inManoeuvre = false
+    this.lastInnov = null
+    this.bias = { x: 0, y: 0 }
+    this.lastHeading = raw.heading != null && Number.isFinite(raw.heading) ? raw.heading : null
     this.lat0 = raw.lat
     this.lon0 = raw.lon
     const m = metersPerDegree(raw.lat)
@@ -365,15 +483,29 @@ export class TrackFilter {
     return { lat: this.lat0 + y / this.mLat, lon: this.lon0 + x / this.mLon }
   }
 
-  /** Build the output fix from the filter state after an accepted update. */
-  private finish(raw: Fix): AcceptedFix {
+  /**
+   * Build the output fix from the filter state after an accepted update.
+   *
+   * `residualM` is how far the estimate now sits from the fix it was given.
+   * The accuracy reported is the most honest of three: the filter's own
+   * uncertainty, half the receiver's figure (see `ACCURACY_FLOOR`), and —
+   * when the estimate sits further from the fix than the receiver's own
+   * claimed error — that distance. The covariance alone says what the
+   * filter believes, and a filter lagging a turn believes it is right: it
+   * reported 8–10 m while 82 m behind the boat. A gap between estimate and
+   * fix wider than the fix's own error is the lag showing, and it is shown.
+   */
+  private finish(raw: Fix, residualM = 0): AcceptedFix {
     const ax = this.x as Axis
     const ay = this.y as Axis
     const { lat, lon } = this.toDegrees(ax.p, ay.p)
 
-    const est = Math.sqrt((ax.pp + ay.pp) / 2)
+    // The covariance is per axis; the accuracy a receiver reports is the
+    // radius of a circle (about 68 %), which is 1.5 σ in two dimensions.
+    const est = CIRCLE_68 * Math.sqrt((ax.pp + ay.pp) / 2)
     const floor = (raw.accuracy ?? est) * ACCURACY_FLOOR
-    const accuracy = Math.max(est, floor)
+    const lag = raw.accuracy != null && residualM > raw.accuracy ? residualM : 0
+    const accuracy = Math.max(est, floor, lag)
 
     const vMps = Math.hypot(ax.v, ay.v)
     // How uncertain that velocity is, from the filter's own covariance. A

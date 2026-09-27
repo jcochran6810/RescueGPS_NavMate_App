@@ -20,14 +20,19 @@
  * steering at a mark across a shoal it never rounded. Passing a mark the boat
  * really has passed is `recoverTarget`'s job, and that one asks for evidence.
  *
- * **A poor fix never widens a circle past the point's own safe radius.** The
- * planner gives every turn point the widest circle that cannot cut the corner
- * (`plan.arrivalFt[i]` — as little as 30 ft at a hairpin round a jetty). A fix
- * claiming more error than that is not allowed to widen the circle past it:
- * switching early on a guess is exactly the corner-cut the planner shrank
- * the circle to prevent. The crew is told the fix is poor instead
- * (`gpsPoor`), and the pass-abeam rule (bounded by twice that same safe
- * radius) and `recoverTarget` pick up a mark a poor fix could not resolve.
+ * **A poor fix never widens a circle past the point's own radius.** Every
+ * point is captured in the crew's own circle (`plan.arrivalFt[i]`, 100–200
+ * ft). A fix claiming more error than that is not allowed to widen it: the
+ * crew is told the fix is poor instead (`gpsPoor`), and the pass-abeam rule
+ * (bounded by twice that radius, 200 ft at most) and `recoverTarget` pick up
+ * a mark a poor fix could not resolve.
+ *
+ * **Switching is not permission to cut the corner.** A boat switched to the
+ * next point 200 ft short of a turn, and 20 m off the line, can have land
+ * between it and the next point. The store checks the straight line from
+ * every fix to the new point against the chart (`liveShortcut` in
+ * routing.ts) and, until it is clear, steers the crew to the turn point
+ * they have not rounded yet — `shortcutClear` below decides when that ends.
  *
  * **No heading, no guessing.** The rules that act on "the boat has gone past"
  * (pass-abeam, missed-mark recovery) need a course over ground to know which
@@ -66,9 +71,8 @@ import type { LatLon } from './search'
 export interface NavPlan {
   points: LatLon[]
   /**
-   * Safe capture radius per point, feet, index-aligned with `points` — the
-   * planner reduces it at turn points where switching early would cut a
-   * corner into shallows. Missing entries fall back to the crew's setting.
+   * Capture radius per point, feet, index-aligned with `points` — the crew's
+   * setting at every point. Missing entries fall back to the setting.
    */
   arrivalFt?: readonly number[]
 }
@@ -239,16 +243,15 @@ export interface ArrivalOptions {
  * The circle point `idx` is actually captured in, feet, and whether the fix
  * is too poor to judge it honestly.
  *
- *   - `safeFt` — the most this point may EVER be given: the planner's safe
- *     radius for it (reduced at tight turns) or, where the plan has none, the
- *     crew's setting; never more than the cap (200 ft).
+ *   - `safeFt` — the most this point may EVER be given: the plan's radius
+ *     for it (the crew's setting when it was planned) or, where the plan has
+ *     none, the crew's setting; never more than the cap (200 ft).
  *   - `baseFt` — what it is given with a good fix: `safeFt`, and never more
  *     than the crew's CURRENT setting, so turning the setting down takes
  *     effect at once without a re-plan.
  *   - `radiusFt` — `baseFt` widened to the fix's claimed error, but never past
  *     `safeFt`. A ±25 m fix cannot know it is inside a 100 ft circle, so where
- *     the point is safe out to 150 ft the circle may grow to meet it; where
- *     the point is only safe to 30 ft (a hairpin) it may not grow at all.
+ *     the plan allows 150 ft the circle may grow to meet it.
  *   - `gpsPoor` — the fix claims more error than `safeFt`: whatever it says
  *     about this point is a guess, and the card says so.
  */
@@ -553,6 +556,158 @@ export function startTarget(
     }
   }
   return best >= 0 ? best + 1 : 0
+}
+
+/* -------------------------------------------------------------------------
+ * Rounding a turn point — "don't cut the corner"
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Within this of the turn point, feet, the boat has rounded it whatever the
+ * line check says — the line from there to the next point is the planned leg
+ * to within a boat's length. Widened by the fix's claimed error, up to twice
+ * this, so a fair fix can still see the boat arrive at the point.
+ */
+export const ROUNDED_FT = 30
+
+/**
+ * Has the boat got round turn point `turnIdx`, so that steering straight for
+ * the point after it (`turnIdx + 1`) is sound?
+ *
+ *
+ * `verdict` is the chart's answer for the straight line from the fix to that
+ * next point (`liveShortcut` in routing.ts, the fix's error included):
+ *
+ *   - `clear` — yes;
+ *   - `unsafe` — not until the boat is at the turn point (`ROUNDED_FT`);
+ *   - null (no chart in memory to check it against) — once the boat is at
+ *     the turn point, abeam of it (past it along the leg into it), or on the
+ *     leg out of it past the turn point (within 30 m of the line). Without
+ *     a chart nothing better than the route's own geometry is known, and the
+ *     boat must never be sent round in circles for want of one.
+ */
+export function shortcutClear(
+  plan: NavPlan,
+  turnIdx: number,
+  fix: SteerFix,
+  verdict: 'clear' | 'unsafe' | null,
+): boolean {
+  if (verdict === 'clear') return true
+  const n = plan.points.length
+  if (turnIdx < 0 || turnIdx + 1 >= n) return true
+  const turn = plan.points[turnIdx]
+  const accFt =
+    fix.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0
+      ? fix.accuracy * M_TO_FEET
+      : 0
+  const roundedFt = Math.max(ROUNDED_FT, Math.min(accFt, 2 * ROUNDED_FT))
+  if (rangeFt(fix, turn) <= roundedFt) return true
+  if (verdict === null) {
+    // Abeam of the turn point or past it, along the leg into it; or on the
+    // leg out of it, past the turn point.
+    const out = legGeometry(turn, plan.points[turnIdx + 1], fix)
+    if (out.alongM >= 0 && out.distM <= ON_TRACK_MIN_M) return true
+    if (turnIdx === 0) return out.alongM >= 0
+    const g = legGeometry(plan.points[turnIdx - 1], turn, fix)
+    return g.alongM >= g.lengthM - 1
+  }
+  return false
+}
+
+/* -------------------------------------------------------------------------
+ * Speed made good along the route — for the ETA
+ * ---------------------------------------------------------------------- */
+
+/** How far back the route's progress is measured for the ETA, seconds. */
+export const PROGRESS_WINDOW_S = 30
+/** Least span of progress to measure a speed from, seconds. */
+export const PROGRESS_MIN_S = 10
+/** The speed over the ground "now" is the mean of this last stretch, seconds. */
+export const RECENT_SOG_S = 10
+
+/** Distance to go at one moment: ms since the epoch, NM; and the speed over the ground then, knots. */
+export interface ProgressSample {
+  t: number
+  remainingNM: number
+  sogKn?: number | null
+}
+
+/**
+ * The log of distance to go, with `sample` added and anything older than
+ * the window dropped (one older sample is kept, so the window is always
+ * spanned). A sample from before the last one starts the log again.
+ */
+export function logProgress(
+  log: readonly ProgressSample[] | null | undefined,
+  sample: ProgressSample,
+): ProgressSample[] {
+  if (!Number.isFinite(sample.t) || !Number.isFinite(sample.remainingNM)) return [...(log ?? [])]
+  const prev = log ?? []
+  const last = prev[prev.length - 1]
+  if (last && sample.t <= last.t) return last.t === sample.t ? [...prev] : [sample]
+  const out = [...prev, sample]
+  const cut = sample.t - PROGRESS_WINDOW_S * 1000
+  let k = 0
+  while (k + 1 < out.length && out[k + 1].t <= cut) k++
+  return out.slice(k)
+}
+
+/**
+ * Speed made good along the route, knots — what the ETA is worked at.
+ *
+ * The ETA was the distance to go over the speed over the ground smoothed with
+ * a 15 s time constant: it lagged every change of speed by that much, and
+ * knew nothing of the route — a boat weaving, rounding a turn or making way
+ * across the line is not closing the destination at its speed over the
+ * ground. Near the end of one simulated passage it was 32 % out.
+ *
+ * So two things are measured over the last `PROGRESS_WINDOW_S` seconds:
+ * how fast the distance to go actually came down, and how far the boat ran
+ * over the ground meanwhile. Their ratio is how much of the boat's way is
+ * going into the route (it changes slowly); times the speed over the ground
+ * of the last `RECENT_SOG_S` seconds (which does not lag) it is the speed the
+ * crew will actually close the destination at. Without speeds in the log,
+ * the progress rate alone.
+ *
+ * Null until there is `PROGRESS_MIN_S` of log, or when the boat is not
+ * closing at a knot — the caller falls back to the speed over the ground,
+ * then the cruise speed.
+ */
+export function routeSpeedKn(log: readonly ProgressSample[] | null | undefined): number | null {
+  if (!log || log.length < 2) return null
+  const a = log[0]
+  const b = log[log.length - 1]
+  const spanH = (b.t - a.t) / 3_600_000
+  if (!(spanH * 3600 >= PROGRESS_MIN_S)) return null
+  const progressNM = a.remainingNM - b.remainingNM
+  const sog = (x: ProgressSample) =>
+    x.sogKn != null && Number.isFinite(x.sogKn) && x.sogKn >= 0 ? x.sogKn : null
+  let groundNM = 0
+  let recentSum = 0
+  let recentN = 0
+  let haveSog = true
+  for (let k = 0; k < log.length; k++) {
+    const v = sog(log[k])
+    if (v == null) {
+      haveSog = false
+      break
+    }
+    if (k > 0) groundNM += ((sog(log[k - 1]) as number) + v) / 2 * ((log[k].t - log[k - 1].t) / 3_600_000)
+    if (log[k].t >= b.t - RECENT_SOG_S * 1000) {
+      recentSum += v
+      recentN++
+    }
+  }
+  let kn: number
+  if (haveSog && groundNM > 0 && recentN > 0) {
+    // Never more than the way the boat has on: a corner cut by the switch
+    // can make the distance to go drop faster than the boat moves, for a fix.
+    const share = Math.min(1, progressNM / groundNM)
+    kn = share * (recentSum / recentN)
+  } else {
+    kn = progressNM / spanH
+  }
+  return Number.isFinite(kn) && kn >= MIN_SOG_KN ? kn : null
 }
 
 /* -------------------------------------------------------------------------

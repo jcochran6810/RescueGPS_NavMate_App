@@ -91,7 +91,10 @@ vi.mock('@/store/useTeams', async () => {
   return { useTeams: create(() => ({ activeTeamId: null as string | null })) }
 })
 
-import { planningBounds } from '@/lib/routing'
+import { chartStateAt, planningBounds } from '@/lib/routing'
+import { loadGalveston } from '@/lib/__fixtures__/galveston'
+import { bearingDeg, haversineNM } from '@/lib/geo'
+import { navCardView, bearingText, navBannerView } from '@/lib/navView'
 import { useChartData } from '@/store/useChartData'
 import { useTracker } from '@/store/useTracker'
 import { useNavigation } from '@/store/useNavigation'
@@ -250,6 +253,25 @@ describe('navigation store with the real router', () => {
     expect(useNavigation.getState().shallowHere).toBeNull()
   })
 
+  it('says the boat MAY be in the shallows when they lie within its GPS error (M1, drift 109)', async () => {
+    // The same shoal, 25 m east of the line. A fix 13 m off the line is in
+    // deep water — but claiming ±18 m, the boat may be on the shoal.
+    chart.features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 1, rings: [rect(25, -300, 200, 300)] },
+      ],
+    })
+    await useNavigation.getState().setDestination(DEST, null)
+    expect(useNavigation.getState().start()).toBe(true)
+    useNavigation.getState().onFix({ ...fixAt(at(13, 0)), accuracy: 5 })
+    expect(useNavigation.getState().shallowHere).toBeNull()
+    useNavigation.getState().onFix({ ...fixAt(at(13, 10)), accuracy: 18 })
+    expect(useNavigation.getState().shallowHere).toEqual({ depthM: 1, land: false, maybe: true })
+    useNavigation.getState().onFix({ ...fixAt(at(0, 20)), accuracy: 5 })
+    expect(useNavigation.getState().shallowHere).toBeNull()
+  })
+
   it('pauses steering for a deeper boat the route cannot be made safe for, with no signal to download (R1)', async () => {
     // 3 m across the middle: fine for the 1.5 m boat, not for a 3.5 m one.
     chart.features = sea({
@@ -301,5 +323,183 @@ describe('navigation store with the real router', () => {
     expect(s.status).toBe('preview')
     expect(s.plan?.source).toBe('charted')
     expect(s.chartLoads).toHaveLength(2)
+  }, 30_000)
+})
+
+/* ---------------------------------------------------------------- C1 */
+
+/*
+ * C1 (final check, critical): on the real Galveston chart, a boat captured
+ * 20 m off the inbound leg, 164 ft short of a 46° turn, was switched to the
+ * next waypoint — and the straight line from there to it crosses charted land
+ * about 156 m on. The crew decided: keep switching at the 100–200 ft setting,
+ * and guard the shortcut. These are the exact reproduction coordinates.
+ */
+describe('C1 — round the turn point first, on the Galveston chart', () => {
+  const galveston = loadGalveston()
+  const FROM = { lat: 29.347584785882166, lon: -94.7858192104062 }
+  const TO = { lat: 29.323058449566364, lon: -94.82876315772812, label: 'C1 end' }
+  const C1_FIX = { lat: 29.312188, lon: -94.820793 }
+  const SAFE_M = 0.6
+
+  function fix(p: LatLon, t: number, heading: number): Fix {
+    return { lat: p.lat, lon: p.lon, accuracy: 5, heading, speed: 6, altitude: null, timestamp: t }
+  }
+  /** What the chart shows along a line: the shoalest depth, or -1 for land. */
+  function shoalestAlong(a: LatLon, b: LatLon): number {
+    const n = Math.ceil(haversineNM(a.lat, a.lon, b.lat, b.lon) * 1852)
+    let min = Infinity
+    for (let k = 0; k <= n; k++) {
+      const s = chartStateAt(galveston, {
+        lat: a.lat + ((b.lat - a.lat) * k) / n,
+        lon: a.lon + ((b.lon - a.lon) * k) / n,
+      })
+      if (s === 'land') return -1
+      if (typeof s === 'number') min = Math.min(min, s)
+    }
+    return min
+  }
+  const card = (f: Fix) => {
+    const s = useNavigation.getState()
+    return navCardView({
+      plan: s.plan!,
+      status: 'navigating',
+      targetIdx: s.targetIdx,
+      roundIdx: s.roundIdx,
+      fix: f,
+      now: f.timestamp,
+      speedKn: 12,
+      cruiseKn: 12,
+      arrivalFt: 200,
+      bearingPref: 'true',
+      declination: null,
+      gpsPoor: false,
+      rerouting: false,
+      offCourseSince: null,
+    })
+  }
+
+  it('switches at the setting, refuses the unsafe shortcut, and keeps the turn-point bearing until the line is clear', async () => {
+    const { useVessels } = await import('@/store/useVessels')
+    const vessels = useVessels as unknown as { setState: (p: object) => void }
+    vessels.setState({
+      boat: { ...BOAT, draft_m: 0.3, under_keel_margin_m: 0.3, clearance_m: 5, cruise_speed_kn: 12 },
+    })
+    try {
+      chart.features = galveston
+      useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
+      await useNavigation.getState().setDestination(TO, null)
+      const plan = useNavigation.getState().plan!
+      expect(plan.source).toBe('charted')
+      expect(plan.points).toHaveLength(13)
+      const WP10 = plan.points[10]
+      const WP11 = plan.points[11]
+      expect(haversineNM(WP10.lat, WP10.lon, 29.312031, -94.821277) * 1852).toBeLessThan(3)
+      // Every point keeps the crew's 200 ft — no circle shrunk for the turn.
+      expect(plan.arrivalFt.every((r) => r === 200)).toBe(true)
+
+      expect(useNavigation.getState().start()).toBe(true)
+      useNavigation.setState({ targetIdx: 10, resume: false, roundIdx: null })
+
+      // The reproduction: 164 ft from WP10, 20 m right of the inbound leg.
+      let t = Date.now()
+      const f0 = fix(C1_FIX, t, 273)
+      expect(haversineNM(f0.lat, f0.lon, WP10.lat, WP10.lon) * 6076.12).toBeCloseTo(164, 0)
+      // The straight line from there to WP11 really does cross charted land.
+      expect(shoalestAlong(f0, WP11)).toBe(-1)
+      useNavigation.getState().onFix(f0)
+      let s = useNavigation.getState()
+      // Switched at the setting (164 ft is inside 200 ft)…
+      expect(s.targetIdx).toBe(11)
+      // …but the shortcut is refused: round WP10 first.
+      expect(s.roundIdx).toBe(10)
+      let v = card(f0)
+      expect(v.title).toBe('Round waypoint 10 first — don’t cut the corner')
+      expect(v.rounding).toBe(true)
+      expect(v.bearing).toBe(bearingText(bearingDeg(f0.lat, f0.lon, WP10.lat, WP10.lon), 'true', null))
+      expect(v.notices.some((n) => n.kind === 'round-first')).toBe(true)
+      expect(navBannerView(v).primary.startsWith('Round WP 10 first')).toBe(true)
+      // The distance to go still counts via the turn point.
+      let rem = haversineNM(f0.lat, f0.lon, WP10.lat, WP10.lon)
+      for (let i = 10; i < 12; i++) {
+        rem += haversineNM(plan.points[i].lat, plan.points[i].lon, plan.points[i + 1].lat, plan.points[i + 1].lon)
+      }
+      expect(v.remaining).toBe(`${rem.toFixed(2)} NM`)
+
+      // Steer for WP10, 5 m a fix, until the card lets the boat go on.
+      let p: LatLon = f0
+      let cleared: LatLon | null = null
+      for (let k = 0; k < 40 && !cleared; k++) {
+        const brg = bearingDeg(p.lat, p.lon, WP10.lat, WP10.lon)
+        const d = haversineNM(p.lat, p.lon, WP10.lat, WP10.lon) * 1852
+        const step = Math.min(5, d)
+        p = {
+          lat: p.lat + ((WP10.lat - p.lat) * step) / Math.max(d, 1e-9),
+          lon: p.lon + ((WP10.lon - p.lon) * step) / Math.max(d, 1e-9),
+        }
+        t += 1000
+        const f = fix(p, t, brg)
+        useNavigation.getState().onFix(f)
+        s = useNavigation.getState()
+        // One turn at a time: nothing moves on past WP11 meanwhile.
+        expect(s.targetIdx).toBe(11)
+        v = card(f)
+        if (s.roundIdx === 10) {
+          // Still the turn point's bearing, however close to it.
+          expect(v.bearing).toBe(bearingText(bearingDeg(f.lat, f.lon, WP10.lat, WP10.lon), 'true', null))
+        } else {
+          expect(s.roundIdx).toBeNull()
+          cleared = p
+          // The line it now steers is clear of land and deep enough.
+          expect(shoalestAlong(f, WP11)).toBeGreaterThanOrEqual(SAFE_M)
+          expect(v.title).toBe('To waypoint 11 of 12')
+          expect(v.bearing).toBe(bearingText(bearingDeg(f.lat, f.lon, WP11.lat, WP11.lon), 'true', null))
+        }
+      }
+      expect(cleared).not.toBeNull()
+
+      // On along the leg, it stays on WP11 — no return to rounding.
+      for (let k = 1; k <= 5; k++) {
+        t += 1000
+        const q = {
+          lat: cleared!.lat + ((WP11.lat - cleared!.lat) * k) / 20,
+          lon: cleared!.lon + ((WP11.lon - cleared!.lon) * k) / 20,
+        }
+        useNavigation.getState().onFix(fix(q, t, bearingDeg(q.lat, q.lon, WP11.lat, WP11.lon)))
+        expect(useNavigation.getState().roundIdx).toBeNull()
+        expect(useNavigation.getState().targetIdx).toBe(11)
+      }
+    } finally {
+      vessels.setState({ boat: BOAT })
+    }
+  }, 30_000)
+
+  it('lets a boat on the line go straight on at the switch', async () => {
+    const { useVessels } = await import('@/store/useVessels')
+    const vessels = useVessels as unknown as { setState: (p: object) => void }
+    vessels.setState({
+      boat: { ...BOAT, draft_m: 0.3, under_keel_margin_m: 0.3, clearance_m: 5, cruise_speed_kn: 12 },
+    })
+    try {
+      chart.features = galveston
+      useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
+      await useNavigation.getState().setDestination(TO, null)
+      const plan = useNavigation.getState().plan!
+      expect(useNavigation.getState().start()).toBe(true)
+      // Waypoint 3 → 4 is a shallow turn in open water: 190 ft short of
+      // WP3, on the inbound leg, the line on to WP4 is clear.
+      useNavigation.setState({ targetIdx: 3, resume: false, roundIdx: null })
+      const a = plan.points[2]
+      const b = plan.points[3]
+      const d = haversineNM(a.lat, a.lon, b.lat, b.lon) * 6076.12
+      const k = (d - 190) / d
+      const p = { lat: a.lat + (b.lat - a.lat) * k, lon: a.lon + (b.lon - a.lon) * k }
+      useNavigation.getState().onFix(fix(p, Date.now(), bearingDeg(a.lat, a.lon, b.lat, b.lon)))
+      const s = useNavigation.getState()
+      expect(s.targetIdx).toBe(4)
+      expect(s.roundIdx).toBeNull()
+    } finally {
+      vessels.setState({ boat: BOAT })
+    }
   }, 30_000)
 })

@@ -24,7 +24,9 @@ import { routeArrivalFt } from '@/lib/steer'
  *   - the network coming back while the last plan failed → try again (most
  *     failures underway are a chart that could not be read);
  *   - navigating → the GPS kept on. Stopping the tracker on the Track tab
- *     mid-passage would otherwise freeze the card on the last fix.
+ *     mid-passage would otherwise freeze the card on the last fix. And the
+ *     chart the passage was planned on read back into memory after a reload
+ *     (`restoreChart`), for the live checks.
  */
 export function useNavigationEngine(): void {
   useEffect(() => startNavigationEngine(), [])
@@ -100,7 +102,14 @@ export function startNavigationEngine(): () => void {
     if (nav.getState().status !== 'navigating') return
     const tracker = useTracker.getState()
     if (!tracker.watching) tracker.start()
+    // A reload mid-passage leaves no chart in memory: read the passage's
+    // own chart again, so "don't cut the corner" and "shallow here" have
+    // one to check against.
+    void nav.getState().restoreChart()
   }
+  // A route saved before every point took the crew's own circle carries the
+  // old per-point radii; bring them to the setting now.
+  nav.getState().setArrivalCap(useTracker.getState().arrivalFt)
   keepTracking()
   const offNav = nav.subscribe((s, prev) => {
     if (s.status !== prev.status) keepTracking()

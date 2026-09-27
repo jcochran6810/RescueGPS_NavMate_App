@@ -76,6 +76,7 @@ import {
   fromXY,
   hazardDistance,
   inHazardArea,
+  landDistance,
   pointSegDist2,
   segRectDist,
   stateAt,
@@ -413,10 +414,21 @@ const INDEX_PAD_M = 500
 /** The approach stretch at each end, metres. */
 const DEFAULT_APPROACH_M = 120
 
-/** Capture radius, feet: default, and the floor a turn point may be cut to. */
+/**
+ * Capture radius, feet: the default, and the range a route's setting is held
+ * to — the crew's rule is "the next waypoint is selected within 100–200 ft",
+ * at every point, the destination included (see `arrivalRadii`).
+ */
 const DEFAULT_ARRIVAL_FT = 150
-const MIN_ARRIVAL_FT = 30
+const MIN_ARRIVAL_FT = 100
+const MAX_ARRIVAL_FT = 200
 const FT_TO_M = 0.3048
+
+/** The crew's arrival setting as a route uses it, feet: 100–200, default 150. */
+function arrivalSetting(ft: number | null | undefined): number {
+  if (ft == null || !Number.isFinite(ft) || ft <= 0) return DEFAULT_ARRIVAL_FT
+  return Math.min(MAX_ARRIVAL_FT, Math.max(MIN_ARRIVAL_FT, ft))
+}
 
 /**
  * Repair grids — the finer grid a failing leg is re-planned on. Cells a third
@@ -2423,6 +2435,11 @@ function turnDeg(a: XY, p: XY, b: XY): number {
  */
 function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: boolean): XY[] {
   const out = pts.slice()
+  // A first or last leg shorter than the arrival circle is a stub too: the
+  // boat is inside the next circle before it has reached the point, and a
+  // final leg of 20–35 m under a destination circle of 150 ft had the boat
+  // weaving round a point it could not tell from the destination.
+  const endStubM = arrivalSetting(ctx.req.arrivalFt) * FT_TO_M
   let changed = true
   let guard = out.length * 2 + 4
   while (changed && guard-- > 0) {
@@ -2433,7 +2450,11 @@ function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: 
       const a = out[i - 1]
       const p = out[i]
       const b = out[i + 1]
-      const stub = distXY(a, p) < STUB_LEG_M || distXY(p, b) < STUB_LEG_M
+      const stub =
+        distXY(a, p) < STUB_LEG_M ||
+        distXY(p, b) < STUB_LEG_M ||
+        (i === out.length - 2 && distXY(p, b) < endStubM) ||
+        (i === 1 && distXY(a, p) < endStubM)
       if (!stub && turnDeg(a, p, b) >= STRAIGHT_TURN_DEG) continue
       if (!noWorse(ctx, mode, a, b, [[a, p], [p, b]])) continue
       out.splice(i, 1)
@@ -2482,58 +2503,21 @@ function cautionOf(r: SegmentCheck): LegCaution {
 }
 
 /**
- * Per-point capture radius, feet.
+ * Per-point capture radius, feet: the crew's setting, at every point.
  *
- * The steering engine switches to the next point as soon as the boat is
- * inside the radius — which on a sharp turn means the boat starts steering
- * for the NEXT point from up to that far short of this one, cutting the
- * corner. At each turn the radius is the largest (up to what the crew asked
- * for) for which that early-switch line — from the point on the inbound leg
- * `r` short of the turn, to the next point — still passes the same check as
- * the legs (on a best-effort plan: is no worse than the legs it cuts, see
- * `noWorse`). Binary search; never below 30 ft, which is a floor, not a
- * promise — a turn point hard against a bank is steered to closely.
+ * This used to shrink the circle at a tight turn (down to 30 ft) so that the
+ * early switch could not cut the corner, and to half the shorter leg either
+ * side. Both went, by the crew's decision: a circle of 30 ft is inside the
+ * error of the fix that judges it, and a boat orbiting a destination whose
+ * circle had been cut to 60 ft was the result. Every point — turn points and
+ * the destination — keeps the 100–200 ft the crew set. What stops the early
+ * switch cutting the corner is now checked live, fix by fix, against the
+ * chart: `liveShortcut` below, and "Round waypoint N first" on the card
+ * until the straight line to the next point is clear.
  */
-function arrivalRadii(ctx: Ctx, mode: Mode, pts: XY[], requestedFt: number): number[] {
-  const out = pts.map(() => requestedFt)
-  for (let i = 1; i + 1 < pts.length; i++) {
-    const a = pts[i - 1]
-    const p = pts[i]
-    const b = pts[i + 1]
-    const lin = distXY(a, p)
-    const ok = (ft: number): boolean => {
-      const r = ft * FT_TO_M
-      const e = r >= lin ? a : { x: p.x + ((a.x - p.x) * r) / lin, y: p.y + ((a.y - p.y) * r) / lin }
-      return noWorse(ctx, mode, e, b, [[e, p], [p, b]])
-    }
-    if (ok(requestedFt)) continue
-    if (!ok(MIN_ARRIVAL_FT)) {
-      out[i] = MIN_ARRIVAL_FT
-      continue
-    }
-    let lo = MIN_ARRIVAL_FT
-    let hi = requestedFt
-    for (let k = 0; k < 7 && hi - lo > 2; k++) {
-      const mid = (lo + hi) / 2
-      if (ok(mid)) lo = mid
-      else hi = mid
-    }
-    out[i] = Math.floor(lo)
-  }
-  // Neighbouring circles may never overlap. With a hop shorter than the
-  // circles either end of it, the boat is already inside the next point's
-  // circle when it reaches this one — the card flashes one waypoint and moves
-  // on, steering a corner nobody checked from where the boat really is.
-  // Half of each leg either side keeps r[i-1] + r[i] within the leg between
-  // them, so every point is steered to in turn (and the early-switch chord
-  // above is measured from the leg it assumes).
-  for (let i = 1; i < pts.length; i++) {
-    const inFt = distXY(pts[i - 1], pts[i]) / FT_TO_M
-    const outFt = i + 1 < pts.length ? distXY(pts[i], pts[i + 1]) / FT_TO_M : Infinity
-    const cap = Math.max(MIN_ARRIVAL_FT, Math.floor(0.5 * Math.min(inFt, outFt)))
-    out[i] = Math.min(out[i], cap)
-  }
-  return out
+function arrivalRadii(pts: readonly unknown[], requestedFt: number): number[] {
+  const r = arrivalSetting(requestedFt)
+  return pts.map(() => r)
 }
 
 function nonePlan(req: RouteRequest, failure: string, warnings: string[] = []): RoutePlan {
@@ -2554,12 +2538,48 @@ function nonePlan(req: RouteRequest, failure: string, warnings: string[] = []): 
   }
 }
 
+/**
+ * How far round a position `stateNear` looks for land, metres — about the
+ * quantisation of the chart data (a metre) and then some.
+ */
+const LAND_EDGE_M = 3
+
+/**
+ * The chart's state at a position, reading a point ON the edge of land as
+ * land. A position exactly on the shared edge of two land polygons (a pier
+ * drawn against the shore, two charts' coastlines meeting) is inside neither
+ * by the even-odd rule: it came back as whatever lies under the land — as
+ * unsurveyed water ("the destination is in water this chart never
+ * surveyed", for a point on a jetty), or as the depth area beneath.
+ *
+ *   - Land on both sides of the position, half a metre either way along any
+ *     of four directions, is land: the position is on a seam inside it.
+ *   - A position that reads as unsurveyed, with land within `LAND_EDGE_M`,
+ *     is land too — it is on the land's edge, not out in unknown water.
+ */
+function stateNear(ix: ChartIndex, x: number, y: number): number {
+  const s = stateAt(ix, x, y)
+  if (s === LAND) return s
+  const around = (r: number, k: number) => {
+    const a = (k * Math.PI) / 4
+    return stateAt(ix, x + r * Math.cos(a), y + r * Math.sin(a))
+  }
+  for (let k = 0; k < 4; k++) {
+    if (around(0.5, k) === LAND && around(0.5, k + 4) === LAND) return LAND
+  }
+  if (!Number.isNaN(s)) return s
+  for (const r of [0.5, LAND_EDGE_M]) {
+    for (let k = 0; k < 8; k++) if (around(r, k) === LAND) return LAND
+  }
+  return s
+}
+
 /** What the chart says about an exact position, as a place. */
 function describeAt(ix: ChartIndex, p: XY): string {
   if (hazardDistance(ix, p.x, p.y, p.x, p.y, 0) <= 0) {
     return 'inside the footprint of a charted hazard (a wreck, obstruction, rock, pile or pylon)'
   }
-  const s = stateAt(ix, p.x, p.y)
+  const s = stateNear(ix, p.x, p.y)
   if (s === LAND) return 'on land, or on a structure the chart draws as land'
   if (Number.isNaN(s)) return 'in water this chart never surveyed'
   return describeDepth(s)
@@ -2660,7 +2680,7 @@ function makeCtx(req: RouteRequest): Ctx {
   const from = toXY(ix.proj, req.from)
   const to = toXY(ix.proj, req.to)
   const blocked = (p: XY) =>
-    stateAt(ix, p.x, p.y) === LAND || hazardDistance(ix, p.x, p.y, p.x, p.y, 0) <= 0
+    stateNear(ix, p.x, p.y) === LAND || hazardDistance(ix, p.x, p.y, p.x, p.y, 0) <= 0
   return {
     req,
     ix,
@@ -2730,9 +2750,7 @@ export function planRoute(req: RouteRequest): RoutePlan {
   const { safeDepthM, clearanceM } = ctx
   const planBox = planningBounds(req.from, req.to)
   const { from, to } = ctx
-  const arrivalReq = Number.isFinite(req.arrivalFt) && (req.arrivalFt as number) > 0
-    ? Math.max(MIN_ARRIVAL_FT, req.arrivalFt as number)
-    : DEFAULT_ARRIVAL_FT
+  const arrivalReq = arrivalSetting(req.arrivalFt)
 
   const strict: Mode = { clearanceM, wantClearanceM: clearanceM, allowShallow: false, optimistic: false }
   let lastFailure: Failure = 'path'
@@ -2946,9 +2964,6 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
     )
   }
 
-  const arrivalMode: Mode = charted
-    ? { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false }
-    : b.mode
   return {
     points,
     legs,
@@ -2960,7 +2975,7 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
     movedStart,
     movedEnd,
     outsideChannelNM,
-    arrivalFt: arrivalRadii(ctx, arrivalMode, pts, arrivalReq),
+    arrivalFt: arrivalRadii(pts, arrivalReq),
     failure: null,
     needsConfirm: !charted,
     confirmReason,
@@ -3135,34 +3150,20 @@ export function steerTo(
 /**
  * The per-point capture radii for a plan already made, at a new arrival
  * setting — without re-planning it. The route's points and legs do not
- * depend on the setting at all (`arrivalRadii` only sizes the circles round
- * points that already exist), so changing the setting mid-passage must not
- * renumber the waypoints the crew is following.
+ * depend on the setting at all, so changing it mid-passage must not renumber
+ * the waypoints the crew is following. Every point takes the setting itself
+ * (100–200 ft, see `arrivalRadii`); nothing about it needs the chart.
  *
- * Null when the plan has no line, or no chart to measure against.
+ * Null when the plan has no line. `req` is kept for callers written when
+ * the radii were measured against the chart.
  */
 export function recomputeArrivalRadii(
   plan: Pick<RoutePlan, 'points' | 'source'>,
-  req: Pick<RouteRequest, 'safeDepthM' | 'clearanceM' | 'features' | 'approachM' | 'depthMarginM'>,
+  _req: Pick<RouteRequest, 'safeDepthM' | 'clearanceM' | 'features' | 'approachM' | 'depthMarginM'>,
   arrivalFt: number,
 ): number[] | null {
   if (plan.source === 'none' || plan.points.length < 2) return null
-  if (req.features.coverage === 'none' || req.features.depthAreas.length === 0) return null
-  const from = plan.points[0]
-  const to = plan.points[plan.points.length - 1]
-  const ctx = makeCtx({ ...req, from, to, speedKn: 0 })
-  const pts = plan.points.map((p) => toXY(ctx.ix.proj, p))
-  const mode: Mode =
-    plan.source === 'charted'
-      ? { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false }
-      : {
-          clearanceM: Math.min(ctx.clearanceM, CLEARANCE_FLOOR_M),
-          wantClearanceM: ctx.clearanceM,
-          allowShallow: true,
-          optimistic: false,
-        }
-  const req2 = Number.isFinite(arrivalFt) && arrivalFt > 0 ? Math.max(MIN_ARRIVAL_FT, arrivalFt) : DEFAULT_ARRIVAL_FT
-  return arrivalRadii(ctx, mode, pts, req2)
+  return arrivalRadii(plan.points, arrivalFt)
 }
 
 /**
@@ -3214,18 +3215,7 @@ export function recheckPlan(
   const kept = plan.warnings.filter(
     (w) => !/^No route keeps /.test(w) && !/^This is the safest route found/.test(w),
   )
-  const mode: Mode = charted
-    ? { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false }
-    : {
-        clearanceM: Math.min(ctx.clearanceM, CLEARANCE_FLOOR_M),
-        wantClearanceM: ctx.clearanceM,
-        allowShallow: true,
-        optimistic: false,
-      }
-  const arrivalReq =
-    Number.isFinite(req.arrivalFt) && (req.arrivalFt as number) > 0
-      ? Math.max(MIN_ARRIVAL_FT, req.arrivalFt as number)
-      : Math.max(...plan.arrivalFt, MIN_ARRIVAL_FT)
+  const arrivalReq = arrivalSetting(req.arrivalFt ?? Math.max(...plan.arrivalFt, 0))
   return {
     ...plan,
     legs,
@@ -3233,7 +3223,7 @@ export function recheckPlan(
     needsConfirm: !charted,
     confirmReason: charted ? null : (shortfall[0] ?? null),
     warnings: [...shortfall, ...kept],
-    arrivalFt: arrivalRadii(ctx, mode, pts, arrivalReq),
+    arrivalFt: arrivalRadii(pts, arrivalReq),
   }
 }
 
@@ -3252,10 +3242,201 @@ export function chartStateAt(
   if (!ix) return null
   const q = toXY(ix.proj, p)
   if (q.x < ix.x0 || q.x > ix.x1 || q.y < ix.y0 || q.y > ix.y1) return null
-  const s = stateAt(ix, q.x, q.y)
+  const s = stateNear(ix, q.x, q.y)
   if (s === LAND) return 'land'
   if (Number.isNaN(s)) return 'unsurveyed'
   return s
+}
+
+/* -------------------------------------------------------------------------
+ * Live checks — asked once a second from the steering loop
+ *
+ * The route was checked at the dock; these check where the boat actually
+ * is, against the same chart and the same rules, with the fix's claimed
+ * error added to every margin: a boat reported 20 ft inside a 30 ft stand-off
+ * by a ±25 ft fix may be right on the bank.
+ * ---------------------------------------------------------------------- */
+
+/** What a live check measures against: the route's chart, its ends, the boat. */
+export interface LiveChartRequest {
+  features: ChartFeatures
+  /** The route's own start and destination — the approach zones are round them. */
+  from: LatLon
+  to: LatLon
+  safeDepthM: number
+  clearanceM: number
+  approachM?: number
+  depthMarginM?: number
+}
+
+/**
+ * The one context the steering loop measures against, kept between fixes —
+ * the index itself is cached per chart by `chartIndexFor`, and for the route
+ * being steered it is the one the planner already built (same chart, same
+ * ends, same box), so this normally costs nothing.
+ */
+let liveCache: { features: ChartFeatures; key: string; ctx: Ctx } | null = null
+
+function liveCtx(req: LiveChartRequest): Ctx | null {
+  const f = req.features
+  if (!f || f.coverage === 'none' || f.depthAreas.length === 0) return null
+  const ok = (p: LatLon) => Number.isFinite(p?.lat) && Number.isFinite(p?.lon)
+  if (!ok(req.from) || !ok(req.to)) return null
+  if (haversineNM(req.from.lat, req.from.lon, req.to.lat, req.to.lon) * NM_TO_METERS < 1) return null
+  const key = [
+    req.from.lat, req.from.lon, req.to.lat, req.to.lon,
+    req.safeDepthM, req.clearanceM, req.approachM ?? '', req.depthMarginM ?? '',
+  ].join('|')
+  if (liveCache && liveCache.features === f && liveCache.key === key) return liveCache.ctx
+  const ctx = makeCtx({ ...req, speedKn: 0 })
+  liveCache = { features: f, key, ctx }
+  return ctx
+}
+
+/** Inside the index, with room for a measuring radius — else nothing to say. */
+function insideIndex(ix: ChartIndex, p: XY, padM = 0): boolean {
+  return p.x - padM > ix.x0 && p.x + padM < ix.x1 && p.y - padM > ix.y0 && p.y + padM < ix.y1
+}
+
+function accuracyOf(accuracyM: number | null | undefined): number {
+  return accuracyM != null && Number.isFinite(accuracyM) && accuracyM > 0 ? accuracyM : 0
+}
+
+/**
+ * Is the shortcut no worse than the leg it stands in for, rule by rule? Used
+ * when the leg itself cannot meet the rules with the fix's error added: the
+ * straight line is then held to the leg's own standard, never below it.
+ */
+function noWorseThanLeg(line: SegmentCheck, leg: SegmentCheck): boolean {
+  if (line.crossesLand && !leg.crossesLand) return false
+  if (line.entersHazard && !leg.entersHazard) return false
+  if (line.unsurveyed && !leg.unsurveyed) return false
+  if (line.shallow) {
+    if (!leg.shallow) return false
+    if ((line.minDepthOutsideM ?? -Infinity) < (leg.minDepthOutsideM ?? -Infinity) - 1e-9) return false
+  }
+  if (line.nearShoal && !leg.shallow) {
+    if (!leg.nearShoal) return false
+    if ((line.nearShoalDistM ?? 0) < (leg.nearShoalDistM ?? 0) - 1e-6) return false
+    if ((line.nearShoalDepthM ?? 0) < (leg.nearShoalDepthM ?? 0) - 1e-9) return false
+  }
+  if (!line.clearanceOk && line.clearanceOutsideM < leg.clearanceOutsideM - 1e-6) return false
+  return true
+}
+
+export type ShortcutVerdict = 'clear' | 'unsafe'
+
+/**
+ * May the boat steer straight from where it is to `target`, the point after
+ * the turn point `turn` it has just switched away from?
+ *
+ * The line from the fix to the target is checked with the same rules as a
+ * leg — depth under it, the depth margin beside it (outside channels), the
+ * stand-off from land and hazards, the approach allowance near the ends —
+ * with the fix's claimed error added to the stand-off and to the depth
+ * margin, since the boat may be that far from where the fix puts it.
+ *
+ * `clear` when it passes; also when the planned leg `turn` → `target` cannot
+ * itself pass with that error added and the line is no worse than it, rule
+ * by rule (the shortcut is never held to more than the route it cuts).
+ * `unsafe` otherwise. Null when there is no chart in memory for the line —
+ * the caller decides what to do without one.
+ */
+export function liveShortcut(
+  req: LiveChartRequest,
+  fix: LatLon,
+  turn: LatLon,
+  target: LatLon,
+  accuracyM?: number | null,
+): ShortcutVerdict | null {
+  const ctx = liveCtx(req)
+  if (!ctx) return null
+  const { ix } = ctx
+  const p = toXY(ix.proj, fix)
+  const t = toXY(ix.proj, turn)
+  const g = toXY(ix.proj, target)
+  if (!insideIndex(ix, p) || !insideIndex(ix, t) || !insideIndex(ix, g)) return null
+  const acc = accuracyOf(accuracyM)
+  const opts = {
+    safeDepthM: ctx.safeDepthM,
+    clearanceM: ctx.clearanceM + acc,
+    zones: ctx.zones,
+    depthMarginM: ctx.depthMarginM + acc,
+    inChannel: ctx.inChannel,
+  }
+  const line = checkSegment(ix, p.x, p.y, g.x, g.y, opts)
+  if (line.ok) return 'clear'
+  const leg = checkSegment(ix, t.x, t.y, g.x, g.y, opts)
+  if (leg.ok) return 'unsafe'
+  return noWorseThanLeg(line, leg) ? 'clear' : 'unsafe'
+}
+
+/** What the chart shows at and round a fix — see `liveChartNear`. */
+export interface ChartNear {
+  /** At the fix itself: land, or water charted shallower than the boat needs. Null otherwise. */
+  here: { land: boolean; depthM: number | null } | null
+  /**
+   * Within `radiusM` of the fix, when the fix itself is fine: land or a
+   * hazard footprint (how far), or water charted shallower than the boat
+   * needs (its depth and how far). Null when there is none that close.
+   */
+  near:
+    | { land: true; depthM: null; distM: number }
+    | { land: false; depthM: number; distM: number }
+    | null
+}
+
+/**
+ * The chart at the boat's position, and within its accuracy circle.
+ *
+ * "Shallow here" read the chart at the fix only: a boat 30 m inside the
+ * shallows, with a fix 26 m off claiming ±18 m, read as fine. So the whole
+ * circle the fix claims is looked at: the fix itself first, then anything
+ * within `radiusM` — land, a hazard footprint, or water charted shallower
+ * than the boat needs, marked channel or not (the fix's error does not stop
+ * at a channel's edge). Unsurveyed water is not counted: it is not known to
+ * be shallow, and the route itself says where it relied on it.
+ *
+ * Null when no chart covers the position.
+ */
+export function liveChartNear(
+  req: LiveChartRequest,
+  fix: LatLon,
+  radiusM?: number | null,
+): ChartNear | null {
+  if (!Number.isFinite(fix?.lat) || !Number.isFinite(fix?.lon)) return null
+  const ctx = liveCtx(req)
+  if (!ctx) return null
+  const { ix } = ctx
+  const q = toXY(ix.proj, fix)
+  const r = accuracyOf(radiusM)
+  if (!insideIndex(ix, q, r)) return null
+  const s = stateNear(ix, q.x, q.y)
+  if (s === LAND || hazardDistance(ix, q.x, q.y, q.x, q.y, 0) <= 0) {
+    return { here: { land: true, depthM: null }, near: null }
+  }
+  if (!Number.isNaN(s) && s < ctx.safeDepthM) {
+    return { here: { land: false, depthM: s }, near: null }
+  }
+  if (r <= 0) return { here: null, near: null }
+  const landD = Math.min(
+    landDistance(ix, q.x, q.y, q.x, q.y, r),
+    Math.max(0, hazardDistance(ix, q.x, q.y, q.x, q.y, r)),
+  )
+  if (landD <= r) return { here: null, near: { land: true, depthM: null, distM: landD } }
+  const around = checkSegment(ix, q.x, q.y, q.x, q.y, {
+    safeDepthM: ctx.safeDepthM,
+    clearanceM: 0,
+    zones: [],
+    depthMarginM: r,
+  })
+  if (around.nearShoal && around.nearShoalDepthM != null) {
+    return {
+      here: null,
+      near: { land: false, depthM: around.nearShoalDepthM, distM: around.nearShoalDistM ?? r },
+    }
+  }
+  return { here: null, near: null }
 }
 
 /** Re-exported for callers that measure against the chart themselves. */

@@ -118,6 +118,9 @@ function render(status: NavStatus, plan: RoutePlan | null, extra: object = {}) {
     pendingPlan: null,
     reconfirm: false,
     shallowHere: null,
+    roundIdx: null,
+    progressLog: [],
+    plannedFor: null,
     ...extra,
   })
   return {
@@ -300,5 +303,52 @@ describe('Chart tab, by navigation state', () => {
     expect(live).not.toBeNull()
     expect(live![1]).toContain('To waypoint 1 of 2')
     expect(live![1]).not.toMatch(/NM|ETA|°T/)
+  })
+
+  it('the steering numbers wrap on a narrow phone instead of running off it (UI-1)', () => {
+    // A slow boat on a long way: "10 h 16 min"-style times.
+    useVessels.setState({ cache: [{ ...useVessels.getState().cache[0], cruise_speed_kn: 0.0536 }] } as never)
+    try {
+      const r = render('navigating', CHARTED, { speedKn: null })
+      // Bearing and distance share a line only when they fit.
+      expect(r.tab).toContain('mt-1 flex flex-wrap items-baseline justify-between')
+      expect(r.tab).toMatch(/max-\[359px\]:text-\[2\.5rem\]/)
+      // The three passage cells may shrink and break; none is nowrap.
+      const grid = r.tab.slice(r.tab.indexOf('grid grid-cols-3'), r.tab.indexOf('>End</button>'))
+      expect(grid.match(/min-w-0 bg-navy-900 px-1\.5 py-2 min-\[360px\]:px-2 min-\[400px\]:px-3/g)).toHaveLength(3)
+      expect(grid).toContain('[overflow-wrap:anywhere]')
+      expect(grid).not.toMatch(/class="[^"]*whitespace-nowrap[^"]*text-slate-50/)
+      // "10 h 16 min" breaks between the hours and the minutes, not inside.
+      expect(grid).toMatch(/\d+\u00a0h \d+\u00a0min/)
+    } finally {
+      useVessels.setState({ cache: [{ ...useVessels.getState().cache[0], cruise_speed_kn: 20 }] } as never)
+    }
+  })
+
+  it('says to round the turn point first, on the card and the banner (C1)', () => {
+    // Switched to the destination, but the line to it is not clear: round
+    // waypoint 1 first.
+    const r = render('navigating', CHARTED, { targetIdx: 2, roundIdx: 1 })
+    expect(r.tab).toContain('Round waypoint 1 first — don’t cut the corner')
+    expect(r.tab).toContain('Then the destination')
+    expect(r.tab).toContain('not clear of the shallows, land or your stand-off')
+    expect(r.banner).toContain('Round WP 1 first · 000°T')
+  })
+
+  it('says when the GPS error is wider than the boat’s margin, and "may be" near a shoal (M1)', () => {
+    useTracker.setState({ fix: { ...useTracker.getState().fix!, accuracy: 12, timestamp: Date.now() } as never })
+    try {
+      const r = render('navigating', CHARTED, {
+        plannedFor: { safeDepthM: 1.5, clearanceM: 5, speedKn: 20 },
+        shallowHere: { depthM: 0.9, land: false, maybe: true },
+      })
+      expect(r.tab).toContain('GPS accuracy ±39 ft — wider than your safety margin (16 ft). Keep a sharp lookout.')
+      expect(r.tab).toContain('You may be in water too shallow for your boat')
+      // Amber, not the red of "the chart shows land here".
+      expect(r.tab).toMatch(/border-amber-400\/60 bg-amber-500\/15 text-amber-100[^>]*>You may be in water/)
+      expect(r.banner).toContain('May be shallow')
+    } finally {
+      useTracker.setState({ fix: { ...useTracker.getState().fix!, accuracy: 5 } as never })
+    }
   })
 })

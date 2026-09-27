@@ -5,7 +5,13 @@ import {
   fixTime,
   isStale,
   legGeometry,
+  logProgress,
   navProgress,
+  PROGRESS_MIN_S,
+  PROGRESS_WINDOW_S,
+  ROUNDED_FT,
+  routeSpeedKn,
+  shortcutClear,
   offCourseThresholdM,
   PASS_ABEAM_MAX_FT,
   recoverTarget,
@@ -13,6 +19,7 @@ import {
   startTarget,
   stepTarget,
   type NavPlan,
+  type ProgressSample,
 } from './navigate'
 import { FT_PER_NM } from './steer'
 import { haversineNM, NM_TO_METERS } from './geo'
@@ -536,5 +543,91 @@ describe('a short hop between turn points (UI-5)', () => {
     // The next fix from the same place does not skip wp2.
     const s2 = stepTarget(plan, s1.targetIdx, atP1, { arrivalFt: 150 })
     expect(s2.targetIdx).toBe(2)
+  })
+})
+
+describe('shortcutClear — rounding a turn point (C1)', () => {
+  // A right-angle turn at B: north up A→B, east along B→C.
+  const before = (distFt: number, offM = 0) => go(go(B, 180, ft(distFt)), 90, m(offM))
+
+  it('is clear the moment the chart says the straight line is clear', () => {
+    expect(shortcutClear(L, 1, { ...before(180, 20), accuracy: 5 }, 'clear')).toBe(true)
+  })
+
+  it('is not while the chart says it is unsafe — until the boat is at the turn point', () => {
+    expect(shortcutClear(L, 1, { ...before(180, 20), accuracy: 5 }, 'unsafe')).toBe(false)
+    expect(shortcutClear(L, 1, { ...before(60), accuracy: 5 }, 'unsafe')).toBe(false)
+    expect(shortcutClear(L, 1, { ...before(ROUNDED_FT - 5), accuracy: 5 }, 'unsafe')).toBe(true)
+    // A fair fix widens "at the turn point" to its error — up to twice the floor.
+    expect(shortcutClear(L, 1, { ...before(45), accuracy: 15 }, 'unsafe')).toBe(true)
+    expect(shortcutClear(L, 1, { ...before(90), accuracy: 60 }, 'unsafe')).toBe(false)
+  })
+
+  it('with no chart to check against: once at the turn point or abeam of it — never round in circles', () => {
+    expect(shortcutClear(L, 1, { ...before(150, 20), accuracy: 5 }, null)).toBe(false)
+    // Abeam of B, 20 m inside the turn; and past it.
+    expect(shortcutClear(L, 1, { ...go(B, 90, m(20)), accuracy: 5 }, null)).toBe(true)
+    expect(shortcutClear(L, 1, { ...go(go(B, 0, ft(30)), 90, m(20)), accuracy: 5 }, null)).toBe(true)
+    // On the leg out of B, past it, 10 m off the line — even a little short
+    // of abeam on the leg in.
+    expect(shortcutClear(L, 1, { ...go(go(B, 90, m(100)), 180, m(10)), accuracy: 5 }, null)).toBe(true)
+  })
+
+  it('has nothing to guard past the last leg', () => {
+    expect(shortcutClear(L, 2, { ...C, accuracy: 5 }, 'unsafe')).toBe(true)
+  })
+})
+
+describe('speed made good along the route — the ETA (N2)', () => {
+  it('keeps half a minute of distance to go, and restarts on a sample from the past', () => {
+    let log = logProgress(null, { t: 0, remainingNM: 5 })
+    for (let s = 1; s <= 60; s++) log = logProgress(log, { t: s * 1000, remainingNM: 5 - s * 0.003 })
+    expect(log[log.length - 1].t - log[0].t).toBeGreaterThanOrEqual(PROGRESS_WINDOW_S * 1000)
+    expect(log[log.length - 1].t - log[1].t).toBeLessThan(PROGRESS_WINDOW_S * 1000)
+    expect(logProgress(log, { t: 10_000, remainingNM: 4 })).toEqual([{ t: 10_000, remainingNM: 4 }])
+  })
+
+  it('needs ten seconds of progress, and a knot of it', () => {
+    const log = [
+      { t: 0, remainingNM: 2 },
+      { t: (PROGRESS_MIN_S - 1) * 1000, remainingNM: 1.99 },
+    ]
+    expect(routeSpeedKn(log)).toBeNull()
+    expect(routeSpeedKn([{ t: 0, remainingNM: 2 }, { t: 60_000, remainingNM: 2 }])).toBeNull()
+  })
+
+  it('reads the speed the boat is really closing the destination at, not a lagging average', () => {
+    // 20 kn over the ground for a minute, then slowed to 8 kn for a no-wake
+    // zone. Fifteen seconds after slowing, the smoothed speed over the
+    // ground still says ~13.8 kn; the route has only been closing at 8.
+    let sog: number | null = null
+    let log: ProgressSample[] = []
+    let rem = 3
+    for (let s = 0; s <= 75; s++) {
+      const kn = s <= 60 ? 20 : 8
+      if (s > 0) rem -= kn / 3600
+      sog = smoothSpeedKn(sog, { speed: kn / 1.943844 }, 1)
+      log = logProgress(log, { t: s * 1000, remainingNM: rem, sogKn: kn })
+    }
+    // Truth: the rest at 8 kn. The smoothed speed still says ~12 kn.
+    const truthH = rem / 8
+    const bySog = rem / sog!
+    const byRoute = rem / routeSpeedKn(log)!
+    expect(Math.abs(bySog - truthH) / truthH).toBeGreaterThan(0.3)
+    expect(Math.abs(byRoute - truthH) / truthH).toBeLessThan(0.02)
+  })
+
+  it('knows a boat weaving across the line is not closing at its speed over the ground', () => {
+    // 20 kn over the ground, zig-zagging 40° either side of the route: it
+    // closes at 20 × cos 40° ≈ 15.3 kn, and the ETA is worked at that.
+    let log: ProgressSample[] = []
+    let rem = 3
+    for (let s = 0; s <= 40; s++) {
+      if (s > 0) rem -= (20 * Math.cos((40 * Math.PI) / 180)) / 3600
+      log = logProgress(log, { t: s * 1000, remainingNM: rem, sogKn: 20 })
+    }
+    expect(routeSpeedKn(log)).toBeCloseTo(15.32, 1)
+    // With no speeds logged, the progress rate alone says the same.
+    expect(routeSpeedKn(log.map(({ t, remainingNM }) => ({ t, remainingNM })))).toBeCloseTo(15.32, 1)
   })
 })

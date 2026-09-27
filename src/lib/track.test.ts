@@ -333,3 +333,98 @@ describe('what earns a place in the recorded path', () => {
     )
   })
 })
+
+describe('a boat turning hard (M3)', () => {
+  /**
+   * A planing boat at 18 kn (9.26 m/s): 30 s straight east, a 180° turn at
+   * 20° a second (3.2 m/s² sideways — ten times what the filter used to
+   * allow), then 30 s straight back. 1 Hz fixes claiming ±5 m (the 68 %
+   * radius — 3.3 m a side). The filter used to fall 82 m behind a turn like
+   * this while reporting 8–10 m.
+   */
+  function turn(seed: number, withCourse: boolean) {
+    const rnd = mulberry32(seed)
+    const f = new TrackFilter({ maxAccuracyM: 0 })
+    const v = 9.26
+    let x = 0
+    let y = 0
+    let course = 90
+    let maxErr = 0
+    let worstRatio = 0
+    let refused = 0
+    for (let i = 0; i < 70; i++) {
+      if (i > 0) {
+        const steps = i > 30 && i <= 39 ? 10 : 1
+        for (let k = 0; k < steps; k++) {
+          if (steps === 10) course += 2
+          const c = (course * Math.PI) / 180
+          x += (v / steps) * Math.sin(c)
+          y += (v / steps) * Math.cos(c)
+        }
+      }
+      const raw = at(x + gaussian(rnd) * 3.3, y + gaussian(rnd) * 3.3, 1000 + i * 1000, 5, {
+        speed: withCourse ? v : null,
+        heading: withCourse ? ((course % 360) + 360) % 360 : null,
+      })
+      const r = f.push(raw)
+      if (!r.accepted) {
+        refused++
+        continue
+      }
+      if (i < 5) continue
+      const err = offsetM(r.fix, x, y)
+      maxErr = Math.max(maxErr, err)
+      worstRatio = Math.max(worstRatio, err / (r.fix.accuracy ?? 1))
+    }
+    return { maxErr, worstRatio, refused }
+  }
+  const seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+  it('keeps up with the turn from the fixes alone', () => {
+    for (const seed of seeds) {
+      const r = turn(seed, false)
+      expect(r.maxErr).toBeLessThan(20)
+      // At most one fix of the turn is doubted before the filter follows it.
+      expect(r.refused).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('keeps up closely when the receiver reports its own course and speed', () => {
+    for (const seed of seeds) {
+      const r = turn(seed, true)
+      expect(r.maxErr).toBeLessThan(12)
+      expect(r.refused).toBe(0)
+    }
+  })
+
+  it('reports an accuracy its real error stays within (never the lag hidden behind 8 m)', () => {
+    for (const seed of seeds) {
+      expect(turn(seed, false).worstRatio).toBeLessThan(2)
+      expect(turn(seed, true).worstRatio).toBeLessThan(2)
+    }
+  })
+
+  it('never claims better than the receiver itself', () => {
+    const f = new TrackFilter({ maxAccuracyM: 0 })
+    let last: Fix | null = null
+    for (let i = 0; i < 100; i++) last = accepted(f, at(0, 0, 1000 + i * 1000, 12))
+    expect(last?.accuracy).toBeGreaterThanOrEqual(12)
+  })
+
+  it('reports the distance to the fix when it has fallen further behind than the fix’s own error', () => {
+    // Settled on a boat at rest, which then sets off at 6 m/s. The fixes are
+    // exact, so the estimate's real error is its distance from them: while
+    // it catches up, the accuracy it reports covers that, every fix.
+    const f = new TrackFilter({ maxAccuracyM: 0 })
+    for (let i = 0; i < 30; i++) accepted(f, at(0, 0, 1000 + i * 1000, 3))
+    let worst = 0
+    for (let i = 1; i <= 15; i++) {
+      const fix = accepted(f, at(6 * i, 0, 31_000 + i * 1000, 3))
+      const err = offsetM(fix, 6 * i, 0)
+      worst = Math.max(worst, err)
+      expect(fix.accuracy ?? 0).toBeGreaterThanOrEqual(err)
+    }
+    // It did fall behind — this is not a vacuous pass.
+    expect(worst).toBeGreaterThan(3)
+  })
+})

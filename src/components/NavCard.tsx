@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Button } from '@/components/ui'
 import { useFormat } from '@/hooks/useFormat'
 import { useNavCard } from '@/hooks/useNavCard'
-import { legRows, routeSummary, type NavNotice } from '@/lib/navView'
+import { keepUnitsTogether, legRows, routeSummary, type NavNotice } from '@/lib/navView'
 import { useNavigation } from '@/store/useNavigation'
 
 /**
@@ -48,16 +48,32 @@ export function NavCard() {
       aria-label="Steering"
       className="rounded-2xl border border-sky-400/40 bg-navy-900/90 p-4 shadow-lg shadow-black/30"
     >
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-semibold text-sky-200">{v.title}</p>
-        <span className="tnum shrink-0 text-[11px] text-slate-400">{v.radiusText}</span>
+      {/* The circle note goes under the title when the two do not fit side
+          by side, rather than squeezing "To waypoint 1 of 12" into three
+          lines on a 320 px phone. */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+        <p
+          className={
+            'min-w-0 text-sm font-semibold ' + (v.rounding ? 'text-amber-200' : 'text-sky-200')
+          }
+        >
+          {v.title}
+        </p>
+        <span className="tnum ml-auto text-[11px] text-slate-400">{v.radiusText}</span>
       </div>
 
-      <div className={'mt-1 flex items-baseline justify-between gap-3 ' + grey}>
-        <span className="tnum text-5xl leading-none font-bold text-slate-50">
+      {/* The two numbers the crew steers by. They share a line when they fit
+          and the distance drops under the bearing when they do not — never
+          off the edge: on a 320 px phone "5.22 NM" used to lose its M. */}
+      <div
+        className={
+          'mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 ' + grey
+        }
+      >
+        <span className="tnum text-5xl leading-none font-bold text-slate-50 max-[359px]:text-[2.5rem]">
           {v.atMark ? 'Here' : (v.bearing ?? '—')}
         </span>
-        <span className="tnum text-3xl leading-none font-semibold whitespace-nowrap text-slate-100">
+        <span className="tnum ml-auto text-3xl leading-none font-semibold whitespace-nowrap text-slate-100 max-[359px]:text-2xl">
           {v.distance}
         </span>
       </div>
@@ -91,10 +107,12 @@ export function NavCard() {
         }
       >
         <Cell label="To go" value={v.remaining} />
-        <Cell label="Time" value={v.timeToGo ?? '—'} />
+        <Cell label="Time" value={v.timeToGo ? keepUnitsTogether(v.timeToGo) : '—'} />
         <Cell
           label="Arrive"
-          value={v.eta?.text ?? '—'}
+          // Where "11:59 PM" cannot fit a third of a narrow card, it breaks
+          // before the PM — not inside it.
+          value={v.eta?.text.replace('\u00a0', ' ') ?? '—'}
           hint={v.eta?.dayMark || undefined}
           small
         />
@@ -174,6 +192,14 @@ function PendingReroute() {
   )
 }
 
+/**
+ * One of the three passage numbers. A third of a 320 px card is about 70 px
+ * of text, so nothing here may insist on one line: "10 h 16 min" breaks
+ * between its hours and its minutes, "+1 day" drops under the clock, and a
+ * word that still does not fit breaks rather than running under its
+ * neighbour (they were `whitespace-nowrap`, and "1 h 16 min" read
+ * "1 h 16 mi").
+ */
 function Cell({
   label,
   value,
@@ -186,18 +212,24 @@ function Cell({
   small?: boolean
 }) {
   return (
-    <div className="bg-navy-900 px-3 py-2">
+    <div className="min-w-0 bg-navy-900 px-1.5 py-2 min-[360px]:px-2 min-[400px]:px-3">
       <div className="text-[10px] font-semibold tracking-wide text-slate-400 uppercase">
         {label}
       </div>
       <div
         className={
-          'font-semibold whitespace-nowrap text-slate-50 ' +
-          (small ? 'text-base sm:text-lg' : 'text-lg')
+          'leading-tight font-semibold text-slate-50 [overflow-wrap:anywhere] ' +
+          (small
+            ? 'text-[13px] min-[360px]:text-sm min-[400px]:text-base sm:text-lg'
+            : 'text-[15px] min-[360px]:text-base min-[400px]:text-lg')
         }
       >
         {value}
-        {hint ? <span className="ml-1 text-xs font-semibold text-amber-300">{hint}</span> : null}
+        {hint ? (
+          <span className="ml-1 inline-block text-xs font-semibold whitespace-nowrap text-amber-300">
+            {hint}
+          </span>
+        ) : null}
       </div>
     </div>
   )
@@ -213,17 +245,24 @@ const NOTICE_TONE: Record<NavNotice['kind'], string> = {
   'leg-caution': 'border-amber-400/50 bg-amber-500/10 text-amber-100',
   'reroute-confirm': 'border-red-400/60 bg-red-500/15 text-red-100',
   'shallow-here': 'border-red-400/60 bg-red-500/20 text-red-50',
+  'round-first': 'border-amber-400/60 bg-amber-500/15 text-amber-100',
+  'gps-margin': 'border-amber-400/40 bg-amber-500/10 text-amber-100',
 }
 
 function Notice({ notice }: { notice: NavNotice }) {
   const tone =
     notice.kind === 'leg-caution' && notice.tone === 'alert'
       ? 'border-red-400/50 bg-red-500/10 text-red-100'
-      : NOTICE_TONE[notice.kind]
+      : notice.kind === 'shallow-here' && notice.tone === 'caution'
+        ? // "May be" — within the fix's error, not under the boat: amber.
+          'border-amber-400/60 bg-amber-500/15 text-amber-100'
+        : NOTICE_TONE[notice.kind]
   return (
     <p
       role={
-        notice.kind === 'shallow-here' || notice.kind === 'reroute-confirm'
+        notice.kind === 'shallow-here' ||
+        notice.kind === 'reroute-confirm' ||
+        notice.kind === 'round-first'
           ? 'alert'
           : notice.kind === 'rerouting'
             ? 'status'

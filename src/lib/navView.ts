@@ -31,7 +31,7 @@ import {
   STALE_FIX_S,
   type NavFix,
 } from './navigate'
-import type { LegCaution, RouteLeg, RoutePlan } from './routing'
+import { depthMarginFor, type LegCaution, type RouteLeg, type RoutePlan } from './routing'
 import type { LatLon } from './search'
 import {
   FT_PER_NM,
@@ -94,6 +94,14 @@ export function formatClock(ms: number, nowMs: number): ClockText | null {
  */
 export function noBreakMeridiem(text: string): string {
   return text.replace(/[ \u202f](?=[AaPp]\.?\s?[Mm])/, '\u00a0')
+}
+
+/**
+ * "10 h 16 min" with a no-break space inside each number-and-unit, so a
+ * narrow cell breaks it as "10 h" / "16 min" — never "10 h 16" / "min".
+ */
+export function keepUnitsTogether(text: string): string {
+  return text.replace(/(\d) (?=(?:d|h|min|s|NM|ft|m|kn)\b)/g, '$1\u00a0')
 }
 
 /** "ETA 14:52" / "ETA 01:10 +1 day". */
@@ -387,9 +395,28 @@ export interface NavCardInput {
   pendingReroute?: boolean
   /**
    * The chart puts the boat in water shallower than it needs (`depthM`), or
-   * on land, away from the dock stretches at the ends.
+   * on land, away from the dock stretches at the ends — or, with `maybe`,
+   * puts such water or land within the fix's claimed error of the boat.
    */
-  shallowHere?: { depthM: number | null; land: boolean } | null
+  shallowHere?: { depthM: number | null; land: boolean; maybe?: boolean } | null
+  /**
+   * The turn point the boat has switched away from but must round first:
+   * the straight line to the next point is not clear on the chart. The card
+   * steers to this point ("Round waypoint N first") until it is. Null/absent
+   * otherwise. See `useNavigation.roundIdx`.
+   */
+  roundIdx?: number | null
+  /**
+   * Speed made good along the route, knots (`routeSpeedKn`) — what the ETA
+   * is worked at when known; the smoothed speed over the ground otherwise.
+   */
+  routeSpeedKn?: number | null
+  /**
+   * The smaller of the boat's safety margins, metres — its stand-off and the
+   * depth margin beside the track (`safetyMarginM`). A fix claiming more
+   * error than this is said so on the card. Null/absent: not known.
+   */
+  safetyMarginM?: number | null
   /** How depths are written on this card (default feet first). */
   formatDepth?: (m: number) => string
   destLabel?: string | null
@@ -411,6 +438,8 @@ export interface NavNotice {
     | 'leg-caution'
     | 'reroute-confirm'
     | 'shallow-here'
+    | 'round-first'
+    | 'gps-margin'
   text: string
   /** How loud: red for a rule broken, amber for "check this". */
   tone?: 'alert' | 'caution'
@@ -445,6 +474,28 @@ export interface NavCardView {
   arrivedText: string | null
   /** The caution of the leg being run (into the target), or null. */
   legCaution: LegCaution | null
+  /**
+   * Steering to a turn point the boat switched away from but must round
+   * first ("Round waypoint N first — don't cut the corner"). `targetIdx` is
+   * then that turn point.
+   */
+  rounding: boolean
+}
+
+/**
+ * The smaller of a boat's two safety margins, metres: its stand-off from land
+ * and hazards, and the depth margin kept beside the track outside channels
+ * (`depthMarginFor`). With no stand-off set, the depth margin alone.
+ */
+export function safetyMarginM(clearanceM: number | null | undefined): number | null {
+  if (clearanceM == null || !Number.isFinite(clearanceM)) return null
+  const depth = depthMarginFor(clearanceM)
+  return clearanceM > 0 ? Math.min(clearanceM, depth) : depth
+}
+
+/** "±26 ft" — a fix's claimed error, feet. */
+function accuracyText(m: number): string {
+  return `±${Math.round(m * M_TO_FEET)} ft`
 }
 
 /** Turn-cue deadband, degrees: inside it the boat is "on course". */
@@ -458,8 +509,18 @@ export function navCardView(input: NavCardInput): NavCardView {
   const fmt = input.formatLength ?? defaultLength
   const { plan, fix, now } = input
   const n = plan.points.length
-  const idx = Math.min(Math.max(input.targetIdx ?? 1, 0), Math.max(n - 1, 0))
   const last = n - 1
+  const clampIdx = (i: number) => Math.min(Math.max(i, 0), Math.max(n - 1, 0))
+  const logical = clampIdx(input.targetIdx ?? 1)
+  // Rounding a turn point first: everything on the card — bearing, distance,
+  // the leg, what comes next, the distance to go — is worked to the turn
+  // point, the one the crew is actually steering for.
+  const rounding =
+    input.status === 'navigating' &&
+    input.roundIdx != null &&
+    Number.isFinite(input.roundIdx) &&
+    clampIdx(input.roundIdx) < logical
+  const idx = rounding ? clampIdx(input.roundIdx as number) : logical
 
   const stale = !fix || isStale(fix, now)
   const { radiusFt } = arrivalRadiusFt(plan, idx, fix?.accuracy, { arrivalFt: input.arrivalFt })
@@ -468,12 +529,19 @@ export function navCardView(input: NavCardInput): NavCardView {
   const leg = idx >= 1 ? (plan.legs?.[idx - 1] ?? null) : null
   const legCaution: LegCaution | null = leg ? (leg.caution ?? 'ok') : null
 
+  const made =
+    input.routeSpeedKn != null && Number.isFinite(input.routeSpeedKn) && input.routeSpeedKn > 0
+      ? input.routeSpeedKn
+      : null
   const prog = fix
-    ? navProgress(plan, idx, fix, { speedKn: input.speedKn, cruiseKn: input.cruiseKn, now })
+    ? navProgress(plan, idx, fix, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now })
     : null
+  const madeGood = made != null && prog?.speedSource === 'gps'
 
   const distFt = prog ? prog.distanceNM * FT_PER_NM : null
-  const atMark = distFt != null && distFt <= radiusFt
+  // Rounding, the bearing to the turn point is the whole point of the card:
+  // it is shown however close the boat is to it.
+  const atMark = !rounding && distFt != null && distFt <= radiusFt
   const bearing =
     prog && !atMark ? bearingText(prog.bearingDeg, input.bearingPref, input.declination) : null
 
@@ -505,18 +573,24 @@ export function navCardView(input: NavCardInput): NavCardView {
     )}`
   }
 
-  const title =
-    idx === 0
+  const title = rounding
+    ? idx === 0
+      ? 'Go to the start of the route first — don’t cut the corner'
+      : `Round waypoint ${idx} first — don’t cut the corner`
+    : idx === 0
       ? 'To the start of the route'
       : idx === last
         ? `To the destination${input.destLabel ? ` · ${input.destLabel}` : ''}`
         : `To waypoint ${idx} of ${last}`
+  const nextName = logical === last ? 'the destination' : `waypoint ${logical}`
 
   const eta = prog?.etaMs != null ? formatClock(prog.etaMs, now) : null
   const speedNote =
     prog?.speedKn != null
       ? prog.speedSource === 'gps'
-        ? `at ${prog.speedKn.toFixed(1)} kn`
+        ? madeGood
+          ? `at ${prog.speedKn.toFixed(1)} kn made good along the route`
+          : `at ${prog.speedKn.toFixed(1)} kn`
         : `at cruise speed, ${formatKn(prog.speedKn)} kn${
             input.speedKn != null && Number.isFinite(input.speedKn)
               ? ' — not making way over the ground'
@@ -547,12 +621,40 @@ export function navCardView(input: NavCardInput): NavCardView {
         text: 'Off the route — a new route from here follows if you stay off it.',
       })
     }
+    if (rounding && !stale) {
+      notices.push({
+        kind: 'round-first',
+        tone: 'caution',
+        text:
+          `The straight line from here to ${nextName} is not clear of the shallows, land or ` +
+          `your stand-off. Steer for ${idx === 0 ? 'the start' : `waypoint ${idx}`} until it is.`,
+      })
+    }
     if (input.gpsPoor && !stale) {
       notices.push({
         kind: 'gps-poor',
         text: `GPS accuracy is poor${
           fix?.accuracy != null ? ` (±${Math.round(fix.accuracy * M_TO_FEET)} ft)` : ''
         } — waypoints switch only when you are clearly there.`,
+      })
+    }
+    const margin = input.safetyMarginM
+    const acc = fix?.accuracy
+    if (
+      !stale &&
+      margin != null &&
+      Number.isFinite(margin) &&
+      margin > 0 &&
+      acc != null &&
+      Number.isFinite(acc) &&
+      acc > margin
+    ) {
+      notices.push({
+        kind: 'gps-margin',
+        tone: 'caution',
+        text:
+          `GPS accuracy ${accuracyText(acc)} — wider than your safety margin ` +
+          `(${Math.round(margin * M_TO_FEET)} ft). Keep a sharp lookout.`,
       })
     }
     if (input.pendingReroute) {
@@ -565,13 +667,29 @@ export function navCardView(input: NavCardInput): NavCardView {
       })
     }
     if (input.shallowHere && !stale) {
-      notices.push({
-        kind: 'shallow-here',
-        tone: 'alert',
-        text: input.shallowHere.land
-          ? 'The chart shows land or a structure here — check your position and depth now.'
-          : `Charted depth here ${depth(input.shallowHere.depthM ?? 0)} — less than your boat needs. Check your depth now.`,
-      })
+      const sh = input.shallowHere
+      const within = fix?.accuracy != null && Number.isFinite(fix.accuracy) ? accuracyText(fix.accuracy) : null
+      notices.push(
+        sh.maybe
+          ? {
+              kind: 'shallow-here',
+              tone: 'caution',
+              text: sh.land
+                ? `You may be close to land or a structure — the chart shows one within your GPS accuracy${
+                    within ? ` (${within})` : ''
+                  }. Check your position and depth now.`
+                : `You may be in water too shallow for your boat — ${depth(sh.depthM ?? 0)} is charted within your GPS accuracy${
+                    within ? ` (${within})` : ''
+                  }. Check your depth now.`,
+            }
+          : {
+              kind: 'shallow-here',
+              tone: 'alert',
+              text: sh.land
+                ? 'The chart shows land or a structure here — check your position and depth now.'
+                : `Charted depth here ${depth(sh.depthM ?? 0)} — less than your boat needs. Check your depth now.`,
+            },
+      )
     }
     if (legCaution && legCaution !== 'ok' && leg) {
       const note = legNote(leg, {
@@ -607,7 +725,9 @@ export function navCardView(input: NavCardInput): NavCardView {
     eta,
     speedNote,
     radiusFt: Math.round(radiusFt),
-    radiusText: `Counts as reached within ${Math.round(radiusFt)} ft`,
+    radiusText: rounding
+      ? `Then ${nextName}`
+      : `Counts as reached within ${Math.round(radiusFt)} ft`,
     stale,
     notices,
     arrivedText:
@@ -615,6 +735,7 @@ export function navCardView(input: NavCardInput): NavCardView {
         ? `You have arrived${input.destLabel ? ` at ${input.destLabel}` : ''}`
         : null,
     legCaution,
+    rounding,
   }
 }
 
@@ -659,8 +780,15 @@ export function navBannerView(v: NavCardView): NavBannerView {
     }
   }
   const rerouting = v.notices.some((x) => x.kind === 'rerouting')
-  const target =
-    v.targetIdx === 0 ? 'Start' : v.title.startsWith('To the destination') ? 'Dest' : `WP ${v.targetIdx}`
+  const target = v.rounding
+    ? v.targetIdx === 0
+      ? 'Start first'
+      : `Round WP ${v.targetIdx} first`
+    : v.targetIdx === 0
+      ? 'Start'
+      : v.title.startsWith('To the destination')
+        ? 'Dest'
+        : `WP ${v.targetIdx}`
   const parts = [target, v.atMark ? 'at the mark' : v.bearing, v.distance].filter(
     (x): x is string => !!x && x !== '—',
   )
@@ -671,12 +799,17 @@ export function navBannerView(v: NavCardView): NavBannerView {
     .filter(Boolean)
     .join(' · ')
   const pending = v.notices.some((x) => x.kind === 'reroute-confirm')
-  const shallow = v.notices.some((x) => x.kind === 'shallow-here')
+  const shallowNotice = v.notices.find((x) => x.kind === 'shallow-here')
+  const shallow = !!shallowNotice
   const flaggedLeg = isFlagged(v.legCaution)
   const prefix = pending
     ? 'Re-route needs your OK'
     : shallow
-      ? 'Shallow here'
+      ? shallowNotice?.tone === 'caution'
+        ? /land/.test(shallowNotice.text)
+          ? 'Land may be close'
+          : 'May be shallow'
+        : 'Shallow here'
       : rerouting
         ? 'Re-routing…'
         : flaggedLeg
@@ -691,6 +824,7 @@ export function navBannerView(v: NavCardView): NavBannerView {
     shallow ||
     flaggedLeg ||
     rerouting ||
+    v.rounding ||
     v.notices.some((x) => x.kind === 'off-course' || x.kind === 'error')
   return {
     primary: prefix ? `${prefix} · ${parts.join(' · ')}` : parts.join(' · '),
@@ -785,8 +919,8 @@ export function planFailureView(input: {
  */
 export function arrivalSettingNote(arrivalFt: number, choices: readonly number[]): string {
   const base =
-    'Steering moves on to the next waypoint inside this distance. Tight turns use a smaller circle, ' +
-    'shown on the card while you steer.'
+    'Steering moves on to the next waypoint inside this distance, at every waypoint and the ' +
+    'destination. Where the straight line on is not clear, the card says to round the waypoint first.'
   if (choices.includes(arrivalFt)) return base
   const used = Math.max(choices[0], Math.min(arrivalFt, choices[choices.length - 1]))
   return (
@@ -904,24 +1038,112 @@ export function gpsChip(
  * to the last one drawn is left out, unless it is the start, the
  * destination, or the one being steered to. Each kept mark says how many it
  * stands for (`hidden`), so the map can show "5–8".
+ *
+ * Two more rules, both from what the map actually showed:
+ *
+ *   - **Nothing is folded into the start.** The start is a plain dot with no
+ *     number, so waypoint 1 folded into it simply vanished from the preview.
+ *     Waypoint 1 is always drawn, and points close after it fold into IT.
+ *   - **Group labels may not overlap.** "10–11" was drawn across "5–9". The
+ *     map puts a group's label up and to the right of its circle
+ *     (`groupLabelBox`); a group whose circle or label would land on an
+ *     earlier circle or label is folded into the group before it ("5–11").
  */
-export function declutterMarks<M extends Pick<RouteMark, 'kind' | 'state' | 'idx'>>(
+export function declutterMarks<M extends Pick<RouteMark, 'kind' | 'state' | 'idx'> & { label?: string }>(
   marks: readonly M[],
   project: (m: M) => { x: number; y: number },
   minPx = 20,
 ): { mark: M; hidden: number[] }[] {
   const out: { mark: M; hidden: number[]; p: { x: number; y: number } }[] = []
+  const foldable = (m: M) => m.kind === 'turn' && m.state !== 'active'
   for (const m of marks) {
     const p = project(m)
-    const keep = m.kind !== 'turn' || m.state === 'active'
     const prev = out[out.length - 1]
-    if (!keep && prev && Math.hypot(p.x - prev.p.x, p.y - prev.p.y) < minPx) {
+    if (
+      foldable(m) &&
+      prev &&
+      prev.mark.kind !== 'start' &&
+      Math.hypot(p.x - prev.p.x, p.y - prev.p.y) < minPx
+    ) {
       prev.hidden.push(m.idx)
       continue
     }
     out.push({ mark: m, hidden: [], p })
   }
+
+  // Labels: fold a group into the one before it while it would collide.
+  let guard = out.length + 1
+  for (let changed = true; changed && guard-- > 0; ) {
+    changed = false
+    for (let i = 1; i < out.length; i++) {
+      const c = out[i]
+      const prev = out[i - 1]
+      if (!foldable(c.mark) || prev.mark.kind === 'start') continue
+      const circle = markBox(c.mark, c.p)
+      const label = c.hidden.length > 0 ? groupLabelBox(c.mark, c.p, c.hidden) : null
+      let hit = false
+      for (let k = 0; k < i && !hit; k++) {
+        const o = out[k]
+        const oLabel = o.hidden.length > 0 ? groupLabelBox(o.mark, o.p, o.hidden) : null
+        hit =
+          (oLabel != null && boxesOverlap(circle, oLabel)) ||
+          (label != null && (boxesOverlap(label, markBox(o.mark, o.p)) || (oLabel != null && boxesOverlap(label, oLabel))))
+      }
+      if (!hit) continue
+      prev.hidden.push(c.mark.idx, ...c.hidden)
+      out.splice(i, 1)
+      changed = true
+      break
+    }
+  }
   return out.map(({ mark, hidden }) => ({ mark, hidden }))
+}
+
+export interface ScreenBox {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+/** Radius of a route mark's circle on the map, px — as SatelliteMap draws it. */
+export function markRadius(m: Pick<RouteMark, 'kind' | 'state'>): number {
+  if (m.kind === 'start') return 5
+  return m.state === 'active' ? 11 : 9
+}
+
+function markBox(m: Pick<RouteMark, 'kind' | 'state'>, p: { x: number; y: number }): ScreenBox {
+  const r = markRadius(m)
+  return { x0: p.x - r, y0: p.y - r, x1: p.x + r, y1: p.y + r }
+}
+
+/** The text of a group's label: "5–9". */
+export function groupLabelText(m: { idx: number; label?: string }, hidden: readonly number[]): string {
+  return `${m.label ?? String(m.idx)}–${hidden[hidden.length - 1]}`
+}
+
+/**
+ * Where a group's label sits on the map, px: its baseline starts `r + 3`
+ * right of the circle's centre and `r` above it, 10 px bold (about 6.6 px a
+ * character, allowing for a wide fallback font). SatelliteMap draws it there.
+ */
+export function groupLabelBox(
+  m: Pick<RouteMark, 'kind' | 'state' | 'idx'> & { label?: string },
+  p: { x: number; y: number },
+  hidden: readonly number[],
+): ScreenBox {
+  const r = markRadius(m)
+  const x0 = p.x + r + 3
+  const y1 = p.y - r + 2
+  return { x0, y0: y1 - 11, x1: x0 + 6.6 * groupLabelText(m, hidden).length, y1 }
+}
+
+/** Space kept between labels and circles, px — touching reads as one label. */
+const LABEL_GAP_PX = 4
+
+function boxesOverlap(a: ScreenBox, b: ScreenBox): boolean {
+  const g = LABEL_GAP_PX
+  return a.x0 < b.x1 + g && b.x0 < a.x1 + g && a.y0 < b.y1 + g && b.y0 < a.y1 + g
 }
 
 /**
@@ -942,6 +1164,15 @@ export function showNavBanner(o: {
   const live =
     o.status === 'navigating' || o.status === 'arrived' || (o.status === 'preview' && o.reconfirm)
   return live && (!o.onChartTab || !o.cardInView)
+}
+
+/**
+ * The tab the app opens on. A reload mid-passage — or a phone that killed the
+ * app in a pocket — used to open on Home, with only the banner to say a route
+ * was being steered; it opens on the steering card instead.
+ */
+export function initialTab(navStatus: string): 'chart' | 'home' {
+  return navStatus === 'navigating' || navStatus === 'arrived' ? 'chart' : 'home'
 }
 
 /**

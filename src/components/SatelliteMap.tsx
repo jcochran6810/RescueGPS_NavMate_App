@@ -37,6 +37,8 @@ import { useWaypointView } from '@/store/useWaypointView'
 import { toast } from '@/store/useToast'
 import {
   declutterMarks,
+  groupLabelText,
+  markRadius,
   isFlagged,
   segmentStyle,
   type RouteMark,
@@ -1381,7 +1383,7 @@ export function SatelliteMap({
               }
               const active = m.state === 'active'
               const passed = m.state === 'passed'
-              const r = active ? 11 : 9
+              const r = markRadius(m)
               const fill = passed
                 ? '#475569'
                 : m.kind === 'end'
@@ -1428,7 +1430,7 @@ export function SatelliteMap({
                       strokeWidth="3"
                       paintOrder="stroke"
                     >
-                      {`${m.label}–${hidden[hidden.length - 1]}`}
+                      {groupLabelText(m, hidden)}
                     </text>
                   ) : null}
                 </g>

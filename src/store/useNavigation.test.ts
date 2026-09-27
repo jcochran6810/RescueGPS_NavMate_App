@@ -936,12 +936,16 @@ describe('the engine', () => {
     expect(s.status).toBe('navigating')
     expect(s.targetIdx).toBe(2)
     expect(s.plan?.points).toEqual(before.plan?.points)
-    // No chart in memory to re-measure against: every circle simply fits
-    // the new, smaller setting.
+    // Every circle takes the new, smaller setting.
     expect(s.plan?.arrivalFt).toEqual([100, 100, 100])
-    // A larger setting cannot widen circles that were never checked wider.
+    // Changed on purpose (the crew's decision after the final check): every
+    // point — turn points and the destination — uses the crew's own 100–200
+    // ft, so a larger setting now widens the circles too. (They used to be
+    // "checked" radii that a larger setting could not widen; the corner the
+    // early switch would cut is now refused live instead — see
+    // useNavigation.router.test.ts, C1.)
     useTracker.setState({ arrivalFt: 200 })
-    expect(useNavigation.getState().plan?.arrivalFt).toEqual([100, 100, 100])
+    expect(useNavigation.getState().plan?.arrivalFt).toEqual([200, 200, 200])
     stop()
   })
 
@@ -965,6 +969,26 @@ describe('the engine', () => {
     win.dispatchEvent(new Event('online'))
     await settle()
     expect(useNavigation.getState().status).toBe('preview')
+    stop()
+  })
+
+  it('reads the passage’s chart back into memory after a reload mid-passage, for the live checks', async () => {
+    await navigating()
+    const recorded = useNavigation.getState().chartLoads
+    expect(recorded.length).toBeGreaterThan(0)
+    // The page reloads: steering persisted, the chart did not.
+    useChartData.setState({ features: { ...FEATURES, coverage: 'none' } })
+    const load = vi.mocked(useChartData.getState().load)
+    load.mockClear()
+    const stop = startNavigationEngine()
+    await settle()
+    expect(load).toHaveBeenCalledTimes(recorded.length)
+    expect(load.mock.calls[0]).toEqual([recorded[0].bounds, { detailAround: recorded[0].detailAround }])
+    // With a chart in memory it does nothing.
+    load.mockClear()
+    useChartData.setState({ features: { ...FEATURES } })
+    await useNavigation.getState().restoreChart()
+    expect(load).not.toHaveBeenCalled()
     stop()
   })
 

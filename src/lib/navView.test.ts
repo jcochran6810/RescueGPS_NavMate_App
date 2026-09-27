@@ -23,6 +23,10 @@ import {
   reconfirmBannerView,
   showNavBanner,
   failureFrame,
+  groupLabelBox,
+  initialTab,
+  keepUnitsTogether,
+  safetyMarginM,
   type NavCardInput,
 } from './navView'
 import { projectPosition } from './sar'
@@ -612,5 +616,143 @@ describe('failureFrame (UI-10)', () => {
   })
   it('is nothing unless planning failed', () => {
     expect(failureFrame({ status: 'preview', dest: B, origin: null, fix: A, lastPlannedAt: 1 })).toBeNull()
+  })
+})
+
+describe('rounding a turn point first (C1)', () => {
+  // Switched to C (index 2) 150 ft short of B, but the line to C is not clear.
+  const here = { ...go(B, 180, ft(150)), timestamp: NOW - 1000, accuracy: 5, heading: 0 }
+
+  it('steers to the turn point, says so, and counts the distance to go through it', () => {
+    const v = navCardView(input({ fix: here, targetIdx: 2, roundIdx: 1 }))
+    expect(v.rounding).toBe(true)
+    expect(v.targetIdx).toBe(1)
+    expect(v.title).toBe('Round waypoint 1 first — don’t cut the corner')
+    // The bearing to B — shown even though the boat is inside B's circle.
+    expect(v.atMark).toBe(false)
+    expect(v.bearing).toBe('000°T')
+    expect(v.distance).toBe('150 ft')
+    expect(v.radiusText).toBe('Then waypoint 2')
+    expect(v.then).toBe('Then 090°T for 1.00 NM')
+    // 150 ft to B, then B→C and C→D.
+    expect(v.remaining).toBe(`${(ft(150) + 2).toFixed(2)} NM`)
+    expect(v.notices.find((n) => n.kind === 'round-first')?.text).toMatch(
+      /straight line from here to waypoint 2 is not clear.*Steer for waypoint 1 until it is/,
+    )
+    const b = navBannerView(v)
+    expect(b.primary).toBe('Round WP 1 first · 000°T · 150 ft')
+    expect(b.tone).toBe('alert')
+  })
+
+  it('names the destination when that is the point after the turn', () => {
+    const v = navCardView(input({ fix: here, targetIdx: 3, roundIdx: 2 }))
+    expect(v.radiusText).toBe('Then the destination')
+  })
+
+  it('is ordinary steering with no turn point to round', () => {
+    const v = navCardView(input({ fix: here, targetIdx: 2, roundIdx: null }))
+    expect(v.rounding).toBe(false)
+    expect(v.title).toBe('To waypoint 2 of 3')
+  })
+})
+
+describe('the GPS error against the boat’s margins (M1)', () => {
+  it('takes the smaller of the stand-off and the depth margin', () => {
+    expect(safetyMarginM(30)).toBe(10)
+    expect(safetyMarginM(5)).toBe(5)
+    expect(safetyMarginM(0)).toBe(10)
+    expect(safetyMarginM(null)).toBeNull()
+  })
+
+  it('says when the fix is less certain than the margin', () => {
+    const fix = { ...go(B, 90, 0.5), timestamp: NOW - 1000, accuracy: 18, heading: 90 }
+    const v = navCardView(input({ fix, safetyMarginM: 10 }))
+    expect(v.notices.find((n) => n.kind === 'gps-margin')?.text).toBe(
+      'GPS accuracy ±59 ft — wider than your safety margin (33 ft). Keep a sharp lookout.',
+    )
+    expect(navCardView(input({ safetyMarginM: 10 })).notices.some((n) => n.kind === 'gps-margin')).toBe(false)
+  })
+
+  it('words water or land within the GPS error as "may be", in amber', () => {
+    const fix = { ...go(B, 90, 0.5), timestamp: NOW - 1000, accuracy: 15, heading: 90 }
+    const shoal = navCardView(input({ fix, shallowHere: { depthM: 0.9, land: false, maybe: true } }))
+    const n = shoal.notices.find((x) => x.kind === 'shallow-here')!
+    expect(n.tone).toBe('caution')
+    expect(n.text).toBe(
+      'You may be in water too shallow for your boat — 3 ft (0.9 m) is charted within your GPS accuracy (±49 ft). Check your depth now.',
+    )
+    expect(navBannerView(shoal).primary.startsWith('May be shallow')).toBe(true)
+    const land = navCardView(input({ fix, shallowHere: { depthM: null, land: true, maybe: true } }))
+    expect(land.notices.find((x) => x.kind === 'shallow-here')?.text).toMatch(/^You may be close to land/)
+    expect(navBannerView(land).primary.startsWith('Land may be close')).toBe(true)
+    // At the fix itself it is still a fact, in red.
+    const here = navCardView(input({ fix, shallowHere: { depthM: 0.9, land: false } }))
+    expect(here.notices.find((x) => x.kind === 'shallow-here')?.tone).toBe('alert')
+    expect(navBannerView(here).primary.startsWith('Shallow here')).toBe(true)
+  })
+})
+
+describe('the ETA at the speed made good (N2)', () => {
+  it('works the time at the route speed when there is one, and says so', () => {
+    const v = navCardView(input({ speedKn: 20, routeSpeedKn: 10 }))
+    // 0.5 NM to C, then 1 NM to D, at 10 kn: 9 min.
+    expect(v.timeToGo).toBe('9 min')
+    expect(v.speedNote).toBe('at 10.0 kn made good along the route')
+    expect(navCardView(input({ speedKn: 20 })).speedNote).toBe('at 20.0 kn')
+  })
+})
+
+describe('narrow screens (UI-1)', () => {
+  it('keeps each number with its unit, so a cell breaks between them', () => {
+    expect(keepUnitsTogether('10 h 16 min')).toBe('10\u00a0h 16\u00a0min')
+    expect(keepUnitsTogether('1 d 3 h')).toBe('1\u00a0d 3\u00a0h')
+    expect(keepUnitsTogether('under a minute')).toBe('under a minute')
+  })
+})
+
+describe('the map’s turn points (UI-3, UI-7)', () => {
+  it('never folds waypoint 1 into the start, which has no number', () => {
+    const marks = routeMarks([A, B, B, C], null)
+    const xy = (m: { idx: number }) => ({ x: [0, 8, 14, 200][m.idx], y: 0 })
+    const kept = declutterMarks(marks, xy)
+    expect(kept.map((k) => k.mark.idx)).toEqual([0, 1, 3])
+    expect(kept[1].hidden).toEqual([2])
+  })
+
+  it('folds a group whose label would lie across another group’s label', () => {
+    // 5–9 at x = 100; 10–11 just left of it and a little above — their
+    // "5–9" and "10–11" labels were drawn across each other.
+    const pts = Array.from({ length: 14 }, () => A)
+    const marks = routeMarks(pts, null)
+    const pos: Record<number, [number, number]> = {
+      0: [-300, 0], 1: [-200, 0], 2: [-150, 0], 3: [-100, 0], 4: [-50, 0],
+      5: [100, 0], 6: [102, 0], 7: [104, 0], 8: [106, 0], 9: [108, 0],
+      10: [80, -4], 11: [82, -4], 12: [300, 0], 13: [400, 0],
+    }
+    const xy = (m: { idx: number }) => ({ x: pos[m.idx][0], y: pos[m.idx][1] })
+    const kept = declutterMarks(marks, xy)
+    const g5 = kept.find((k) => k.mark.idx === 5)!
+    expect(kept.some((k) => k.mark.idx === 10)).toBe(false)
+    expect(g5.hidden).toEqual([6, 7, 8, 9, 10, 11])
+    // And no two group labels left overlap.
+    const boxes = kept
+      .filter((k) => k.hidden.length > 0)
+      .map((k) => groupLabelBox(k.mark, xy(k.mark), k.hidden))
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i]
+        const b = boxes[j]
+        expect(a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1).toBe(false)
+      }
+    }
+  })
+})
+
+describe('the tab the app opens on (UI-5)', () => {
+  it('is the Chart tab while a passage is steered, Home otherwise', () => {
+    expect(initialTab('navigating')).toBe('chart')
+    expect(initialTab('arrived')).toBe('chart')
+    expect(initialTab('preview')).toBe('home')
+    expect(initialTab('idle')).toBe('home')
   })
 })

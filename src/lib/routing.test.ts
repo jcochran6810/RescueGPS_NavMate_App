@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { haversineNM, metersPerDegree, NM_TO_METERS } from './geo'
 import {
   astar,
@@ -14,6 +12,8 @@ import {
   legChannelFraction,
   legMinDepth,
   lineOfSight,
+  liveChartNear,
+  liveShortcut,
   makeGrid,
   passability,
   passable,
@@ -36,6 +36,7 @@ import {
   type Ring,
 } from './routing'
 import type { LatLon } from './search'
+import { loadGalveston } from './__fixtures__/galveston'
 
 /* -------------------------------------------------------------------------
  * Helpers — an ASCII chart, so the expected answer can be read off the page
@@ -1669,10 +1670,16 @@ describe('planRoute when nothing fully safe exists', () => {
       }
       return min
     }
+    // Changed on purpose (the crew's decision after the final check): the
+    // circles are no longer shrunk at turns — every point keeps the crew's
+    // 200 ft — and the corner is guarded live instead. So what is pinned
+    // here now is that guard: from the early-switch point 200 ft short of
+    // each turn, the live shortcut check calls the straight line to the next
+    // point unsafe whenever it is shoaler than the legs it cuts, and never
+    // calls one clear that is.
+    expect(plan.arrivalFt.every((r) => r === 200)).toBe(true)
+    let refused = 0
     for (let i = 1; i + 1 < plan.points.length; i++) {
-      // 30 ft is the floor: the radius is never cut below it, whatever the
-      // chord does (a turn hard against a bank is steered to closely).
-      if (plan.arrivalFt[i] <= 30) continue
       const a = plan.points[i - 1]
       const p = plan.points[i]
       const b = plan.points[i + 1]
@@ -1683,8 +1690,16 @@ describe('planRoute when nothing fully safe exists', () => {
         lon: p.lon + ((a.lon - p.lon) * r) / lin,
       }
       const legs = Math.min(shoalest(e, p), shoalest(p, b))
-      expect(shoalest(e, b)).toBeGreaterThanOrEqual(Math.min(legs, 1.5))
+      const verdict = liveShortcut(
+        { features, from, to, safeDepthM: boat.safeDepthM, clearanceM: 0 },
+        e, p, b, 0,
+      )
+      expect(verdict).not.toBeNull()
+      if (verdict === 'clear') expect(shoalest(e, b)).toBeGreaterThanOrEqual(Math.min(legs, 1.5))
+      else refused++
     }
+    // The dog-leg through the notch is exactly such a corner.
+    expect(refused).toBeGreaterThan(0)
   })
 })
 
@@ -1693,7 +1708,13 @@ describe('planRoute when nothing fully safe exists', () => {
  * ---------------------------------------------------------------------- */
 
 describe('planRoute arrival radius', () => {
-  it('shrinks the radius at a hairpin so the early switch cannot cut the corner', () => {
+  // Changed on purpose (the crew's decision after the final check): the
+  // radius used to be cut at a hairpin — to as little as 30 ft — so the early
+  // switch could not cut the corner. Every point now keeps the crew's own
+  // 100–200 ft, and the corner is guarded live: the straight line from the
+  // boat to the next point is checked against the chart on every fix, and
+  // the card says "Round waypoint N first" until it is clear.
+  it('keeps the crew’s circle at a hairpin, and the live check refuses the corner the early switch would cut', () => {
     // A thin mole running south from y = 0; the route goes up one side,
     // round the tip, and back down the other.
     const features = sea({ land: [{ rings: [rect(-5, -12000, 5, 0)] }] })
@@ -1703,16 +1724,11 @@ describe('planRoute arrival radius', () => {
       from, to, safeDepthM: 1.5, clearanceM: 30, speedKn: 20, features, arrivalFt: 200,
     })
     expect(plan.source).toBe('charted')
-    expect(plan.arrivalFt[0]).toBe(200)
-    expect(plan.arrivalFt[plan.arrivalFt.length - 1]).toBe(200)
-    const inner = plan.arrivalFt.slice(1, -1)
-    expect(inner.some((r) => r < 200)).toBe(true)
-    for (const r of inner) {
-      expect(r).toBeGreaterThanOrEqual(30)
-      expect(r).toBeLessThanOrEqual(200)
-    }
-    // Independently: the early-switch chord from each turn point's radius
-    // passes the same rules as the legs.
+    expect(plan.arrivalFt.every((r) => r === 200)).toBe(true)
+    // Independently: wherever the live check lets the boat steer straight on
+    // from the early-switch point, that line passes the same rules as the
+    // legs; and round the tip of the mole it does not let it.
+    let refused = 0
     for (let i = 1; i + 1 < plan.points.length; i++) {
       const a = plan.points[i - 1]
       const p = plan.points[i]
@@ -1725,8 +1741,18 @@ describe('planRoute arrival radius', () => {
       }
       const chord = { ...plan, points: [plan.points[0], e, b, plan.points[plan.points.length - 1]] }
       const legs = [{ ...plan.legs[0], from: e, to: b, caution: 'ok' as const }]
-      expect(independentCheck({ ...chord, legs }, features, { safeDepthM: 1.5, clearanceM: 30 })).toEqual([])
+      const verdict = liveShortcut(
+        { features, from, to, safeDepthM: 1.5, clearanceM: 30 },
+        e, p, b, 0,
+      )
+      if (verdict === 'clear') {
+        expect(independentCheck({ ...chord, legs }, features, { safeDepthM: 1.5, clearanceM: 30 })).toEqual([])
+      } else {
+        expect(verdict).toBe('unsafe')
+        refused++
+      }
     }
+    expect(refused).toBeGreaterThan(0)
   })
 
   it('gives every point the full radius in open water', () => {
@@ -2306,13 +2332,13 @@ describe('planRoute on random charts', () => {
         ),
       )
       expect(plan.needsConfirm).toBe(plan.source === 'best-effort')
-      // Neighbouring arrival circles never overlap (a leg of at least two
-      // floors): every waypoint is steered to in turn, none skipped.
-      for (let i = 2; i < plan.points.length; i++) {
-        const legFt = metresBetween(plan.points[i - 1], plan.points[i]) / 0.3048
-        if (legFt < 60) continue
-        expect(plan.arrivalFt[i - 1] + plan.arrivalFt[i]).toBeLessThanOrEqual(legFt + 1)
-      }
+      // Changed on purpose (the crew's decision after the final check):
+      // circles are no longer cut to half the leg either side — every point
+      // keeps the crew's setting (150 ft here). That no waypoint is skipped
+      // is now the steering engine's one-advance-per-fix rule, and a corner
+      // cut by the early switch is refused live (`liveShortcut`).
+      expect(plan.arrivalFt).toHaveLength(plan.points.length)
+      expect(plan.arrivalFt.every((r) => r === 150)).toBe(true)
       expect(neverThroughLand(plan, f)).toEqual([])
       expect(independentCheck(plan, f, { safeDepthM, clearanceM, ringEveryM: 20 })).toEqual([])
     }
@@ -2377,41 +2403,8 @@ describe('planRoute performance', () => {
  * as a straight line across Pelican Island.
  * ---------------------------------------------------------------------- */
 
-interface Fixture {
-  origin: [number, number]
-  scale: number
-  depth: [number, number, number[][]][]
-  land: [number, number[][]][]
-  channels: [string, number[][]][]
-}
-
-function loadGalveston(): ChartFeatures {
-  const path = fileURLToPath(new URL('./__fixtures__/galveston-enc.json', import.meta.url))
-  const fx = JSON.parse(readFileSync(path, 'utf8')) as Fixture
-  const ring = (d: number[]): Ring => {
-    const out: Ring = []
-    let x = 0
-    let y = 0
-    for (let i = 0; i < d.length; i += 2) {
-      x += d[i]
-      y += d[i + 1]
-      out.push([fx.origin[0] + x / fx.scale, fx.origin[1] + y / fx.scale])
-    }
-    out.push(out[0])
-    return out
-  }
-  return {
-    depthAreas: fx.depth.map(([level, minDepthM, rings]) => ({ level, minDepthM, rings: rings.map(ring) })),
-    land: fx.land.map(([level, rings]) => ({ level, rings: rings.map(ring) })),
-    channels: fx.channels.map(([k, rings]) => ({
-      kind: k === 'd' ? ('dredged' as const) : ('fairway' as const),
-      rings: rings.map(ring),
-    })),
-    hazards: [],
-    lines: [],
-    coverage: 'full',
-  }
-}
+// `loadGalveston` — the fixture as chart features — lives in __fixtures__/galveston.ts,
+// shared with the steering tests.
 
 describe('planRoute on the Galveston chart', () => {
   const features = loadGalveston()
@@ -2728,5 +2721,125 @@ describe('recheckPlan — a plan made for one boat, measured for another', () =>
   it('has nothing to say with no chart', () => {
     const plan = planRoute(req)
     expect(recheckPlan(plan, { ...req, features: { ...features, depthAreas: [], coverage: 'none' } })).toBeNull()
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * Final-check fixes
+ * ---------------------------------------------------------------------- */
+
+describe('the destination keeps the crew’s circle, and no stub final leg (M2)', () => {
+  const features = loadGalveston()
+  // Passages from the final check whose plans ended (or began) with a leg of
+  // 20–44 m — inside the destination circle — and a circle cut to half of it.
+  const passages: [string, LatLon, LatLon, number, number, number][] = [
+    ['seed 26', { lat: 29.3546154300347, lon: -94.79671491016354 }, { lat: 29.33690747331083, lon: -94.76756046574748 }, 1.5, 5, 200],
+    ['seed 20', { lat: 29.327051934577526, lon: -94.8364323190581 }, { lat: 29.31180378799886, lon: -94.80886431626044 }, 0.6, 5, 200],
+    ['seed 3', { lat: 29.38202713047713, lon: -94.78288919993024 }, { lat: 29.367041205972434, lon: -94.8310577874435 }, 0.6, 30, 100],
+    ['seed 6', { lat: 29.33687423466146, lon: -94.77069374645407 }, { lat: 29.31981983716786, lon: -94.78215130431298 }, 1.5, 5, 100],
+  ]
+  it.each(passages)('%s: every circle is the setting, and the end legs are longer than it', (_name, from, to, safeDepthM, clearanceM, arrivalFt) => {
+    const plan = planRoute({ from, to, safeDepthM, clearanceM, speedKn: 20, features, arrivalFt })
+    expect(plan.source).toBe('charted')
+    expect(plan.arrivalFt.every((r) => r === arrivalFt)).toBe(true)
+    const n = plan.points.length
+    const circleM = arrivalFt * 0.3048
+    expect(metresBetween(plan.points[n - 2], plan.points[n - 1])).toBeGreaterThan(circleM)
+    expect(metresBetween(plan.points[0], plan.points[1])).toBeGreaterThan(circleM)
+    expect(independentCheck(plan, features, { safeDepthM, clearanceM, stepM: 4, ringEveryM: 40 })).toEqual([])
+  })
+
+  it('holds the setting to 100–200 ft', () => {
+    const base = { from: SOUTH, to: at(3000, 3000), safeDepthM: 1.5, clearanceM: 30, speedKn: 20, features: sea() }
+    expect(planRoute({ ...base, arrivalFt: 50 }).arrivalFt.every((r) => r === 100)).toBe(true)
+    expect(planRoute({ ...base, arrivalFt: 500 }).arrivalFt.every((r) => r === 200)).toBe(true)
+    expect(planRoute(base).arrivalFt.every((r) => r === 150)).toBe(true)
+  })
+})
+
+describe('liveShortcut — the straight line from the boat, with its GPS error (C1, M1)', () => {
+  // A leg north up x = 0; land from x = 60 to 400 beside it.
+  const features = sea({ land: [{ rings: [rect(60, -2000, 400, 2000)] }] })
+  const req = { features, from: at(0, -1400), to: at(0, 1400), safeDepthM: 1.5, clearanceM: 30 }
+  const turn = at(0, -500)
+  const target = at(0, 500)
+
+  it('is clear when the line keeps the stand-off, and unsafe once the fix’s error eats into it', () => {
+    // 20 m right of the leg: the line keeps 40 m from the land.
+    const fix = at(20, -450)
+    expect(liveShortcut(req, fix, turn, target, 0)).toBe('clear')
+    expect(liveShortcut(req, fix, turn, target, 5)).toBe('clear')
+    // ±15 m: the boat may be 15 m nearer — 25 m, inside 30.
+    expect(liveShortcut(req, fix, turn, target, 15)).toBe('unsafe')
+  })
+
+  it('never asks more of the line than the leg it cuts can give', () => {
+    // A ±35 m fix: not even the planned leg (60 m off) keeps 30 + 35 m. A
+    // line no closer to the land than the leg is clear; one closer is not.
+    expect(liveShortcut(req, at(-10, -450), turn, target, 35)).toBe('clear')
+    expect(liveShortcut(req, at(20, -450), turn, target, 35)).toBe('unsafe')
+  })
+
+  it('is refused over land, and has nothing to say with no chart', () => {
+    expect(liveShortcut(req, at(100, -450), turn, target, 5)).toBe('unsafe')
+    expect(
+      liveShortcut({ ...req, features: { ...features, depthAreas: [], coverage: 'none' } }, at(20, -450), turn, target, 5),
+    ).toBeNull()
+  })
+})
+
+describe('liveChartNear — shallow water or land within the GPS error (M1)', () => {
+  // A 1 m shoal from x = 25 to 200, land from x = -400 to -300.
+  const features = sea({
+    depthAreas: [
+      { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+      { minDepthM: 1, rings: [rect(25, -300, 200, 300)] },
+    ],
+    land: [{ rings: [rect(-400, -2000, -300, 2000)] }],
+  })
+  const req = { features, from: SOUTH, to: NORTH, safeDepthM: 1.5, clearanceM: 30 }
+
+  it('reads the fix itself as before', () => {
+    expect(liveChartNear(req, at(0, 0), 5)).toEqual({ here: null, near: null })
+    expect(liveChartNear(req, at(40, 0), 5)).toEqual({ here: { land: false, depthM: 1 }, near: null })
+    expect(liveChartNear(req, at(-350, 0), 5)).toEqual({ here: { land: true, depthM: null }, near: null })
+  })
+
+  it('says the boat MAY be in the shallows when they are within its accuracy', () => {
+    // 10 m from the shoal: a ±5 m fix is clear of it, a ±15 m one is not.
+    expect(liveChartNear(req, at(15, 0), 5)?.near).toBeNull()
+    const near = liveChartNear(req, at(15, 0), 15)?.near
+    expect(near).toMatchObject({ land: false, depthM: 1 })
+    expect(near?.distM).toBeCloseTo(10, 0)
+  })
+
+  it('and near land the same way', () => {
+    const near = liveChartNear(req, at(-290, 0), 15)?.near
+    expect(near).toMatchObject({ land: true })
+    expect(near?.distM).toBeCloseTo(10, 0)
+    expect(liveChartNear(req, at(-290, 0), 5)?.near).toBeNull()
+  })
+})
+
+describe('a position on the shared edge of two pieces of land (UI-4)', () => {
+  // A land bar in two halves meeting at x = 0; the destination on the seam.
+  const features = sea({
+    land: [{ rings: [rect(-2000, -100, 0, 100)] }, { rings: [rect(0, -100, 2000, 100)] }],
+  })
+
+  it('is land — not deep water, and not "never surveyed"', () => {
+    const plan = planRoute({ from: at(0, -1500), to: at(0, 0), safeDepthM: 1.5, clearanceM: 5, speedKn: 20, features })
+    expect(plan.movedEnd).not.toBeNull()
+    expect(plan.warnings.some((w) => /destination on land/.test(w))).toBe(true)
+    expect(plan.warnings.join(' ')).not.toMatch(/never surveyed/)
+    expect(chartStateAt(features, at(0, 0))).toBe('land')
+  })
+
+  it('is land where no depth area lies under it either', () => {
+    const bare = { ...features, depthAreas: [{ minDepthM: 10, rings: [rect(-12000, -12000, 12000, -150)] }] }
+    const plan = planRoute({ from: at(0, -1500), to: at(0, 0), safeDepthM: 1.5, clearanceM: 5, speedKn: 20, features: bare })
+    const text = [plan.failure ?? '', ...plan.warnings].join(' ')
+    expect(text).toMatch(/destination (is )?on land/)
+    expect(text).not.toMatch(/never surveyed/)
   })
 })
