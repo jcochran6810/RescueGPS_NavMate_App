@@ -20,11 +20,14 @@
  * steering at a mark across a shoal it never rounded. Passing a mark the boat
  * really has passed is `recoverTarget`'s job, and that one asks for evidence.
  *
- * **A poor fix never widens the circle past 200 ft.** The circle grows with
- * the receiver's claimed error (a ±25 m fix cannot know it is inside 15 m),
- * but past `MAX_ARRIVAL_FT` a bigger circle would advance the boat to the
- * next point before it has rounded this one — hiding the bearing it still
- * needs. The crew is told the fix is poor instead (`gpsPoor`).
+ * **A poor fix never widens a circle past the point's own safe radius.** The
+ * planner gives every turn point the widest circle that cannot cut the corner
+ * (`plan.arrivalFt[i]` — as little as 30 ft at a hairpin round a jetty). A fix
+ * claiming more error than that is not allowed to widen the circle past it:
+ * switching early on a guess is exactly the corner-cut the planner shrank
+ * the circle to prevent. The crew is told the fix is poor instead
+ * (`gpsPoor`), and the pass-abeam rule (bounded by twice that same safe
+ * radius) and `recoverTarget` pick up a mark a poor fix could not resolve.
  *
  * **No heading, no guessing.** The rules that act on "the boat has gone past"
  * (pass-abeam, missed-mark recovery) need a course over ground to know which
@@ -226,29 +229,39 @@ export interface ArrivalOptions {
  * The circle point `idx` is actually captured in, feet, and whether the fix
  * is too poor to judge it honestly.
  *
- * The planned radius (reduced at tight turns) or, where the plan has none,
- * the crew's setting — and never more than the crew's CURRENT setting, so
- * turning the setting down takes effect at once without a re-plan. Then
- * widened to the fix's own error, but never past the cap.
+ *   - `safeFt` — the most this point may EVER be given: the planner's safe
+ *     radius for it (reduced at tight turns) or, where the plan has none, the
+ *     crew's setting; never more than the cap (200 ft).
+ *   - `baseFt` — what it is given with a good fix: `safeFt`, and never more
+ *     than the crew's CURRENT setting, so turning the setting down takes
+ *     effect at once without a re-plan.
+ *   - `radiusFt` — `baseFt` widened to the fix's claimed error, but never past
+ *     `safeFt`. A ±25 m fix cannot know it is inside a 100 ft circle, so where
+ *     the point is safe out to 150 ft the circle may grow to meet it; where
+ *     the point is only safe to 30 ft (a hairpin) it may not grow at all.
+ *   - `gpsPoor` — the fix claims more error than `safeFt`: whatever it says
+ *     about this point is a guess, and the card says so.
  */
 export function arrivalRadiusFt(
   plan: NavPlan,
   idx: number,
   accuracyM: number | null | undefined,
   opts: ArrivalOptions = {},
-): { radiusFt: number; baseFt: number; gpsPoor: boolean } {
+): { radiusFt: number; baseFt: number; safeFt: number; gpsPoor: boolean } {
   const cap = positive(opts.arrivalFtCap) ?? MAX_ARRIVAL_FT
   const requested = positive(opts.arrivalFt) ?? DEFAULT_ARRIVAL_FT
   const planned = positive(plan.arrivalFt?.[idx])
-  const baseFt = Math.min(planned ?? requested, requested, cap)
+  const safeFt = Math.min(planned ?? requested, cap)
+  const baseFt = Math.min(safeFt, requested)
   const accFt =
     accuracyM != null && Number.isFinite(accuracyM) && accuracyM > 0
       ? accuracyM * M_TO_FEET
       : 0
   return {
-    radiusFt: Math.min(cap, Math.max(baseFt, accFt)),
+    radiusFt: Math.min(safeFt, Math.max(baseFt, accFt)),
     baseFt,
-    gpsPoor: accFt > cap,
+    safeFt,
+    gpsPoor: accFt > safeFt,
   }
 }
 
@@ -372,9 +385,9 @@ export interface StepResult {
   /** The destination has been reached. */
   arrived: boolean
   /**
-   * The fix claims an error larger than the widest circle, so the circle was
-   * NOT widened to match it. The crew should be told; the numbers are still
-   * shown, but a "you are there" from this fix would be a guess.
+   * The fix claims an error larger than this point's safe radius, so the
+   * circle was NOT widened to match it. The crew should be told; the numbers
+   * are still shown, but a "you are there" from this fix would be a guess.
    */
   gpsPoor: boolean
 }
@@ -386,12 +399,13 @@ export interface StepResult {
  * Two ways to have reached a point, as in `shouldAdvance` (steer.ts):
  *
  *   1. Inside its circle — `arrivalRadiusFt`: the planned radius, widened by
- *      the fix's error up to the cap.
+ *      the fix's error but never past the point's own safe radius.
  *   2. Past it and still running the leg into it (`pastMark`), no further
- *      than two circles out and never more than 400 ft. That second limit is
- *      new for routes: a planned turn point sits where it does because of a
- *      shoal or a jetty, and "past it" half a football field later is not
- *      rounding it.
+ *      than twice the point's SAFE radius and never more than 400 ft. That
+ *      limit is new for routes: a planned turn point sits where it does
+ *      because of a shoal or a jetty, and "past it" half a football field
+ *      later is not rounding it. It is what catches a mark a poor fix could
+ *      not resolve inside the circle.
  *
  * At the destination both rules mean "arrived" and the index stays put.
  */
@@ -405,12 +419,12 @@ export function stepTarget(
   if (!fix || n === 0) return { targetIdx, arrived: false, gpsPoor: false }
   const idx = clampIdx(plan, targetIdx)
   const target = plan.points[idx]
-  const { radiusFt, gpsPoor } = arrivalRadiusFt(plan, idx, fix.accuracy, opts)
+  const { radiusFt, safeFt, gpsPoor } = arrivalRadiusFt(plan, idx, fix.accuracy, opts)
   const range = rangeFt(fix, target)
 
   let reached = range <= radiusFt
   if (!reached && idx >= 1) {
-    const passLimit = Math.min(2 * radiusFt, PASS_ABEAM_MAX_FT)
+    const passLimit = Math.min(2 * safeFt, PASS_ABEAM_MAX_FT)
     reached =
       range <= passLimit && pastMark({ courseDeg: courseOf(plan, idx - 1) }, target, fix)
   }

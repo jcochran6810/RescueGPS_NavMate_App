@@ -35,6 +35,7 @@ import { useCoordFormat } from '@/store/useCoordFormat'
 import { useMapAction } from '@/store/useMapAction'
 import { useWaypointView } from '@/store/useWaypointView'
 import { toast } from '@/store/useToast'
+import { segmentStyle, type RouteMark, type RouteSegment } from '@/lib/navView'
 
 const MIN_ZOOM = 3
 const MAX_ZOOM = 19
@@ -80,6 +81,7 @@ export function SatelliteMap({
   incident = null,
   route = [],
   routeUnverified = false,
+  navRoute = null,
   labels = false,
   base = 'satellite',
   seamarks = false,
@@ -129,6 +131,22 @@ export function SatelliteMap({
    * is the most dangerous thing this screen can show.
    */
   routeUnverified?: boolean
+  /**
+   * A planned passage from the chart plotter, drawn leg by leg: legs already
+   * run faint, the leg being run bright, flagged legs red, shallow approaches
+   * dotted, and every turn point numbered with the one being steered to
+   * ringed. Never joined by anything but the planner's own legs.
+   *
+   * `view` says what the map does with it: `fit` frames the whole route each
+   * time `fitKey` changes (a new plan to look at); `follow` keeps the boat in
+   * the middle (steering). A pan still wins until the crew re-centres.
+   */
+  navRoute?: {
+    segments: RouteSegment[]
+    marks: RouteMark[]
+    view: 'fit' | 'follow'
+    fitKey?: string | number | null
+  } | null
   /** Draw place names and boundaries over the imagery. */
   labels?: boolean
   /** Which base layer to draw: aerial imagery, or the NOAA chart. */
@@ -283,7 +301,7 @@ export function SatelliteMap({
   // With neither a fix nor a track, a planned route still gives the map a
   // place to be — a crew plans the pattern before they start running it.
   const anchor: { lat: number; lon: number } | null =
-    fix ?? trail[trail.length - 1] ?? route[0] ?? null
+    fix ?? trail[trail.length - 1] ?? route[0] ?? navRoute?.marks[0] ?? null
   // Read inside the state updaters, which run after this render rather than
   // during it, so they need the current anchor and not the one they closed
   // over.
@@ -831,27 +849,59 @@ export function SatelliteMap({
   /** "0.0 mi" — the same unit the graduations use, so the scale reads as one. */
   const zeroLabel = rings.length > 0 ? `0 ${rings[0].label.split(' ')[1]}` : ''
 
+  /** Frame a set of positions, with a little room round the edge. */
+  const fitPoints = useCallback(
+    (pts: { lat: number; lon: number }[]) => {
+      if (pts.length === 0) return
+      const lats = pts.map((f) => f.lat)
+      const lons = pts.map((f) => f.lon)
+      const lat = (Math.min(...lats) + Math.max(...lats)) / 2
+      const lon = (Math.min(...lons) + Math.max(...lons)) / 2
+      const spanM = Math.max(
+        (Math.max(...lats) - Math.min(...lats)) * 111_132,
+        (Math.max(...lons) - Math.min(...lons)) *
+          111_320 *
+          Math.cos((lat * Math.PI) / 180),
+        50,
+      )
+      setView({
+        lat,
+        lon,
+        zoom: zoomForSpan(spanM * 1.3, lat, Math.min(w, h) || 320, MAX_ZOOM),
+        manual: true,
+      })
+    },
+    [w, h],
+  )
+
+  const navPoints = useMemo(() => navRoute?.marks ?? [], [navRoute])
+
   const fitTrack = () => {
-    if (trail.length === 0 && route.length === 0) return
-    const pts = [...trail, ...route]
-    const lats = pts.map((f) => f.lat)
-    const lons = pts.map((f) => f.lon)
-    const lat = (Math.min(...lats) + Math.max(...lats)) / 2
-    const lon = (Math.min(...lons) + Math.max(...lons)) / 2
-    const spanM = Math.max(
-      (Math.max(...lats) - Math.min(...lats)) * 111_132,
-      (Math.max(...lons) - Math.min(...lons)) *
-        111_320 *
-        Math.cos((lat * Math.PI) / 180),
-      50,
-    )
-    setView({
-      lat,
-      lon,
-      zoom: zoomForSpan(spanM * 1.3, lat, Math.min(w, h) || 320, MAX_ZOOM),
-      manual: true,
-    })
+    if (navPoints.length > 1) {
+      fitPoints(navPoints)
+      return
+    }
+    fitPoints([...trail, ...route])
   }
+
+  /*
+   * Frame a new route the moment it arrives, the way a route-finder does;
+   * follow the boat once it is being steered. Keyed, so it happens once per
+   * plan (or once on starting) and a crew who then pans is left alone until
+   * they press "centre". Waits for the box to have a size — a fit into a
+   * 0 × 0 box is a zoom of nonsense.
+   */
+  const navView = navRoute?.view ?? null
+  const navFitKey = navRoute?.fitKey ?? null
+  const appliedView = useRef<string | null>(null)
+  useEffect(() => {
+    if (!navView || w === 0) return
+    const key = navView === 'follow' ? 'follow' : navFitKey == null ? null : `fit:${navFitKey}`
+    if (key == null || key === appliedView.current) return
+    appliedView.current = key
+    if (navView === 'follow') setView((v) => ({ ...v, manual: false }))
+    else if (navPoints.length > 1) fitPoints(navPoints)
+  }, [navView, navFitKey, navPoints, w, fitPoints])
 
   /**
    * Pull the tiles around here into the cache while there is still a signal.
@@ -968,7 +1018,7 @@ export function SatelliteMap({
 
         {/* On the map, not only on a card below it. Whoever is looking at this
             line is looking here. */}
-        {placed && routeUnverified && route.length > 0 ? (
+        {placed && routeUnverified && (route.length > 0 || navPoints.length > 0) ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-red-950/80 px-3 py-1.5 text-center text-xs font-semibold text-red-100">
             Not a safe course — the safest route found. Some legs break your
             depth or stand-off; read the flagged legs before you steer it.
@@ -1225,6 +1275,37 @@ export function SatelliteMap({
             </>
           )}
 
+          {navRoute &&
+            navRoute.segments.map((seg) => {
+              const a = project(seg.from.lat, seg.from.lon)
+              const b = project(seg.to.lat, seg.to.lon)
+              const st = segmentStyle(seg)
+              const d = `M${a.x.toFixed(1)},${a.y.toFixed(1)} L${b.x.toFixed(1)},${b.y.toFixed(1)}`
+              return (
+                <g key={`leg-${seg.idx}`} opacity={st.opacity}>
+                  {/* A dark casing under every leg, so the line reads over a
+                      pale chart and over imagery alike. */}
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke="#06131f"
+                    strokeOpacity="0.65"
+                    strokeWidth={st.width + 2.5}
+                    strokeLinecap={st.linecap}
+                    strokeDasharray={st.dash ?? undefined}
+                  />
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke={st.color}
+                    strokeWidth={st.width}
+                    strokeLinecap={st.linecap}
+                    strokeDasharray={st.dash ?? undefined}
+                  />
+                </g>
+              )
+            })}
+
           {path && (
             <>
               <path
@@ -1246,6 +1327,65 @@ export function SatelliteMap({
               />
             </>
           )}
+
+          {navRoute &&
+            navRoute.marks.map((m) => {
+              const p = project(m.lat, m.lon)
+              if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) return null
+              const upright = rot === 0 ? undefined : `rotate(${rot} ${p.x} ${p.y})`
+              if (m.kind === 'start') {
+                return (
+                  <circle
+                    key={`mark-${m.idx}`}
+                    cx={p.x}
+                    cy={p.y}
+                    r="5"
+                    fill="#06131f"
+                    stroke="#e2e8f0"
+                    strokeWidth="2"
+                  />
+                )
+              }
+              const active = m.state === 'active'
+              const passed = m.state === 'passed'
+              const r = active ? 11 : 9
+              const fill = passed
+                ? '#475569'
+                : m.kind === 'end'
+                  ? '#34d399'
+                  : active
+                    ? '#7dd3fc'
+                    : '#0ea5e9'
+              return (
+                <g key={`mark-${m.idx}`} opacity={passed ? 0.6 : 1}>
+                  {active && (
+                    // The one being steered to, ringed — the map's half of the
+                    // card's "waypoint 3".
+                    <circle
+                      cx={p.x}
+                      cy={p.y}
+                      r={r + 6}
+                      fill="none"
+                      stroke="#7dd3fc"
+                      strokeWidth="2.5"
+                      strokeOpacity="0.8"
+                    />
+                  )}
+                  <circle cx={p.x} cy={p.y} r={r} fill={fill} stroke="#06131f" strokeWidth="2" />
+                  <text
+                    x={p.x}
+                    y={p.y}
+                    transform={upright}
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    className="text-[11px] font-bold"
+                    fill="#06131f"
+                  >
+                    {m.label}
+                  </text>
+                </g>
+              )
+            })}
 
           {here && fix && (
             <g>
@@ -1518,13 +1658,19 @@ export function SatelliteMap({
             'absolute right-2 bottom-2 z-20 flex gap-1 ' + (placed ? '' : 'hidden')
           }
         >
-          {(trail.length > 1 || route.length > 1) && (
+          {(trail.length > 1 || route.length > 1 || navPoints.length > 1) && (
             <MapButton
-              label={route.length > 1 ? 'Fit the pattern and track' : 'Fit the whole track'}
+              label={
+                navPoints.length > 1
+                  ? 'Fit the whole route'
+                  : route.length > 1
+                    ? 'Fit the pattern and track'
+                    : 'Fit the whole track'
+              }
               onClick={fitTrack}
               wide
             >
-              {route.length > 1 ? 'Fit pattern' : 'Fit track'}
+              {navPoints.length > 1 ? 'Fit route' : route.length > 1 ? 'Fit pattern' : 'Fit track'}
             </MapButton>
           )}
           <MapButton

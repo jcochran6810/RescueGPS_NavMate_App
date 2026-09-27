@@ -32,6 +32,12 @@
  *   deliberately NOT applied to the edge of shallow water: a dredged channel
  *   is shallow bank either side by design, and growing the bank by the
  *   stand-off closed exactly the channels a boat is meant to use.
+ * - **A depth margin beside the track, outside channels.** A boat never runs
+ *   exactly on the drawn line: a phone fix is good to 5–10 m and a helm
+ *   wanders as much again. So outside a marked channel (and outside the
+ *   approach zones) no water charted shallower than the boat needs may lie
+ *   within `depthMarginM` (10–15 m, see `depthMarginFor`) of a leg. Inside a
+ *   dredged area or fairway the zero-margin rule above still holds.
  * - **The approach exception.** Within `approachM` (default 120 m) of the
  *   start and the destination — the dock, the ramp, the marina — the route may
  *   use water charted in a band that starts shallower than the boat needs,
@@ -63,6 +69,7 @@ import {
   LAND,
   chartIndexFor,
   checkSegment,
+  peekChartIndex,
   distanceTransform,
   forEachHazardIn,
   forEachPieceIn,
@@ -219,6 +226,26 @@ export interface RouteRequest {
    * `caution: 'shallow-approach'`. Default 120 m (~400 ft).
    */
   approachM?: number
+  /**
+   * Lateral depth margin outside channels, metres. Default
+   * `depthMarginFor(clearanceM)`; 0 turns it off.
+   */
+  depthMarginM?: number
+}
+
+/** Least and most lateral depth margin, metres. */
+export const MIN_DEPTH_MARGIN_M = 10
+export const MAX_DEPTH_MARGIN_M = 15
+
+/**
+ * How far beside a leg (outside a channel) water too shallow for the boat
+ * must stay, metres: a quarter of the stand-off, between 10 and 15 m — a
+ * typical phone fix error plus a helm's wander, and no more, so it does not
+ * close the natural channels a boat is meant to use.
+ */
+export function depthMarginFor(clearanceM: number): number {
+  const c = Number.isFinite(clearanceM) ? Math.max(0, clearanceM) : 0
+  return Math.min(MAX_DEPTH_MARGIN_M, Math.max(MIN_DEPTH_MARGIN_M, 0.25 * c))
 }
 
 /**
@@ -233,10 +260,21 @@ export interface RouteRequest {
  * - `reduced-clearance` — keeps the depth, but passes land or a hazard closer
  *   than the stand-off. Only in a best-effort plan.
  * - `unsafe-depth` — crosses water charted shallower than the boat needs (or
- *   unsurveyed, or — only on the short leg from a position the chart shows on
- *   land — land). Only in a best-effort plan.
+ *   unsurveyed, or passes within the depth margin of such water outside a
+ *   channel, or — on a long leg from a position the chart shows on land —
+ *   land). Only in a best-effort plan.
+ * - `off-chart-end` — the short leg (no longer than the approach zone) from a
+ *   start, or to a destination, that the chart draws as land or inside a
+ *   hazard footprint: a dock, slip, ramp or pier. Nothing about it can be
+ *   checked — "leave / come alongside by eye" — but it does not make an
+ *   otherwise sound route best-effort. Drawn dotted.
  */
-export type LegCaution = 'ok' | 'shallow-approach' | 'reduced-clearance' | 'unsafe-depth'
+export type LegCaution =
+  | 'ok'
+  | 'shallow-approach'
+  | 'off-chart-end'
+  | 'reduced-clearance'
+  | 'unsafe-depth'
 
 export interface RouteLeg extends PatternLeg {
   /** Hours from departure to the END of this leg. */
@@ -262,6 +300,24 @@ export interface RouteLeg extends PatternLeg {
    * stand-off, if larger).
    */
   minClearanceM: number | null
+  /**
+   * Shoalest charted depth along the leg OUTSIDE the approach zones — the
+   * figure the plan's warnings quote. Null where none is charted there.
+   */
+  minDepthOutsideM?: number | null
+  /** The leg runs over what the chart draws as land (a snap leg to a dock). */
+  overLand?: boolean
+  /**
+   * What the approach exception was used for on a `shallow-approach` leg:
+   * shallow or unsurveyed water, and/or closer than the stand-off.
+   */
+  approachReasons?: ('depth' | 'clearance')[]
+  /**
+   * Water shallower than the boat needs within the depth margin beside the
+   * leg (outside a channel): its depth and distance, metres. Null otherwise.
+   */
+  nearShoalDepthM?: number | null
+  nearShoalDistM?: number | null
 }
 
 /**
@@ -271,10 +327,11 @@ export interface RouteLeg extends PatternLeg {
  *   with the failing legs flagged. The crew must confirm before steering it.
  * - `none` — nothing to draw: no chart, or no water path at all. `points` is
  *   empty and `failure` says why in plain words.
- * - `straight` — LEGACY, never produced any more; kept only until the UI stops
- *   referring to it.
+ *
+ * There is no "straight line" source: a line drawn without the chart is a line
+ * through whatever is in the way, and the plotter never draws one.
  */
-export type RouteSource = 'charted' | 'best-effort' | 'none' | 'straight'
+export type RouteSource = 'charted' | 'best-effort' | 'none'
 
 export interface RoutePlan {
   /** Every point in order, departure first — drawn and steered as-is. */
@@ -302,6 +359,12 @@ export interface RoutePlan {
   failure: string | null
   /** True for a `best-effort` plan: steering needs an explicit confirmation. */
   needsConfirm: boolean
+  /**
+   * For a `best-effort` plan: the one line that says how it falls short —
+   * the least depth or stand-off, feet first. What the red box shows; the
+   * other warnings are listed below it. Null (or absent) otherwise.
+   */
+  confirmReason?: string | null
 }
 
 /* -------------------------------------------------------------------------
@@ -551,6 +614,15 @@ export interface RouteGrid {
    * never a stand-off.
    */
   shoalCells: Float32Array
+  /**
+   * Rectangle distance, in cells, to the nearest cell holding water charted
+   * shallower than the depth the grid was rasterised for (land, hazards and
+   * unsurveyed water aside) — for the lateral depth margin. Absent on a grid
+   * built by hand: no margin is applied there.
+   */
+  shallowRect?: Float32Array
+  /** The same, centre to centre from `cDepth`, for the optimistic view. */
+  cShallow?: Float32Array
   /** The chart's state at each cell centre: depth, 0 for land, NaN unknown. */
   cDepth: Float32Array
   /** `hard` bits, at the cell centre only. */
@@ -686,6 +758,8 @@ export function makeGridFor(b: Bounds, cellM?: number, maxCells: number = MAX_CE
     hard: new Uint8Array(n),
     clearCells: new Float32Array(n),
     shoalCells: new Float32Array(n).fill(Infinity),
+    shallowRect: new Float32Array(n).fill(Infinity),
+    cShallow: new Float32Array(n).fill(Infinity),
     cDepth: new Float32Array(n).fill(NaN),
     cHard: new Uint8Array(n),
     cClear: new Float32Array(n),
@@ -942,6 +1016,7 @@ export function rasteriseIndex(
   rectClearance(g)
   centreReady.delete(g)
   shoalDistance(g, safeDepthM)
+  shallowDistance(g, safeDepthM)
   chamferChannel(g)
 }
 
@@ -955,6 +1030,7 @@ export function prepareGrid(g: RouteGrid, safeDepthM: number): void {
   classifyCells(g, safeDepthM)
   chamferClearance(g)
   shoalDistance(g, safeDepthM)
+  shallowDistance(g, safeDepthM)
   chamferChannel(g)
 }
 
@@ -1067,17 +1143,20 @@ export function chamferClearance(g: RouteGrid): void {
   centreClearance(g)
 }
 
-function rectClearance(g: RouteGrid): void {
-  const { cols, rows } = g
+/**
+ * A mask grown by one cell in every direction (a 3×3 max, separably) —
+ * after which the centre distance to it is the rectangle distance to the
+ * original. `edge` makes the grid's own border part of it.
+ */
+function growByOne(cols: number, rows: number, src: Uint8Array, edge: boolean): Uint8Array {
   const n = cols * rows
-  // Grow by one cell: along rows, then along columns (a 3×3 max, separably).
   const across = new Uint8Array(n)
   for (let r = 0; r < rows; r++) {
     const base = r * cols
     for (let c = 0; c < cols; c++) {
       const i = base + c
       across[i] =
-        g.hard[i] !== 0 || (c > 0 && g.hard[i - 1] !== 0) || (c + 1 < cols && g.hard[i + 1] !== 0)
+        src[i] !== 0 || (c > 0 && src[i - 1] !== 0) || (c + 1 < cols && src[i + 1] !== 0)
           ? 1
           : 0
     }
@@ -1088,15 +1167,51 @@ function rectClearance(g: RouteGrid): void {
     const edgeRow = r === 0 || r === rows - 1
     for (let c = 0; c < cols; c++) {
       const i = base + c
-      // The grid's own border touches the world outside it, which counts
-      // as hard.
       grown[i] =
-        edgeRow || c === 0 || c === cols - 1 ||
-        across[i] !== 0 || across[i - cols] !== 0 || across[i + cols] !== 0
+        (edge && (edgeRow || c === 0 || c === cols - 1)) ||
+        across[i] !== 0 || (r > 0 && across[i - cols] !== 0) || (r + 1 < rows && across[i + cols] !== 0)
           ? 1
           : 0
     }
   }
+  return grown
+}
+
+/**
+ * Distance to charted water shallower than `safeDepthM` — rectangle to
+ * rectangle (`shallowRect`) and centre to centre (`cShallow`). Land, hazards
+ * and unsurveyed water are the stand-off's and the depth check's business.
+ */
+function shallowDistance(g: RouteGrid, safeDepthM: number): void {
+  const { cols, rows } = g
+  const n = cols * rows
+  if (!g.shallowRect) g.shallowRect = new Float32Array(n)
+  if (!g.cShallow) g.cShallow = new Float32Array(n)
+  const rect = new Uint8Array(n)
+  const centre = new Uint8Array(n)
+  let any = false
+  for (let i = 0; i < n; i++) {
+    const d = g.depth[i]
+    if (g.hard[i] === 0 && Number.isFinite(d) && d < safeDepthM) {
+      rect[i] = 1
+      any = true
+    }
+    const cd = g.cDepth[i]
+    if (g.cHard[i] === 0 && Number.isFinite(cd) && cd < safeDepthM) centre[i] = 1
+  }
+  if (!any) {
+    g.shallowRect.fill(Infinity)
+    g.cShallow.fill(Infinity)
+    return
+  }
+  distanceTransform(cols, rows, growByOne(cols, rows, rect, false), false, g.shallowRect)
+  distanceTransform(cols, rows, centre, false, g.cShallow)
+}
+
+function rectClearance(g: RouteGrid): void {
+  const { cols, rows } = g
+  // The grid's own border touches the world outside it, which counts as hard.
+  const grown = growByOne(cols, rows, g.hard, true)
   distanceTransform(cols, rows, grown, true, g.clearCells)
 }
 
@@ -1173,6 +1288,12 @@ export interface Passability {
   optimistic: boolean
   /** 1 where a cell lies wholly inside an approach zone; null for none. */
   zone: Uint8Array | null
+  /**
+   * Lateral depth margin, in cells: outside a channel and a zone, a cell
+   * this close to water shallower than `safeDepthM` is not usable (0 = off).
+   * Not applied on the last rung, where shallow water itself is allowed.
+   */
+  marginCells: number
 }
 
 export interface PassabilityOptions {
@@ -1181,6 +1302,8 @@ export interface PassabilityOptions {
   zone?: Uint8Array | null
   /** The stand-off asked for, when `clearanceM` is a reduced one. */
   wantClearanceM?: number
+  /** Lateral depth margin outside channels, metres. Default 0 (off). */
+  depthMarginM?: number
 }
 
 export function passability(
@@ -1206,6 +1329,7 @@ export function passability(
     allowShallow: opts.allowShallow ?? false,
     optimistic: opts.optimistic ?? false,
     zone: opts.zone ?? null,
+    marginCells: Math.max(0, (opts.depthMarginM ?? 0) / g.cellM),
   }
 }
 
@@ -1269,6 +1393,15 @@ function cellCost(g: RouteGrid, i: number, p: Passability, out: { base: number; 
     } else {
       return
     }
+  } else if (p.marginCells > 0 && !zone && !p.allowShallow && g.channel[i] !== 1) {
+    // Deep enough itself, but shallow water too close beside it for a boat
+    // that is never exactly on the line. The conservative view measures
+    // rectangle to rectangle; the optimistic one from the centre, less half
+    // a cell — the legs it proposes are checked against the chart anyway.
+    const near = opt
+      ? g.cShallow !== undefined && g.cShallow[i] - 0.5 < p.marginCells
+      : g.shallowRect !== undefined && g.shallowRect[i] < p.marginCells
+    if (near) return
   }
   // Shaving a bank: the nearer land, a hazard or the edge of shallow water,
   // the dearer — never a wall, only a preference for the middle. Measured
@@ -1915,6 +2048,10 @@ interface Ctx {
    * just beyond it rather than to nothing.
    */
   lim: { x0: number; y0: number; x1: number; y1: number }
+  /** Lateral depth margin outside channels, metres (0 = off). */
+  depthMarginM: number
+  /** Is this point (index metres) inside a charted channel? */
+  inChannel: (x: number, y: number) => boolean
 }
 
 type Failure = 'start' | 'end' | 'path'
@@ -1936,6 +2073,8 @@ function check(ctx: Ctx, clearanceM: number, a: XY, b: XY): SegmentCheck {
     safeDepthM: ctx.safeDepthM,
     clearanceM,
     zones: ctx.zones,
+    depthMarginM: ctx.depthMarginM,
+    inChannel: ctx.inChannel,
   })
 }
 
@@ -1969,13 +2108,16 @@ function noWorse(ctx: Ctx, mode: Mode, a: XY, b: XY, parts: [XY, XY][]): boolean
   let shoal = Infinity
   let close = Infinity
   let unsurveyed = false
+  let nearShoal = false
   for (const [p, q] of parts) {
     const r = check(ctx, ctx.clearanceM, p, q)
     if (r.shallow && r.minDepthOutsideM !== null) shoal = Math.min(shoal, r.minDepthOutsideM)
     if (!r.clearanceOk) close = Math.min(close, r.entersHazard ? 0 : r.clearanceOutsideM)
     if (r.unsurveyed) unsurveyed = true
+    if (r.nearShoal || r.shallow) nearShoal = true
   }
   if (full.unsurveyed && !unsurveyed) return false
+  if (full.nearShoal && !nearShoal) return false
   if (full.shallow && !(full.minDepthOutsideM !== null && full.minDepthOutsideM >= shoal)) return false
   if (!full.clearanceOk && !(full.clearanceOutsideM >= close - 1e-6)) return false
   return true
@@ -2094,6 +2236,7 @@ function route(
     optimistic: mode.optimistic,
     zone: zoneRaster(g, ctx),
     wantClearanceM: mode.wantClearanceM,
+    depthMarginM: ctx.depthMarginM,
   })
   const field = costField(g, pass)
   const fromLL = fromXY(ctx.ix.proj, from.x, from.y)
@@ -2325,7 +2468,7 @@ function accepted(ctx: Ctx, b: Built): boolean {
 }
 
 function cautionOf(r: SegmentCheck): LegCaution {
-  if (r.crossesLand || r.shallow || r.unsurveyed) return 'unsafe-depth'
+  if (r.crossesLand || r.shallow || r.unsurveyed || r.nearShoal) return 'unsafe-depth'
   if (!r.clearanceOk) return 'reduced-clearance'
   if (r.usedApproach) return 'shallow-approach'
   return 'ok'
@@ -2369,6 +2512,19 @@ function arrivalRadii(ctx: Ctx, mode: Mode, pts: XY[], requestedFt: number): num
       else hi = mid
     }
     out[i] = Math.floor(lo)
+  }
+  // Neighbouring circles may never overlap. With a hop shorter than the
+  // circles either end of it, the boat is already inside the next point's
+  // circle when it reaches this one — the card flashes one waypoint and moves
+  // on, steering a corner nobody checked from where the boat really is.
+  // Half of each leg either side keeps r[i-1] + r[i] within the leg between
+  // them, so every point is steered to in turn (and the early-switch chord
+  // above is measured from the leg it assumes).
+  for (let i = 1; i < pts.length; i++) {
+    const inFt = distXY(pts[i - 1], pts[i]) / FT_TO_M
+    const outFt = i + 1 < pts.length ? distXY(pts[i], pts[i + 1]) / FT_TO_M : Infinity
+    const cap = Math.max(MIN_ARRIVAL_FT, Math.floor(0.5 * Math.min(inFt, outFt)))
+    out[i] = Math.min(out[i], cap)
   }
   return out
 }
@@ -2419,6 +2575,109 @@ function chartWarnings(f: ChartFeatures): string[] {
 }
 
 /**
+ * "Is this point inside a charted dredged area or fairway?", in the index's
+ * metres — even-odd over each channel's rings, with a box test first.
+ */
+function channelTest(
+  channels: ChannelPolygon[],
+  ix: ChartIndex,
+): (x: number, y: number) => boolean {
+  const polys = channels.map((ch) => {
+    let x0 = Infinity
+    let y0 = Infinity
+    let x1 = -Infinity
+    let y1 = -Infinity
+    const rings = ch.rings.map((ring) => {
+      const out = new Float64Array(ring.length * 2)
+      ring.forEach(([lon, lat], k) => {
+        const p = toXY(ix.proj, { lat, lon })
+        out[2 * k] = p.x
+        out[2 * k + 1] = p.y
+        if (p.x < x0) x0 = p.x
+        if (p.y < y0) y0 = p.y
+        if (p.x > x1) x1 = p.x
+        if (p.y > y1) y1 = p.y
+      })
+      return out
+    })
+    return { rings, x0, y0, x1, y1 }
+  })
+  if (polys.length === 0) return () => false
+  return (x, y) => {
+    for (const p of polys) {
+      if (x < p.x0 || x > p.x1 || y < p.y0 || y > p.y1) continue
+      let inside = false
+      for (const ring of p.rings) {
+        const n = ring.length / 2
+        for (let i = 0, j = n - 1; i < n; j = i++) {
+          const yi = ring[2 * i + 1]
+          const yj = ring[2 * j + 1]
+          if (yi > y !== yj > y) {
+            const xc = ring[2 * i] + ((y - yi) * (ring[2 * j] - ring[2 * i])) / (yj - yi)
+            if (xc > x) inside = !inside
+          }
+        }
+      }
+      if (inside) return true
+    }
+    return false
+  }
+}
+
+/**
+ * Everything a plan (or a re-check of one) is measured against: the chart
+ * indexed over the planning box and a pad, the ends in its metres, the
+ * approach zones, the depth margin and the channel test.
+ */
+function makeCtx(req: RouteRequest): Ctx {
+  const { features } = req
+  const safeDepthM = Number.isFinite(req.safeDepthM) ? Math.max(0, req.safeDepthM) : 0
+  const clearanceM = Number.isFinite(req.clearanceM) ? Math.max(0, req.clearanceM) : 0
+  const approachM = Number.isFinite(req.approachM) ? Math.max(0, req.approachM as number) : DEFAULT_APPROACH_M
+
+  const planBox = planningBounds(req.from, req.to)
+  // The index reaches past the planning box. It clips every polygon to its
+  // own box and reads beyond it as unsurveyed, so land lying just outside
+  // an index the size of the planning box was invisible to the stand-off
+  // check of a leg running along the box edge — a leg 15 m off a shore
+  // passed a 30 m stand-off. Routes stay inside the planning box (grids are
+  // at most a cell bigger); the pad is what their stand-off is measured in.
+  const pad = Math.max(CLEARANCE_MEASURE_M, 2 * clearanceM) + INDEX_PAD_M
+  const ix = chartIndexFor(features, boxAround(
+    { lat: planBox.minLat, lon: planBox.minLon },
+    { lat: planBox.maxLat, lon: planBox.maxLon },
+    pad,
+  ))
+  const limSW = toXY(ix.proj, { lat: planBox.minLat, lon: planBox.minLon })
+  const limNE = toXY(ix.proj, { lat: planBox.maxLat, lon: planBox.maxLon })
+  const from = toXY(ix.proj, req.from)
+  const to = toXY(ix.proj, req.to)
+  const blocked = (p: XY) =>
+    stateAt(ix, p.x, p.y) === LAND || hazardDistance(ix, p.x, p.y, p.x, p.y, 0) <= 0
+  return {
+    req,
+    ix,
+    safeDepthM,
+    clearanceM,
+    zones: approachM > 0
+      ? [{ x: from.x, y: from.y, r: approachM }, { x: to.x, y: to.y, r: approachM }]
+      : [],
+    from,
+    to,
+    fromBlocked: blocked(from),
+    toBlocked: blocked(to),
+    grids: new Map(),
+    budget: REPAIR_BUDGET,
+    lim: { x0: limSW.x, y0: limSW.y, x1: limNE.x, y1: limNE.y },
+    depthMarginM:
+      req.depthMarginM != null && Number.isFinite(req.depthMarginM)
+        ? Math.max(0, req.depthMarginM)
+        : depthMarginFor(clearanceM),
+    inChannel: channelTest(features.channels, ix),
+  }
+}
+
+/**
  * Plot a course.
  *
  * Always returns a plan, and never a line through land:
@@ -2460,48 +2719,13 @@ export function planRoute(req: RouteRequest): RoutePlan {
     )
   }
 
-  const safeDepthM = Number.isFinite(req.safeDepthM) ? Math.max(0, req.safeDepthM) : 0
-  const clearanceM = Number.isFinite(req.clearanceM) ? Math.max(0, req.clearanceM) : 0
-  const approachM = Number.isFinite(req.approachM) ? Math.max(0, req.approachM as number) : DEFAULT_APPROACH_M
+  const ctx = makeCtx(req)
+  const { safeDepthM, clearanceM } = ctx
+  const planBox = planningBounds(req.from, req.to)
+  const { from, to } = ctx
   const arrivalReq = Number.isFinite(req.arrivalFt) && (req.arrivalFt as number) > 0
     ? Math.max(MIN_ARRIVAL_FT, req.arrivalFt as number)
     : DEFAULT_ARRIVAL_FT
-
-  const planBox = planningBounds(req.from, req.to)
-  // The index reaches past the planning box. It clips every polygon to its
-  // own box and reads beyond it as unsurveyed, so land lying just outside
-  // an index the size of the planning box was invisible to the stand-off
-  // check of a leg running along the box edge — a leg 15 m off a shore
-  // passed a 30 m stand-off. Routes stay inside the planning box (grids are
-  // at most a cell bigger); the pad is what their stand-off is measured in.
-  const pad = Math.max(CLEARANCE_MEASURE_M, 2 * clearanceM) + INDEX_PAD_M
-  const ix = chartIndexFor(features, boxAround(
-    { lat: planBox.minLat, lon: planBox.minLon },
-    { lat: planBox.maxLat, lon: planBox.maxLon },
-    pad,
-  ))
-  const limSW = toXY(ix.proj, { lat: planBox.minLat, lon: planBox.minLon })
-  const limNE = toXY(ix.proj, { lat: planBox.maxLat, lon: planBox.maxLon })
-  const from = toXY(ix.proj, req.from)
-  const to = toXY(ix.proj, req.to)
-  const blocked = (p: XY) =>
-    stateAt(ix, p.x, p.y) === LAND || hazardDistance(ix, p.x, p.y, p.x, p.y, 0) <= 0
-  const ctx: Ctx = {
-    req,
-    ix,
-    safeDepthM,
-    clearanceM,
-    zones: approachM > 0
-      ? [{ x: from.x, y: from.y, r: approachM }, { x: to.x, y: to.y, r: approachM }]
-      : [],
-    from,
-    to,
-    fromBlocked: blocked(from),
-    toBlocked: blocked(to),
-    grids: new Map(),
-    budget: REPAIR_BUDGET,
-    lim: { x0: limSW.x, y0: limSW.y, x1: limNE.x, y1: limNE.y },
-  }
 
   const strict: Mode = { clearanceM, wantClearanceM: clearanceM, allowShallow: false, optimistic: false }
   let lastFailure: Failure = 'path'
@@ -2621,8 +2845,27 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
   points[points.length - 1] = req.to
 
   const checks = pts.slice(1).map((p, i) => check(ctx, ctx.clearanceM, pts[i], p))
-  const cautions = checks.map(cautionOf)
-  const charted = cautions.every((c) => c === 'ok' || c === 'shallow-approach')
+  const snapLeg = (i: number) => (b.snapStart && i === 0) || (b.snapEnd && i === checks.length - 1)
+  const approachM = ctx.zones.length > 0 ? ctx.zones[0].r : 0
+  const cautions = checks.map((r, i): LegCaution => {
+    // The hop off (or onto) a dock the chart draws as land: nothing about it
+    // can be checked, but it is the dock, not the passage — flagged "by
+    // eye", not a reason to call a sound route unsafe. A long one is a
+    // different thing (the chart really puts the boat ashore), and stays
+    // unsafe.
+    if (
+      snapLeg(i) &&
+      (r.crossesLand || r.entersHazard) &&
+      approachM > 0 &&
+      distXY(pts[i], pts[i + 1]) <= approachM + 1e-6
+    ) {
+      return 'off-chart-end'
+    }
+    return cautionOf(r)
+  })
+  const charted = cautions.every(
+    (c) => c === 'ok' || c === 'shallow-approach' || c === 'off-chart-end',
+  )
 
   const { legs: base, totalNM } = buildLegs(points, () => true)
   const speed = Number.isFinite(req.speedKn) && req.speedKn > 0 ? req.speedKn : NaN
@@ -2637,6 +2880,14 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
       channelFraction: legChannelFraction(b.grid, leg.from, leg.to),
       caution: cautions[i],
       minClearanceM: checks[i].minClearanceM,
+      minDepthOutsideM: checks[i].minDepthOutsideM,
+      overLand: checks[i].crossesLand || (snapLeg(i) && checks[i].entersHazard),
+      approachReasons: [
+        ...(checks[i].approachDepth ? (['depth'] as const) : []),
+        ...(checks[i].approachClearance ? (['clearance'] as const) : []),
+      ],
+      nearShoalDepthM: checks[i].nearShoal ? checks[i].nearShoalDepthM : null,
+      nearShoalDistM: checks[i].nearShoal ? checks[i].nearShoalDistM : null,
     }
   })
   const hours = speed > 0 ? totalNM / speed : NaN
@@ -2645,30 +2896,52 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
   const movedEnd = b.snapEnd ? points[points.length - 2] : null
 
   const warnings: string[] = []
+  let movedNote: string | null = null
   if (movedStart) {
-    warnings.push(
+    movedNote =
       `The chart shows your start ${describeAt(ix, ctx.from)}. The route starts from the nearest ` +
-        `navigable water, ${formatLength(distXY(pts[0], pts[1]))} away — you are not in it yet, ` +
-        'and the first leg is not charted water.',
-    )
+      `navigable water, ${formatLength(distXY(pts[0], pts[1]))} away — you are not in it yet, ` +
+      'and the first leg is not charted water: leave by eye.'
+    warnings.push(movedNote)
   }
   if (movedEnd) {
-    warnings.push(
+    const note =
       `The chart shows your destination ${describeAt(ix, ctx.to)}. The route reaches the nearest ` +
-        `navigable water, ${formatLength(distXY(pts[pts.length - 2], pts[pts.length - 1]))} short ` +
-        'of it — the last leg is not charted water.',
+      `navigable water, ${formatLength(distXY(pts[pts.length - 2], pts[pts.length - 1]))} short ` +
+      'of it — the last leg is not charted water: come alongside by eye.'
+    movedNote ??= note
+    warnings.push(note)
+  }
+  let confirmReason: string | null = null
+  if (!charted) {
+    const lines = shortfallWarnings(ctx, legs, checks, snapLeg)
+    // The red box leads with how the route falls short, feet first; only
+    // when the one failing leg is a long hop off the chart's land is that
+    // hop the reason.
+    confirmReason = lines.length > 1 ? lines[0] : (movedNote ?? lines[0] ?? null)
+    warnings.push(...lines)
+  }
+  const approachDepth = legs
+    .filter((l) => l.caution === 'shallow-approach' && l.approachReasons?.includes('depth'))
+    .map((l) => l.n)
+  if (approachDepth.length > 0) {
+    warnings.push(
+      `${approachDepth.length === 1 ? 'Leg' : 'Legs'} ${joinWords(approachDepth.map(String))} ` +
+        `${approachDepth.length === 1 ? 'runs' : 'run'} close to the start or destination through water ` +
+        'charted shallower than you need, or not surveyed — check the depth there by eye.',
     )
   }
-  if (!charted) {
-    const snapLeg = (i: number) => (b.snapStart && i === 0) || (b.snapEnd && i === checks.length - 1)
-    warnings.push(...shortfallWarnings(ctx, legs, checks, snapLeg))
-  }
-  const approach = legs.filter((l) => l.caution === 'shallow-approach').map((l) => l.n)
-  if (approach.length > 0) {
+  const approachClose = legs.filter(
+    (l) => l.caution === 'shallow-approach' && l.approachReasons?.includes('clearance'),
+  )
+  if (approachClose.length > 0) {
+    const least = Math.min(...approachClose.map((l) => l.minClearanceM ?? Infinity))
     warnings.push(
-      `${approach.length === 1 ? 'Leg' : 'Legs'} ${joinWords(approach.map(String))} ` +
-        `${approach.length === 1 ? 'runs' : 'run'} close to the start or destination through water ` +
-        'charted shallower than you need, not surveyed, or near land — check the depth there by eye.',
+      `${approachClose.length === 1 ? 'Leg' : 'Legs'} ${joinWords(approachClose.map((l) => String(l.n)))} ` +
+        `${approachClose.length === 1 ? 'passes' : 'pass'} ` +
+        `${Number.isFinite(least) ? formatLength(least) : 'closer than your stand-off'} from land or a ` +
+        `structure near the start or destination — inside your ${formatLength(ctx.clearanceM)} ` +
+        'stand-off. Keep a lookout.',
     )
   }
   warnings.push(...baseWarnings)
@@ -2701,6 +2974,7 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
     arrivalFt: arrivalRadii(ctx, arrivalMode, pts, arrivalReq),
     failure: null,
     needsConfirm: !charted,
+    confirmReason,
   }
 }
 
@@ -2744,6 +3018,25 @@ function shortfallWarnings(
       `No route keeps ${safe} of charted water the whole way. The safest route runs through water ` +
         `the chart never surveyed near leg ${legs[unsurveyedLeg].n}.`,
     )
+  } else {
+    // Only beside the track: water too shallow within the depth margin.
+    let nearLeg = -1
+    let nearDist = Infinity
+    for (let i = 0; i < checks.length; i++) {
+      const r = checks[i]
+      if (!r.nearShoal || snapLeg(i) || r.nearShoalDistM === null) continue
+      if (r.nearShoalDistM < nearDist) {
+        nearDist = r.nearShoalDistM
+        nearLeg = i
+      }
+    }
+    if (nearLeg >= 0) {
+      out.push(
+        `No route keeps ${formatLength(ctx.depthMarginM)} clear of water shallower than ${safe} ` +
+          `the whole way outside the marked channels. The safest route passes ${formatLength(nearDist)} ` +
+          `from ${formatDepth(checks[nearLeg].nearShoalDepthM ?? 0)} water near leg ${legs[nearLeg].n}.`,
+      )
+    }
   }
 
   // Stand-off: the closest pass among the legs that fall short of it.
@@ -2817,6 +3110,60 @@ export function steerTo(
     courseDeg: bearingDeg(fix.lat, fix.lon, target.lat, target.lon),
     distanceNM: haversineNM(fix.lat, fix.lon, target.lat, target.lon),
   }
+}
+
+/**
+ * The per-point capture radii for a plan already made, at a new arrival
+ * setting — without re-planning it. The route's points and legs do not
+ * depend on the setting at all (`arrivalRadii` only sizes the circles round
+ * points that already exist), so changing the setting mid-passage must not
+ * renumber the waypoints the crew is following.
+ *
+ * Null when the plan has no line, or no chart to measure against.
+ */
+export function recomputeArrivalRadii(
+  plan: Pick<RoutePlan, 'points' | 'source'>,
+  req: Pick<RouteRequest, 'safeDepthM' | 'clearanceM' | 'features' | 'approachM' | 'depthMarginM'>,
+  arrivalFt: number,
+): number[] | null {
+  if (plan.source === 'none' || plan.points.length < 2) return null
+  if (req.features.coverage === 'none' || req.features.depthAreas.length === 0) return null
+  const from = plan.points[0]
+  const to = plan.points[plan.points.length - 1]
+  const ctx = makeCtx({ ...req, from, to, speedKn: 0 })
+  const pts = plan.points.map((p) => toXY(ctx.ix.proj, p))
+  const mode: Mode =
+    plan.source === 'charted'
+      ? { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false }
+      : {
+          clearanceM: Math.min(ctx.clearanceM, CLEARANCE_FLOOR_M),
+          wantClearanceM: ctx.clearanceM,
+          allowShallow: true,
+          optimistic: false,
+        }
+  const req2 = Number.isFinite(arrivalFt) && arrivalFt > 0 ? Math.max(MIN_ARRIVAL_FT, arrivalFt) : DEFAULT_ARRIVAL_FT
+  return arrivalRadii(ctx, mode, pts, req2)
+}
+
+/**
+ * What the chart says at one position — a depth in metres, `'land'`, or
+ * `'unsurveyed'` — read from an index a plan has already built over this
+ * features object. Null when none covers the position: this never builds one,
+ * because it is asked once a second from the steering loop.
+ */
+export function chartStateAt(
+  features: ChartFeatures,
+  p: LatLon,
+): number | 'land' | 'unsurveyed' | null {
+  if (!Number.isFinite(p?.lat) || !Number.isFinite(p?.lon)) return null
+  const ix = peekChartIndex(features, { minLat: p.lat, maxLat: p.lat, minLon: p.lon, maxLon: p.lon })
+  if (!ix) return null
+  const q = toXY(ix.proj, p)
+  if (q.x < ix.x0 || q.x > ix.x1 || q.y < ix.y0 || q.y > ix.y1) return null
+  const s = stateAt(ix, q.x, q.y)
+  if (s === LAND) return 'land'
+  if (Number.isNaN(s)) return 'unsurveyed'
+  return s
 }
 
 /** Re-exported for callers that measure against the chart themselves. */

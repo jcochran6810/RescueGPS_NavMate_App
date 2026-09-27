@@ -127,11 +127,42 @@ describe('arrivalRadiusFt', () => {
     expect(arrivalRadiusFt(plan, 1, null, { arrivalFt: 100 }).radiusFt).toBe(100)
   })
 
-  it('widens to the fix error, but never past 200 ft', () => {
-    expect(arrivalRadiusFt(L, 1, 40, { arrivalFt: 100 }).radiusFt).toBeCloseTo(131.2, 0)
-    const poor = arrivalRadiusFt(L, 1, 100, { arrivalFt: 100 })
-    expect(poor.radiusFt).toBe(200)
+  it('widens to the fix error, but never past the point’s own safe radius', () => {
+    // Planned safe to 150 ft, crew set 100: a ±40 m (131 ft) fix may grow
+    // the circle to 131 ft — still inside what the planner said is safe.
+    const roomy = { points: [A, B, C], arrivalFt: [150, 150, 150] }
+    const r = arrivalRadiusFt(roomy, 1, 40, { arrivalFt: 100 })
+    expect(r.radiusFt).toBeCloseTo(131.2, 0)
+    expect(r.safeFt).toBe(150)
+    expect(r.gpsPoor).toBe(false)
+    // ±100 m: capped at the 150 ft safe radius, and the fix is called poor.
+    const poor = arrivalRadiusFt(roomy, 1, 100, { arrivalFt: 100 })
+    expect(poor.radiusFt).toBe(150)
     expect(poor.gpsPoor).toBe(true)
+  })
+
+  it('never widens a hairpin’s small safe circle, however poor the fix', () => {
+    // Integrator finding: the old rule widened a 30 ft hairpin circle to
+    // 200 ft on a poor fix — switching early and cutting the corner the
+    // planner shrank it to protect.
+    const hairpin = { points: [A, B, C], arrivalFt: [150, 30, 150] }
+    const r = arrivalRadiusFt(hairpin, 1, 30, { arrivalFt: 150 })
+    expect(r.radiusFt).toBe(30)
+    expect(r.gpsPoor).toBe(true)
+  })
+
+  it('without a planned radius the crew’s setting is the safe radius', () => {
+    const r = arrivalRadiusFt(L, 1, 40, { arrivalFt: 100 })
+    expect(r.radiusFt).toBe(100)
+    expect(r.gpsPoor).toBe(true)
+    expect(arrivalRadiusFt(L, 1, 20, { arrivalFt: 100 }).gpsPoor).toBe(false)
+  })
+
+  it('never exceeds 200 ft, whatever the plan says', () => {
+    const wide = { points: [A, B, C], arrivalFt: [500, 500, 500] }
+    const r = arrivalRadiusFt(wide, 1, 200, { arrivalFt: 500 })
+    expect(r.radiusFt).toBe(200)
+    expect(r.gpsPoor).toBe(true)
   })
 })
 
@@ -157,20 +188,46 @@ describe('stepTarget — the circle', () => {
     expect(stepTarget(L, 1, at100, { arrivalFt: 150 }).targetIdx).toBe(2)
   })
 
-  it('widens the circle to a fix that cannot resolve it', () => {
-    // 180 ft short of a 150 ft circle, but ±60 m (197 ft) of fix error.
+  it('widens the circle to a poor fix only as far as the point is safe', () => {
+    // 180 ft short of the turn; the crew set 100 ft but the planner says
+    // this point is safe out to 200 ft. A ±60 m (197 ft) fix may use that.
+    const roomy = { points: [A, B, C], arrivalFt: [200, 200, 200] }
     const out = go(B, 180, ft(180))
-    expect(stepTarget(L, 1, { ...out, accuracy: 5 }, { arrivalFt: 150 }).targetIdx).toBe(1)
-    expect(stepTarget(L, 1, { ...out, accuracy: 60 }, { arrivalFt: 150 }).targetIdx).toBe(2)
+    expect(stepTarget(roomy, 1, { ...out, accuracy: 5 }, { arrivalFt: 100 }).targetIdx).toBe(1)
+    expect(stepTarget(roomy, 1, { ...out, accuracy: 60 }, { arrivalFt: 100 }).targetIdx).toBe(2)
   })
 
-  it('caps a poor fix at 200 ft and says the GPS is poor', () => {
-    // ±100 m would have made a 328 ft circle and switched the boat to the
-    // next leg 250 ft short of the turn — hiding the bearing it still needs.
-    const out = go(B, 180, ft(250))
-    const r = stepTarget(L, 1, { ...out, accuracy: 100 }, { arrivalFt: 150 })
+  it('does not widen past the safe radius on a poor fix — says the GPS is poor', () => {
+    // Behaviour change (integrator finding): this used to widen the 150 ft
+    // circle to the fix's 197 ft error and switch 180 ft short of the turn.
+    // The turn is only safe to 150 ft, so it now holds and flags the fix.
+    const out = go(B, 180, ft(180))
+    const r = stepTarget(L, 1, { ...out, accuracy: 60 }, { arrivalFt: 150 })
     expect(r.targetIdx).toBe(1)
     expect(r.gpsPoor).toBe(true)
+    // ±100 m, 250 ft short: held, poor.
+    const far = stepTarget(L, 1, { ...go(B, 180, ft(250)), accuracy: 100 }, { arrivalFt: 150 })
+    expect(far).toEqual({ targetIdx: 1, arrived: false, gpsPoor: true })
+  })
+
+  it('never cuts a hairpin on a poor fix', () => {
+    // North to B, then straight back south-south-west round the tip of a
+    // spit, B safe only to 30 ft. A ±30 m fix 60 ft short of B must not
+    // switch — the old rule widened the circle to 98 ft here.
+    const D = go(B, 200, 1)
+    const hairpin = { points: [A, B, D], arrivalFt: [150, 30, 150] }
+    const short = { ...go(B, 180, ft(60)), accuracy: 30, heading: 0 }
+    const r = stepTarget(hairpin, 1, short, { arrivalFt: 150 })
+    expect(r.targetIdx).toBe(1)
+    expect(r.gpsPoor).toBe(true)
+    // Inside the 30 ft circle it switches, poor fix or not.
+    expect(stepTarget(hairpin, 1, { ...go(B, 180, ft(20)), accuracy: 30 }, { arrivalFt: 150 }).targetIdx).toBe(2)
+    // Past the tip, still heading north, within 2 × 30 ft: pass-abeam takes it.
+    const past = { ...go(B, 0, ft(50)), accuracy: 30, heading: 0 }
+    expect(stepTarget(hairpin, 1, past, { arrivalFt: 150 }).targetIdx).toBe(2)
+    // …but not 70 ft past: beyond twice the safe radius.
+    const further = { ...go(B, 0, ft(70)), accuracy: 30, heading: 0 }
+    expect(stepTarget(hairpin, 1, further, { arrivalFt: 150 }).targetIdx).toBe(1)
   })
 
   it('uses the circle alone for the first point', () => {

@@ -11,20 +11,24 @@ import {
 } from '@/lib/geo'
 import type { SteerFix } from '@/lib/steer'
 import {
+  FT_PER_NM,
   arrivalRadiusNM,
   timeToRunHours,
   turnToward,
   type SteerablePlan,
 } from '@/lib/steer'
 import { useTracker } from '@/store/useTracker'
+import { M_TO_FEET } from '@/lib/vessel'
 
 /**
- * Leg-by-leg steering for any ordered list of points.
+ * Leg-by-leg steering for a search pattern.
  *
- * Shared by the search patterns and the chart plotter's routes, which is the
- * whole point: a route leg and a pattern leg are the same object
- * (`buildLegs` in `search.ts` makes both), so there is one definition of what
- * to steer and no way for the two screens to drift apart.
+ * The chart plotter's routes are steered by the navigation engine and shown on
+ * `NavCard` instead (per-point safe circles, re-routing, arrival); this card
+ * is the Search tab's, where the crew steps through a pattern it laid itself.
+ * It states the arrival circle it is actually using — the crew's setting,
+ * widened to the fix's own error — so the card and the rule cannot disagree
+ * about when a leg is done.
  */
 
 export function SteerCard({
@@ -34,7 +38,7 @@ export function SteerCard({
   fix,
   /** What the end of the list means, in this screen's language. */
   lastLabel = 'Last point — complete when you arrive.',
-  footnote = 'Advances by itself within each point. Tracking stays on so the track records what you covered.',
+  footnote = 'Advances by itself at each point. Tracking stays on so the track records what you covered.',
 }: {
   plan: SteerablePlan
   targetIdx: number
@@ -250,7 +254,11 @@ export function SteerCard({
       )}
 
       <p className="mt-1.5 text-xs text-slate-400">
-        {footnote.replace('within each', `within ${arrivalFt} ft of each`)}
+        {`Counts a point reached within ${Math.round(radiusNM * FT_PER_NM)} ft` +
+          (fix?.accuracy != null && radiusNM * FT_PER_NM > arrivalFt + 0.5
+            ? ` (your ${arrivalFt} ft setting, widened to the fix's ±${Math.round(fix.accuracy * M_TO_FEET)} ft)`
+            : '') +
+          `. ${footnote}`}
       </p>
     </Card>
   )

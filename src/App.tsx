@@ -14,10 +14,12 @@ import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
 import { MapActionHost } from '@/components/MapActionHost'
+import { NavBanner } from '@/components/NavBanner'
 import { WaypointSheet } from '@/components/WaypointSheet'
 import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
 import { useIncidentFeeds } from '@/hooks/useIncidentFeeds'
 import { useNavigationEngine } from '@/hooks/useNavigationEngine'
+import { useNavigation } from '@/store/useNavigation'
 import { useAssignments } from '@/store/useAssignments'
 import { useMessages } from '@/store/useMessages'
 import { useHazards } from '@/store/useHazards'
@@ -51,6 +53,11 @@ export default function App() {
 
   // Steering runs whichever tab is open — see hooks/useNavigationEngine.ts.
   useNavigationEngine()
+  // …and is shown whichever tab is open: the Chart tab has the full card,
+  // every other tab a one-line banner above the stamp button.
+  const navStatus = useNavigation((s) => s.status)
+  const showBanner =
+    tab !== 'chart' && (navStatus === 'navigating' || navStatus === 'arrived')
 
   // Runtime errors feed the admin dashboard's health numbers.
   useEffect(() => installErrorReporting(), [])
@@ -174,7 +181,11 @@ export default function App() {
       <Header active={tab} onChange={setTab} />
       {/* Clears the footer, which now carries only the stamp button — the
           section menu lives in the header's top corner. */}
-      <main className="mx-auto max-w-3xl px-3 pt-3 pb-24">
+      <main
+        className={
+          'mx-auto max-w-3xl px-3 pt-3 ' + (showBanner ? 'pb-40' : 'pb-24')
+        }
+      >
         {tab === 'home' && <HomeTab onNavigate={setTab} />}
         {tab === 'datum' && <DatumTab onNavigate={setTab} />}
         {tab === 'search' && <SearchTab />}
@@ -208,6 +219,11 @@ export default function App() {
             the search already knows the water temperature and when the person
             went in. */}
         <SurvivalBanner />
+        {showBanner && (
+          <div className="pt-1.5">
+            <NavBanner onOpen={() => setTab('chart')} />
+          </div>
+        )}
         <div className="mx-auto max-w-3xl pb-2">
           <StampWaypoint />
         </div>

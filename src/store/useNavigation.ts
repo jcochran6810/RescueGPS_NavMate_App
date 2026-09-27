@@ -106,7 +106,10 @@ export interface NavigationState {
   reroutes: number
   /** Smoothed speed over ground, knots — for the ETA. */
   speedKn: number | null
-  /** The last fix was too poor to judge arrival honestly (> 200 ft error). */
+  /**
+   * The last fix was too poor to judge arrival honestly: it claimed more
+   * error than the target point's safe radius (see `arrivalRadiusFt`).
+   */
   gpsPoor: boolean
   /**
    * A re-route (or boat-change re-plan) is being worked out while the crew

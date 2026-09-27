@@ -1363,6 +1363,15 @@ export interface SegmentCheckOptions {
   /** Approach zones: inside them shallow/unsurveyed water and a smaller
    * stand-off are allowed (land and hazard footprints never are). */
   zones: Zone[]
+  /**
+   * Lateral depth margin, metres: outside the zones and outside a marked
+   * channel, water charted shallower than `safeDepthM` may not lie within
+   * this distance of the leg. 0 or absent turns the test off. See
+   * `depthMarginFor` in routing.ts for why it exists.
+   */
+  depthMarginM?: number
+  /** Is this point inside a charted dredged area or fairway? */
+  inChannel?: (x: number, y: number) => boolean
 }
 
 export interface SegmentCheck {
@@ -1378,6 +1387,19 @@ export interface SegmentCheck {
   entersHazard: boolean
   /** Relied on the approach allowance somewhere. */
   usedApproach: boolean
+  /** Relied on it for DEPTH: shallow or unsurveyed water inside a zone. */
+  approachDepth: boolean
+  /** Relied on it for the STAND-OFF: closer to land or a hazard inside a zone. */
+  approachClearance: boolean
+  /**
+   * Water charted shallower than the boat needs lies within the lateral
+   * depth margin of the leg (outside the zones and any marked channel).
+   */
+  nearShoal: boolean
+  /** The shoalest such water, metres, or null. */
+  nearShoalDepthM: number | null
+  /** How far from the leg it lies, metres, or null. */
+  nearShoalDistM: number | null
   /** Shallower-than-safe water outside the zones. */
   shallow: boolean
   /** Unsurveyed water outside the zones. */
@@ -1455,6 +1477,89 @@ function intervalState(
 }
 
 /**
+ * Water charted shallower than `safeDepthM` within `margin` of segment s–e,
+ * judged from the effective boundary: the track itself is in deep enough
+ * water, so shallow water within the margin means a boundary piece with a
+ * shallow side lies within it. Land is the stand-off's business and
+ * unsurveyed water the depth check's, so only charted depths count. A piece
+ * whose nearest point on the track lies inside a marked channel is skipped —
+ * a dredged cut is shallow bank either side by design.
+ */
+function shoalBeside(
+  ix: ChartIndex,
+  sx: number, sy: number, ex: number, ey: number,
+  margin: number,
+  safeDepthM: number,
+  inChannel: ((x: number, y: number) => boolean) | undefined,
+): { depthM: number; distM: number } | null {
+  let best: { depthM: number; distM: number } | null = null
+  const stamp = nextStamp(ix)
+  const P = ix.px
+  const pb = ix.pieceB
+  const m2 = margin * margin
+  const dx = ex - sx
+  const dy = ey - sy
+  const len2 = dx * dx + dy * dy
+  const onTrack = (qx: number, qy: number): [number, number] => {
+    if (len2 === 0) return [sx, sy]
+    const t = Math.min(1, Math.max(0, ((qx - sx) * dx + (qy - sy) * dy) / len2))
+    return [sx + t * dx, sy + t * dy]
+  }
+  forBucketsNear(ix, sx, sy, ex, ey, margin, (b) => {
+    for (let k = pb.start[b]; k < pb.start[b + 1]; k++) {
+      const p = pb.items[k]
+      if (ix.pStamp[p] === stamp) continue
+      ix.pStamp[p] = stamp
+      const l = ix.pLeft[p]
+      const r = ix.pRight[p]
+      const shoalL = Number.isFinite(l) && l < safeDepthM
+      const shoalR = Number.isFinite(r) && r < safeDepthM
+      if (!shoalL && !shoalR) continue
+      const o = p * 4
+      const qax = P[o]
+      const qay = P[o + 1]
+      const qbx = P[o + 2]
+      const qby = P[o + 3]
+      const d2 = segSegDist2(sx, sy, ex, ey, qax, qay, qbx, qby)
+      if (d2 > m2) continue
+      // The point of the track nearest the piece: the closest pair of two
+      // segments that do not cross has an endpoint of one of them in it.
+      let bx = sx
+      let by = sy
+      let bd = Infinity
+      const tryPair = (tx: number, ty: number, ux: number, uy: number) => {
+        const d = (tx - ux) * (tx - ux) + (ty - uy) * (ty - uy)
+        if (d < bd) {
+          bd = d
+          bx = tx
+          by = ty
+        }
+      }
+      for (const [qx, qy] of [[qax, qay], [qbx, qby]] as const) {
+        const [tx, ty] = onTrack(qx, qy)
+        tryPair(tx, ty, qx, qy)
+      }
+      for (const [tx, ty] of [[sx, sy], [ex, ey]] as const) {
+        const qdx = qbx - qax
+        const qdy = qby - qay
+        const q2 = qdx * qdx + qdy * qdy
+        const u = q2 === 0 ? 0 : Math.min(1, Math.max(0, ((tx - qax) * qdx + (ty - qay) * qdy) / q2))
+        tryPair(tx, ty, qax + u * qdx, qay + u * qdy)
+      }
+      if (inChannel && inChannel(bx, by)) continue
+      const depthM = Math.max(0, Math.min(shoalL ? l : Infinity, shoalR ? r : Infinity))
+      const distM = Math.sqrt(d2)
+      if (!best) best = { depthM, distM }
+      else {
+        best.depthM = Math.min(best.depthM, depthM)
+        best.distM = Math.min(best.distM, distM)
+      }
+    }
+  })
+  return best
+}
+
+/**
  * Check one leg against the real chart.
  *
  * Depth: the leg is cut wherever it crosses an effective boundary or the edge
@@ -1508,7 +1613,7 @@ export function checkSegment(
   ts.sort((a, b) => a - b)
 
   let crossesLand = false
-  let usedApproach = false
+  let approachDepth = false
   let shallow = false
   let unsurveyed = false
   let minDepth = Infinity
@@ -1546,14 +1651,14 @@ export function checkSegment(
       continue
     }
     if (Number.isNaN(s)) {
-      if (zone) usedApproach = true
+      if (zone) approachDepth = true
       else unsurveyed = true
       continue
     }
     minDepth = Math.min(minDepth, s)
     if (!zone) minDepthOut = Math.min(minDepthOut, s)
     if (s < opts.safeDepthM) {
-      if (zone) usedApproach = true
+      if (zone) approachDepth = true
       else shallow = true
     }
   }
@@ -1584,9 +1689,30 @@ export function checkSegment(
     }
   }
   // Inside a zone the stand-off is waived; say so when the leg used that.
-  if (whole < c && clearOut >= c && !entersHazard) usedApproach = true
+  const approachClearance = whole < c && clearOut >= c && !entersHazard
 
-  const depthOk = !crossesLand && !shallow && !unsurveyed
+  // The lateral depth margin: shallow water beside the track, not under it.
+  // Only where the track itself is sound (a leg already crossing shallow
+  // water is flagged for that), outside the zones and outside channels.
+  let nearShoal = false
+  let nearShoalDepthM: number | null = null
+  let nearShoalDistM: number | null = null
+  const margin = opts.depthMarginM ?? 0
+  if (margin > 0 && !shallow && !crossesLand) {
+    for (const [ta, tb] of outside) {
+      const hit = shoalBeside(
+        ix,
+        ax + ta * rx, ay + ta * ry, ax + tb * rx, ay + tb * ry,
+        margin, opts.safeDepthM, opts.inChannel,
+      )
+      if (!hit) continue
+      nearShoal = true
+      if (nearShoalDepthM === null || hit.depthM < nearShoalDepthM) nearShoalDepthM = hit.depthM
+      if (nearShoalDistM === null || hit.distM < nearShoalDistM) nearShoalDistM = hit.distM
+    }
+  }
+
+  const depthOk = !crossesLand && !shallow && !unsurveyed && !nearShoal
   const clearanceOk = !entersHazard && (c === 0 || clearOut >= c)
   return {
     ok: depthOk && clearanceOk,
@@ -1594,7 +1720,12 @@ export function checkSegment(
     clearanceOk,
     crossesLand,
     entersHazard,
-    usedApproach,
+    usedApproach: approachDepth || approachClearance,
+    approachDepth,
+    approachClearance,
+    nearShoal,
+    nearShoalDepthM,
+    nearShoalDistM,
     shallow,
     unsurveyed,
     minDepthM: Number.isFinite(minDepth) ? minDepth : null,
@@ -1617,6 +1748,14 @@ function containsBox(outer: Bounds, inner: Bounds): boolean {
     outer.maxLat >= inner.maxLat &&
     outer.maxLon >= inner.maxLon
   )
+}
+
+/**
+ * An index already built over (at least) this box for this chart, or null.
+ * Never builds one — see `chartIndexFor` for that.
+ */
+export function peekChartIndex(features: ChartFeatures, bounds: Bounds): ChartIndex | null {
+  return cache.get(features)?.find((ix) => containsBox(ix.bounds, bounds)) ?? null
 }
 
 /**

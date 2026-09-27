@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useFormat } from '@/hooks/useFormat'
+import { useNow } from '@/hooks/useNow'
 import { useTracker } from '@/store/useTracker'
-import { useGoTo } from '@/store/useGoTo'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useIncidentUnits } from '@/hooks/useIncidentUnits'
 import { useIncidentOverlay } from '@/hooks/useIncidentOverlay'
@@ -10,19 +10,15 @@ import { useVessels } from '@/store/useVessels'
 import { useChartData } from '@/store/useChartData'
 import { useIncidents } from '@/store/useIncidents'
 import { useTides } from '@/store/useTides'
+import { useHeading } from '@/store/useHeading'
+import { useNavigation, type Place } from '@/store/useNavigation'
 import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
 import { toDD, toDDM, toDMS } from '@/lib/coords'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { CoordInput } from '@/components/CoordInput'
 import { Sheet } from '@/components/Sheet'
-import {
-  formatBearing,
-  formatDuration,
-  formatEtaClock,
-  haversineNM,
-} from '@/lib/geo'
-import { planningBounds, planRoute, type RoutePlan } from '@/lib/routing'
+import { formatDuration, formatEtaClock } from '@/lib/geo'
 import {
   fuelForHours,
   readVesselField,
@@ -38,36 +34,59 @@ import {
   tideNow,
 } from '@/lib/tides'
 import { FEET_TO_M } from '@/lib/units'
+import { ROUTE_ARRIVAL_FT_CHOICES, type ArrivalFt } from '@/lib/steer'
+import {
+  arrivalSettingNote,
+  bearingText,
+  declinationFor,
+  hasRoute,
+  legRows,
+  needsConfirmation,
+  planFailureView,
+  routeMarks,
+  routeSegments,
+  routeSummary,
+  type FailureAction,
+} from '@/lib/navView'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
-import { SteerCard } from '@/components/SteerCard'
-import { shouldAdvance } from '@/lib/steer'
-import { arrivalRadiusFt } from '@/lib/navigate'
+import { NavCard } from '@/components/NavCard'
 import { AddWaypointButton } from '@/components/AddWaypoint'
-import { Button, Card, EmptyState, Field, Label, Segmented, Spinner, Stat } from '@/components/ui'
+import { Button, Card, EmptyState, Field, Label, Segmented, Spinner } from '@/components/ui'
 
 /**
- * Chart plotter — a nautical chart, a destination, and a course that stays in
- * water the boat can use.
+ * Chart plotter — pick a destination, see the route, press Start.
  *
- * The three things this screen is careful about:
+ * The flow is Google Maps', because that is the flow every crew already
+ * knows. "Navigate here" from anywhere in the app (a waypoint, a long press on
+ * any map, the Datum worksheet's "Take me there") plans a route from the
+ * boat's live position at once and lands here showing it. Start steers it;
+ * the card at the top then says which waypoint is next, the bearing and
+ * distance to it, and when the boat gets in. Leave the route and it re-plans
+ * from where the boat is.
  *
- * **It never plans on water it has not seen charted.** The router refuses
- * unsurveyed cells and this tab shows the refusal rather than hiding it.
+ * This screen owns NONE of that state. The destination, the plan, where the
+ * boat is along it and whether the crew has accepted a best-effort route live
+ * in `useNavigation` (store/useNavigation.ts), driven by the GPS from
+ * `useNavigationEngine` whichever tab is open — so looking at the tide table
+ * mid-passage no longer loses the route. What is here is layout, and the
+ * local choices that only matter on this screen (base layer, which end a chart
+ * tap is setting, an open sheet).
  *
- * **It plans at chart datum.** Tide is on the screen beside the route because
- * it matters, and out of the route because a shortcut that needs the tide in
- * is a grounding waiting for a delay.
+ * Three things it is careful about:
  *
- * **It says what the data is.** NOAA publishes ENC for display and GIS, not as
- * a certified navigation product, and the banner under every plotted route
- * says so where the coxswain is looking rather than in a settings page.
+ * **It never draws a line it has not checked.** A route is drawn leg by leg
+ * from the planner's points or not at all. With no honest route the map shows
+ * no line, and the card says why in plain words, what to change, and Retry.
+ *
+ * **A route that is not fully safe looks it.** Flagged legs are red on the
+ * map and in the list, with their least depth or stand-off, and the crew has
+ * to say "I understand" before it can be steered. Shallow stretches at the
+ * very ends are dotted: "check depth here".
+ *
+ * **It plans at chart datum, and says what the data is.** Tide is beside the
+ * route, never in it; NOAA ENC is for display, not a certified navigation
+ * product, and the note under every route says so.
  */
-
-type Place = {
-  lat: number
-  lon: number
-  label: string
-}
 
 /** Which end of the route a chart tap is filling in. */
 type Picking = 'start' | 'dest' | null
@@ -78,17 +97,15 @@ type SheetKind =
   | { end: 'dest'; how: 'waypoint' }
   | null
 
-/** Debounce before auto-plotting. Long enough that dragging the map or
- *  typing a coordinate does not fire a chart fetch on every keystroke. */
-const PLOT_DEBOUNCE_MS = 400
-
 export function ChartTab() {
   const fmt = useFormat()
-  const tracker = useTracker()
+  const fix = useTracker((s) => s.fix)
+  const trail = useTracker((s) => s.trail)
+  const arrivalFt = useTracker((s) => s.arrivalFt)
+  const setArrivalFt = useTracker((s) => s.setArrivalFt)
   // Everyone else on this search, drawn on the map below.
   const units = useIncidentUnits()
   const commandPicture = useIncidentOverlay()
-  const fix = tracker.fix
   const online = useOnline()
   const activeTeamId = useTeams((s) => s.activeTeamId)
 
@@ -96,33 +113,40 @@ export function ChartTab() {
   const boat = vessels.active(activeTeamId)
   const scopeBoats = vessels.inScope(activeTeamId)
 
-  const chart = useChartData()
+  const chartStatus = useChartData((s) => s.status)
+  const chartCoverage = useChartData((s) => s.features.coverage)
   const createWaypoint = useWaypoints((s) => s.create)
   const allWaypoints = useWaypoints((s) => s.visible())
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
-  const tides = useTides()
-
+  const tideExtremes = useTides((s) => s.extremes)
+  const refreshTides = useTides((s) => s.refresh)
+  const bearingPref = useHeading((s) => s.reference)
   const format = useCoordFormat((s) => s.format)
+
+  const dest = useNavigation((s) => s.dest)
+  const origin = useNavigation((s) => s.origin)
+  const plan = useNavigation((s) => s.plan)
+  const status = useNavigation((s) => s.status)
+  const targetIdx = useNavigation((s) => s.targetIdx)
+  const navError = useNavigation((s) => s.error)
+  const confirmed = useNavigation((s) => s.confirmed)
+  const lastPlannedAt = useNavigation((s) => s.lastPlannedAt)
+  const setDestination = useNavigation((s) => s.setDestination)
+  const setOrigin = useNavigation((s) => s.setOrigin)
+  const replan = useNavigation((s) => s.replan)
+  const startNav = useNavigation((s) => s.start)
+  const confirmBestEffort = useNavigation((s) => s.confirmBestEffort)
+  const clearNav = useNavigation((s) => s.clear)
 
   const [base, setBase] = useState<MapBase>('chart')
   const [seamarks, setSeamarks] = useState(true)
   const [picking, setPicking] = useState<Picking>(null)
-  const [start, setStart] = useState<Place | null>(null)
-  const [dest, setDest] = useState<Place | null>(null)
   const [sheet, setSheet] = useState<SheetKind>(null)
   const [draft, setDraft] = useState({ lat: NaN, lon: NaN })
-  const [plan, setPlan] = useState<RoutePlan | null>(null)
-  const [planning, setPlanning] = useState(false)
-  const [planError, setPlanError] = useState<string | null>(null)
-  const [targetIdx, setTargetIdx] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
-  /**
-   * The crew has read this best-effort plan's flagged legs. Reset with the
-   * plan: accepting one route's problems is not accepting the next one's.
-   */
-  const [confirmed, setConfirmed] = useState(false)
-  /** Bumped by every plot; a plot finishing after a newer one started is dropped. */
-  const plotSeq = useRef(0)
+  /** The "Change start" controls are open — planning ahead from elsewhere. */
+  const [changingStart, setChangingStart] = useState(false)
+  const now = useNow(30_000)
 
   // Loading once on mount is enough; the store is offline-first and the cache
   // is what plans routes.
@@ -130,6 +154,12 @@ export function ChartTab() {
   useEffect(() => {
     void loadVessels()
   }, [loadVessels])
+
+  // The tide at the destination — information beside the route, never an
+  // input to it. Refreshed whenever the destination moves.
+  useEffect(() => {
+    if (dest) void refreshTides(dest.lat, dest.lon)
+  }, [dest?.lat, dest?.lon, refreshTides])
 
   const waypoints = useMemo(
     () =>
@@ -139,156 +169,59 @@ export function ChartTab() {
     [allWaypoints, activeTeamId],
   )
 
-  const arrivalFt = tracker.arrivalFt
-  const running = targetIdx !== null && plan !== null
+  const steering = status === 'navigating' || status === 'arrived'
+  const routeOk = hasRoute(plan)
+  const mustConfirm = needsConfirmation(plan)
 
   /*
-   * Auto-advance down the route, exactly as the search pattern does — but
-   * with each turn point's own circle. The planner shrinks the circle at a
-   * sharp turn so that switching early cannot cut the corner into shoal
-   * water or inside the stand-off; the crew's setting is the most it uses.
+   * The route as the map draws it. Previewing: framed whole, every leg
+   * "ahead". Steering: following the boat, legs behind faded, the leg being
+   * run bright, the waypoint being steered to ringed.
    */
-  useEffect(() => {
-    if (!running || !plan || targetIdx === null || !fix) return
-    const { baseFt } = arrivalRadiusFt(plan, targetIdx, null, { arrivalFt })
-    if (shouldAdvance(plan, targetIdx, fix, baseFt)) setTargetIdx(targetIdx + 1)
-  }, [running, plan, targetIdx, fix, arrivalFt])
-
-  /*
-   * Moving either end invalidates the route that joined the old ones — and
-   * then plots the new one. The crew asked for two points, not for two points
-   * and a button; the course belongs on the chart as soon as both ends exist.
-   *
-   * Debounced because plotting fetches chart data: without it, dragging a
-   * destination across the map would fire a NOAA query per frame.
-   */
-  const needM = boat ? safeDepthM(boat) : null
-  useEffect(() => {
-    // Whatever was plotting is for the old ends (or the old boat) now.
-    plotSeq.current++
-    setPlanning(false)
-    setPlan(null)
-    setTargetIdx(null)
-    setPlanError(null)
-    setConfirmed(false)
-    if (!start || !dest || !boat) return
-    const t = setTimeout(() => void plot(), PLOT_DEBOUNCE_MS)
-    return () => clearTimeout(t)
-    // Deliberately keyed on the endpoint coordinates and what the plan is
-    // made for (the boat's draft and margin, stand-off and speed) rather than
-    // on `plot` itself: `plot` is re-created every render, and depending on
-    // it would re-arm the timer forever. It reads what it needs from the
-    // render it was made in, and the sequence number drops a result that
-    // arrives after a newer plot started. Not on the arrival setting: the
-    // steering already caps every point's circle at the current setting
-    // (`arrivalRadiusFt`), so turning it down takes effect without a re-plan
-    // — and without dropping the crew out of steering mid-passage.
-  }, [
-    start?.lat,
-    start?.lon,
-    dest?.lat,
-    dest?.lon,
-    boat?.id,
-    needM,
-    boat?.clearance_m,
-    boat?.cruise_speed_kn,
-  ])
-
-  /*
-   * A destination handed over by another screen — the Datum worksheet's "Take
-   * me there", or "Navigate here" from a long press on any map.
-   *
-   * Watched rather than read once on mount. A press on the plotter's own chart
-   * arrives while this component is already mounted, and a mount-only read
-   * would drop it on the floor — the one case where the crew is looking
-   * straight at the map they expect to update. Still taken exactly once: the
-   * store clears it, so a destination edited by hand afterwards is not
-   * overwritten on the next render.
-   */
-  const handed = useGoTo((s) => s.pending)
-  useEffect(() => {
-    if (!handed) return
-    const place = useGoTo.getState().take()
-    if (place) {
-      setDest({ lat: place.lat, lon: place.lon, label: place.label })
+  const shownTarget = steering ? targetIdx : null
+  const navRoute = useMemo(() => {
+    if (!plan || !routeOk) return null
+    return {
+      segments: routeSegments(plan, shownTarget),
+      marks: routeMarks(plan.points, shownTarget),
+      view: (steering ? 'follow' : 'fit') as 'follow' | 'fit',
+      fitKey: lastPlannedAt,
     }
-  }, [handed])
+  }, [plan, routeOk, shownTarget, steering, lastPlannedAt])
 
-  /** Take a one-shot GPS fix and use it as the start point. */
-  async function startHere() {
-    const got = fix ?? (await tracker.once())
-    if (!got) {
-      toast(useTracker.getState().error ?? 'No GPS fix yet', 'error')
-      return
+  const declination = useMemo(
+    () =>
+      bearingPref === 'magnetic' && plan && plan.points.length > 0
+        ? declinationFor(plan.points[0].lat, plan.points[0].lon)
+        : null,
+    [bearingPref, plan],
+  )
+  const rows = useMemo(
+    () => (plan ? legRows(plan.legs, { formatDepth: (m) => fmt.depth(m) }) : []),
+    [plan, fmt],
+  )
+  const summary = useMemo(
+    () =>
+      plan && routeOk
+        ? routeSummary(plan, {
+            cruiseKn: boat?.cruise_speed_kn ?? null,
+            now: now.getTime(),
+            formatLength: fmt.length,
+          })
+        : null,
+    [plan, routeOk, boat?.cruise_speed_kn, now, fmt],
+  )
+
+  /** Start steering; if the store refuses, say why. */
+  function start() {
+    if (!startNav()) {
+      const why = useNavigation.getState().error
+      toast(why ?? 'Nothing to steer yet.', 'error')
     }
-    setStart({ lat: got.lat, lon: got.lon, label: 'Current location' })
-  }
-
-  /**
-   * Is the chosen start still where the boat is? Steering always follows the
-   * live fix, so a route planned from somewhere else needs saying out loud.
-   */
-  const startIsHere =
-    !!start && !!fix && haversineNM(fix.lat, fix.lon, start.lat, start.lon) < 0.1
-
-  async function plot() {
-    if (!start || !dest || !boat) return
-    const my = ++plotSeq.current
-    setPlanning(true)
-    setPlanError(null)
-    try {
-      const from = { lat: start.lat, lon: start.lon }
-      const to = { lat: dest.lat, lon: dest.lon }
-      // The planner's own box (room to go round an island) and the finest
-      // charts round both ends — the same request the navigation store makes.
-      const features = await chart.load(planningBounds(from, to), {
-        detailAround: [from, to],
-      })
-      if (plotSeq.current !== my) return
-      const next = planRoute({
-        from,
-        to,
-        safeDepthM: safeDepthM(boat),
-        clearanceM: boat.clearance_m,
-        speedKn: boat.cruise_speed_kn,
-        features,
-        arrivalFt,
-      })
-      setPlan(next)
-      setTargetIdx(null)
-      setConfirmed(false)
-      if (next.source === 'charted') {
-        toast(
-          `Course plotted — ${fmt.length(next.totalNM)} in ${next.legs.length} leg${next.legs.length === 1 ? '' : 's'}`,
-          'success',
-        )
-      }
-      // The tide is information beside the route, never an input to it.
-      void tides.refresh(dest.lat, dest.lon)
-    } catch (e) {
-      if (plotSeq.current !== my) return
-      // Plotting used to be a button press, so a throw here surfaced as a
-      // rejected click. Now that it runs from an effect, an unhandled one
-      // would be a screen that silently never shows a course.
-      setPlanError(
-        e instanceof Error ? e.message : 'Could not reach the chart service.',
-      )
-    } finally {
-      if (plotSeq.current === my) setPlanning(false)
-    }
-  }
-
-  /** Something to steer: a drawn line, and — if not fully safe — accepted. */
-  const steerable = !!plan && plan.source !== 'none' && plan.points.length >= 2
-  const mustConfirm = !!plan && (plan.needsConfirm || plan.source === 'best-effort')
-
-  async function takeFix() {
-    const got = await tracker.once()
-    if (!got) toast(useTracker.getState().error ?? 'No GPS fix yet', 'error')
   }
 
   async function saveRoute() {
-    if (!plan) return
+    if (!plan || !routeOk) return
     let saved = 0
     for (let i = 1; i < plan.points.length; i++) {
       const p = plan.points[i]
@@ -308,10 +241,22 @@ export function ChartTab() {
     )
   }
 
-  const tide = useMemo(
-    () => tideNow(new Date(), tides.extremes),
-    [tides.extremes],
-  )
+  function chooseDest(place: Place) {
+    void setDestination(place)
+  }
+  function chooseStart(place: Place | null) {
+    void setOrigin(place)
+  }
+
+  /** What a button under "No route" does. */
+  function act(a: FailureAction) {
+    if (a === 'retry') void replan('retry')
+    else if (a === 'edit-boat' || a === 'add-boat') setEditing(true)
+    else if (a === 'pick-dest') setPicking('dest')
+    else if (a === 'change-start') setChangingStart(true)
+  }
+
+  const tide = useMemo(() => tideNow(now, tideExtremes), [now, tideExtremes])
 
   /*
    * The water over chart datum right now, and whether the crew wants it added
@@ -325,156 +270,197 @@ export function ChartTab() {
    * time, rather than leaving a crew to remember which way the toggle was set.
    */
   const [withTide, setWithTide] = useState(false)
-  const tideFt = useMemo(
-    () => tideHeightNow(new Date(), tides.extremes),
-    [tides.extremes],
-  )
+  const tideFt = useMemo(() => tideHeightNow(now, tideExtremes), [now, tideExtremes])
   const tideOffsetM = withTide && tideFt != null ? tideFt * FEET_TO_M : 0
-  const tideAvailable = tideFt != null
 
   /**
    * The passage at each speed the boat has.
    *
-   * A coxswain's real question is not "how long" but "how long if I push it" —
-   * a survival clock running against a 20 kn cruise reads differently at 34.
-   * Both are worked from the same distance, so the pair is the decision.
-   *
+   * A coxswain's real question is not "how long" but "how long if I push it".
    * Fuel is shown on the cruise row only: `fuel_burn_gph` is burn **at
-   * cruise**, and burn climbs steeply with speed. Scaling it by time would
-   * quietly under-report the fuel for the faster passage, which is the one
-   * where running out matters.
+   * cruise**, and burn climbs steeply with speed.
    */
   const paces = useMemo(() => {
-    if (!plan || !boat) return []
-    const rows: {
-      id: string
-      label: string
-      kn: number
-      hours: number
-      fuel: number | null
-    }[] = []
+    if (!plan || !routeOk || !boat) return []
+    const out: { id: string; label: string; kn: number; hours: number; fuel: number | null }[] = []
     const add = (id: string, label: string, kn: number, fuel: boolean) => {
-      if (!(kn > 0) || rows.some((r) => r.kn === kn)) return
+      if (!(kn > 0) || out.some((r) => r.kn === kn)) return
       const hours = plan.totalNM / kn
-      rows.push({ id, label, kn, hours, fuel: fuel ? fuelForHours(boat, hours) : null })
+      out.push({ id, label, kn, hours, fuel: fuel ? fuelForHours(boat, hours) : null })
     }
     add('cruise', 'cruise', boat.cruise_speed_kn, true)
     add('top', 'flat out', boat.max_speed_kn, false)
-    return rows
-  }, [plan, boat])
+    return out
+  }, [plan, routeOk, boat])
+
+  const failure =
+    status === 'failed' || (plan && !routeOk && status !== 'planning')
+      ? planFailureView({
+          error: navError,
+          plan,
+          hasBoat: !!boat,
+          online,
+          originSet: origin !== null,
+        })
+      : null
+
+  const boatCard = (
+    <Card className="p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <span className="block text-xs font-semibold tracking-wide text-slate-400 uppercase">
+            Boat
+          </span>
+          {boat ? (
+            <span className="block truncate text-sm text-slate-100">
+              <span className="font-semibold">{boat.name || 'Unnamed boat'}</span>
+              <span className="text-slate-300">
+                {' · needs '}
+                {fmt.depth(safeDepthM(boat))}
+                {' · '}
+                {boat.cruise_speed_kn} kn
+              </span>
+            </span>
+          ) : (
+            <span className="block text-sm text-slate-300">
+              Add your boat — nothing is planned without a draft.
+            </span>
+          )}
+        </div>
+        {scopeBoats.length > 0 ? (
+          <Button
+            variant="ghost"
+            className="shrink-0 px-3"
+            onClick={() => setEditing((v) => !v)}
+          >
+            {editing ? 'Done' : 'Edit'}
+          </Button>
+        ) : null}
+      </div>
+
+      {scopeBoats.length > 1 && (
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          {scopeBoats.map((v) => (
+            <button
+              key={v.id}
+              onClick={() => vessels.setActive(v.id)}
+              aria-pressed={v.id === boat?.id}
+              className={
+                'min-h-11 rounded-lg border px-2 py-1.5 text-left text-xs font-semibold ' +
+                (v.id === boat?.id
+                  ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                  : 'border-white/10 text-slate-300 hover:bg-white/5')
+              }
+            >
+              {v.name || 'Unnamed boat'}
+              <span className="block font-normal text-slate-400">
+                {fmt.depth(v.draft_m)} draft
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(editing || scopeBoats.length === 0) && (
+        <VesselForm
+          key={boat?.id ?? 'new'}
+          vessel={boat}
+          teamId={activeTeamId}
+          onDone={() => setEditing(false)}
+        />
+      )}
+      {boat && (editing || scopeBoats.length === 0) ? (
+        <p className="mt-2 text-[11px] text-slate-400">
+          Saving the boat re-plans the route for its new draft, stand-off and speed.
+        </p>
+      ) : null}
+    </Card>
+  )
+
+  const arrivalSetting = (
+    <div className="mt-3 rounded-lg border border-white/10 px-3 py-2">
+      <span className="mb-1.5 block text-xs font-semibold text-slate-300">
+        Waypoint reached within
+      </span>
+      <Segmented
+        label="Arrival distance"
+        value={String(arrivalFt)}
+        onChange={(v) => setArrivalFt(Number(v) as ArrivalFt)}
+        options={ROUTE_ARRIVAL_FT_CHOICES.map((ft) => ({
+          id: String(ft),
+          label: `${ft} ft`,
+        }))}
+      />
+      <p className="mt-1.5 text-[11px] text-slate-400">
+        {arrivalSettingNote(arrivalFt, ROUTE_ARRIVAL_FT_CHOICES)}
+      </p>
+    </div>
+  )
 
   return (
     <div className="space-y-3">
-      <h2 className="text-lg font-semibold text-slate-50">Chart plotter</h2>
-      <p className="text-sm text-slate-300">
-        Pick where you are going and this works out a course that keeps your
-        boat in water it can use — round the shoals, not over them.
-      </p>
+      {steering ? <NavCard /> : null}
 
-      {/* ------------------------------------------------------------ boat */}
-      {/* One line, not a card of tiles. The boat has to be here — nothing is
-          planned without a draft — but it is set once a season, and it was
-          pushing the chart off the screen every time. */}
-      <Card className="p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <span className="block text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              Boat
-            </span>
-            {boat ? (
-              <span className="block truncate text-sm text-slate-100">
-                <span className="font-semibold">{boat.name || 'Unnamed boat'}</span>
-                <span className="text-slate-300">
-                  {' · needs '}
-                  {fmt.depth(safeDepthM(boat))}
-                  {' · '}
-                  {boat.cruise_speed_kn} kn
-                </span>
-              </span>
-            ) : (
-              <span className="block text-sm text-slate-300">
-                Add your boat — nothing is planned without a draft.
-              </span>
-            )}
-          </div>
-          {scopeBoats.length > 0 ? (
-            <Button
-              variant="ghost"
-              className="shrink-0 px-3"
-              onClick={() => setEditing((v) => !v)}
-            >
-              {editing ? 'Done' : 'Edit'}
-            </Button>
-          ) : null}
-        </div>
-
-        {scopeBoats.length > 1 && (
-          <div className="mt-2 grid grid-cols-2 gap-1.5">
-            {scopeBoats.map((v) => (
-              <button
-                key={v.id}
-                onClick={() => vessels.setActive(v.id)}
-                aria-pressed={v.id === boat?.id}
-                className={
-                  'min-h-11 rounded-lg border px-2 py-1.5 text-left text-xs font-semibold ' +
-                  (v.id === boat?.id
-                    ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                    : 'border-white/10 text-slate-300 hover:bg-white/5')
-                }
-              >
-                {v.name || 'Unnamed boat'}
-                <span className="block font-normal text-slate-400">
-                  {fmt.depth(v.draft_m)} draft
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {(editing || scopeBoats.length === 0) && (
-          <VesselForm
-            key={boat?.id ?? 'new'}
-            vessel={boat}
-            teamId={activeTeamId}
-            onDone={() => setEditing(false)}
-          />
-        )}
-      </Card>
-
-      {/* ---------------------------------------------------- from / to */}
-      {/* Both ends together, above the chart, each one line of position and
-          one row of ways to set it. This used to be two full cards below the
-          map, which meant scrolling past the chart to say where you were
-          going and then scrolling back to look at it. */}
-      <Card className="p-3">
-        {/* Called, not rendered as <EndRow/>: a component declared inside
-            another is a new type every render, so React would remount these
-            rows — and the chip you just tapped would lose focus. */}
-        {endRow({
-          end: 'start',
-          label: 'From',
-          place: start,
-          onClear: () => setStart(null),
-        })}
-        <div className="my-2 h-px bg-white/10" />
-        {endRow({
-          end: 'dest',
-          label: 'To',
-          place: dest,
-          onClear: () => setDest(null),
-        })}
-        {start && !startIsHere ? (
-          <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
-            The course starts where you said, not where you are. Steering still
-            follows your live fix.
+      {!steering && (
+        <>
+          <h2 className="text-lg font-semibold text-slate-50">Chart plotter</h2>
+          <p className="text-sm text-slate-300">
+            Pick where you are going. The route is planned from where you are,
+            round the shoals and hazards for your boat — then press Start.
           </p>
-        ) : null}
-      </Card>
+        </>
+      )}
+
+      {!steering && boatCard}
+
+      {/* ---------------------------------------------------- where to */}
+      {!steering && (
+        <Card className="p-3">
+          {/* Called, not rendered as <EndRow/>: a component declared inside
+              another is a new type every render, so React would remount these
+              rows — and the chip you just tapped would lose focus. */}
+          {endRow({ end: 'dest', label: 'To', place: dest, onClear: clearNav })}
+          <div className="my-2 h-px bg-white/10" />
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              From
+            </span>
+            {!changingStart && !origin ? (
+              <button
+                onClick={() => setChangingStart(true)}
+                className="text-xs font-semibold text-slate-400 hover:text-slate-200"
+              >
+                Change start
+              </button>
+            ) : null}
+          </div>
+          <p className="truncate text-sm text-slate-100">
+            {origin ? origin.label : 'My location'}
+            {origin ? (
+              <span className="tnum block truncate text-xs text-slate-400">
+                {formatPlace(origin, format)}
+              </span>
+            ) : null}
+          </p>
+          {origin ? (
+            <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
+              Planned from here, not from where you are — for planning ahead.
+              Steering still follows your live position.
+            </p>
+          ) : null}
+          {changingStart || origin
+            ? endRow({
+                end: 'start',
+                label: '',
+                place: null,
+                onClear: () => chooseStart(null),
+              })
+            : null}
+        </Card>
+      )}
 
       {/* ----------------------------------------------------------- chart */}
       <Card className="p-3">
-        {/* Three choices no longer fit beside the Buoys toggle at 320 px, so
-            the base layer takes its own row rather than truncating to "Sat…". */}
         <Segmented
           label="Base layer"
           value={base}
@@ -490,7 +476,8 @@ export function ChartTab() {
           ]}
           className="mb-2"
         />
-        <div className="mb-2 flex items-center justify-end gap-2">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <RouteLegend />
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setSeamarks((v) => !v)}
@@ -505,54 +492,31 @@ export function ChartTab() {
               Buoys
             </button>
             <span className="tnum text-xs text-slate-400">
-              {chart.status === 'loading'
+              {chartStatus === 'loading'
                 ? 'depths…'
-                : chart.status === 'ready'
-                  ? chart.features.coverage
-                  : chart.status === 'error'
+                : chartStatus === 'ready'
+                  ? chartCoverage
+                  : chartStatus === 'error'
                     ? 'chart failed'
                     : ''}
             </span>
           </div>
         </div>
 
-        {/* Why there is no course, in the place the crew is already looking.
-            A straight line through land with nothing to explain it is the
-            worst version of this screen: it reads as the router being wrong
-            when the real answer is that it never saw a chart at all. */}
-        {chart.status === 'error' && chart.error ? (
-          <p className="mb-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-            <strong className="font-semibold">
-              No chart, so no course.
-            </strong>{' '}
-            {chart.error}. Nothing can be checked for depth, land or
-            obstructions, so no line is drawn; steer on your own eyes and your
-            own chart.
-          </p>
-        ) : null}
-        {chart.status === 'ready' &&
-        chart.features.coverage === 'none' ? (
-          <p className="mb-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
-            The chart service answered but has no charted depths for this area,
-            so no course can be drawn here. That is expected outside US
-            waters.
-          </p>
-        ) : null}
-
         <SatelliteMap
-          trail={tracker.trail}
+          trail={trail}
           fix={fix}
           base={base}
           seamarks={seamarks}
-          route={steerable ? plan.points : []}
-          routeUnverified={plan?.source === 'best-effort'}
+          navRoute={navRoute}
+          routeUnverified={routeOk && mustConfirm}
           units={units}
           incident={commandPicture}
           markers={[
-            ...(start
-              ? [{ id: 'start', name: 'START', lat: start.lat, lon: start.lon }]
+            ...(origin
+              ? [{ id: 'start', name: 'START', lat: origin.lat, lon: origin.lon }]
               : []),
-            ...(dest
+            ...(dest && !routeOk
               ? [{ id: 'dest', name: dest.label, lat: dest.lat, lon: dest.lon }]
               : []),
           ]}
@@ -560,8 +524,8 @@ export function ChartTab() {
             picking
               ? (p) => {
                   const place = { ...p, label: 'Picked on chart' }
-                  if (picking === 'start') setStart(place)
-                  else setDest(place)
+                  if (picking === 'start') chooseStart(place)
+                  else chooseDest(place)
                   setPicking(null)
                 }
               : undefined
@@ -573,99 +537,132 @@ export function ChartTab() {
                 ? 'Tap the chart where you want to go'
                 : undefined
           }
-          height={320}
+          height={steering ? 380 : 320}
         />
 
-        {/* Why it is not a course, immediately under the line it refers to.
-            This used to live only on the Course card below, which on a phone
-            is off the bottom of the screen — so the crew saw a plausible
-            dashed line through land and no explanation at all. */}
-        {plan?.source === 'none' ? (
-          <p className="mt-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-            <strong className="font-semibold">No course.</strong>{' '}
-            {plan.failure ?? 'No route could be found to this destination.'}
-          </p>
-        ) : plan?.source === 'best-effort' && plan.warnings.length > 0 ? (
-          <p className="mt-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-            {plan.warnings[0]}
-          </p>
+        {picking ? (
+          <Button variant="primary" className="mt-2 w-full" onClick={() => setPicking(null)}>
+            Cancel pick
+          </Button>
         ) : null}
-
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Button
-            variant={picking ? 'primary' : 'ghost'}
-            onClick={() => setPicking(null)}
-            disabled={!picking}
-          >
-            {picking ? 'Cancel pick' : 'Tap a chip above to pick'}
-          </Button>
-          <Button variant="ghost" onClick={() => void takeFix()}>
-            Take a fix
-          </Button>
-        </div>
       </Card>
 
       {/* ----------------------------------------------------------- route */}
       <Card>
         <div className="flex items-start justify-between gap-2">
-          <Label>Course</Label>
-          {plan ? (
+          <Label>Route</Label>
+          {plan && routeOk ? (
             <span className="tnum mb-1.5 text-xs text-slate-400">
-              {plan.source === 'none'
-                ? 'no course'
-                : `${plan.legs.length} leg${plan.legs.length === 1 ? '' : 's'}${
-                    plan.source === 'best-effort' ? ' · not fully safe' : ''
-                  }`}
+              {plan.legs.length} leg{plan.legs.length === 1 ? '' : 's'}
+              {mustConfirm ? ' · not fully safe' : ''}
             </span>
           ) : null}
         </div>
 
-        {/* The course plots itself as soon as both ends and a boat exist, so
-            this is a retry rather than the way in. */}
-        {planning ? (
-          <p className="flex items-center gap-2 text-sm text-slate-300">
-            <Spinner /> Plotting…
+        {status === 'idle' && !dest ? (
+          <p className="text-sm text-slate-300">
+            Where to? Set a destination above — or press and hold any map in
+            the app and choose <strong>Navigate here</strong>.
           </p>
         ) : null}
 
-        {planError ? (
-          <>
-            <p className="rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-              {planError}
-            </p>
-            <Button
-              variant="primary"
-              className="mt-2 w-full"
-              onClick={() => void plot()}
-            >
-              Try again
-            </Button>
-          </>
+        {status === 'planning' ? (
+          <p className="flex items-center gap-2 text-sm text-slate-200" role="status">
+            <Spinner />
+            {`Finding a safe route from ${origin ? origin.label.toLowerCase() : 'your position'}…`}
+          </p>
         ) : null}
 
-        {!planning && !planError && !boat && (
-          <p className="text-xs text-slate-400">
-            Add a boat above first — a course means nothing without a draft.
-          </p>
-        )}
-        {!planning && !planError && boat && (!start || !dest) && (
-          <p className="text-xs text-slate-400">
-            {!start && !dest
-              ? 'Set where you are coming from and where you are going, above.'
-              : !start
-                ? 'Set where you are starting from, above.'
-                : 'Now set where you are going, above.'}
-          </p>
-        )}
-
-        {/* Nothing honest to draw: say why, with the warnings the chart
-            carried, and a way to try again — never a line. */}
-        {plan && !steerable ? (
-          <>
-            <p className="mt-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-              {plan.failure ?? 'No route could be found to this destination.'}
+        {/* No honest route: no line, the plain reason, what to change, Retry. */}
+        {failure ? (
+          <div>
+            <p className="text-base font-semibold text-red-100">{failure.title}</p>
+            <p className="mt-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+              {failure.reason}
             </p>
-            {plan.warnings.map((w) => (
+            {failure.hints.map((h) => (
+              <p
+                key={h}
+                className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100"
+              >
+                {h}
+              </p>
+            ))}
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {failure.actions.map((a) => (
+                <Button
+                  key={a}
+                  variant={a === 'retry' || a === 'add-boat' ? 'primary' : 'ghost'}
+                  className={a === 'retry' ? 'col-span-2' : ''}
+                  onClick={() => act(a)}
+                >
+                  {ACTION_LABEL[a]}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {plan && routeOk && summary ? (
+          <>
+            {/* The summary, Google-Maps style, and the one button that matters. */}
+            {!steering ? (
+              <>
+                <p className="tnum text-xl font-semibold text-slate-50">{summary.line}</p>
+                {dest ? (
+                  <p className="truncate text-xs text-slate-400">to {dest.label}</p>
+                ) : null}
+              </>
+            ) : null}
+
+            {navError && status === 'preview' ? (
+              <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                {navError}
+              </p>
+            ) : null}
+
+            {mustConfirm ? (
+              <div className="mt-2 rounded-lg border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                <strong className="font-semibold">Not a fully safe route.</strong>{' '}
+                {plan.warnings[0] ??
+                  'No route keeps your depth and stand-off the whole way.'}{' '}
+                The legs that break them are red on the map and below.
+              </div>
+            ) : null}
+
+            {status === 'preview' ? (
+              mustConfirm && !confirmed ? (
+                <Button
+                  variant="danger"
+                  className="mt-3 min-h-14 w-full text-base"
+                  onClick={() => {
+                    // Accepting one route's problems is not accepting the next
+                    // one's — the store forgets this with every new plan.
+                    confirmBestEffort()
+                    start()
+                  }}
+                >
+                  I understand — start anyway
+                </Button>
+              ) : (
+                <Button
+                  variant={mustConfirm ? 'danger' : 'primary'}
+                  className="mt-3 min-h-14 w-full text-lg"
+                  onClick={start}
+                >
+                  Start
+                </Button>
+              )
+            ) : null}
+
+            <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              <strong className="font-semibold">Not for navigation.</strong>{' '}
+              Charted depths are at mean lower low water and were not surveyed
+              for your passage. Check this against the chart and your own eyes
+              before you run it.
+            </p>
+
+            {plan.warnings.slice(mustConfirm ? 1 : 0).map((w) => (
               <p
                 key={w}
                 className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100"
@@ -673,123 +670,93 @@ export function ChartTab() {
                 {w}
               </p>
             ))}
-            <Button
-              variant="primary"
-              className="mt-2 w-full"
-              onClick={() => void plot()}
-            >
-              Try again
-            </Button>
-          </>
-        ) : null}
-
-        {plan && steerable && (
-          <>
-            <div className="mt-3 space-y-2">
-              <Stat label="Distance" value={fmt.length(plan.totalNM)} />
-
-              {paces.length > 0 ? (
-                <div className="overflow-hidden rounded-xl border border-white/10">
-                  <div className="grid grid-cols-3 gap-px bg-white/10 text-[11px] font-semibold tracking-wide text-slate-300 uppercase">
-                    <div className="bg-navy-900/60 px-3 py-1.5">Speed</div>
-                    <div className="bg-navy-900/60 px-3 py-1.5">Time to run</div>
-                    <div className="bg-navy-900/60 px-3 py-1.5">Arrive</div>
-                  </div>
-                  {paces.map((p) => (
-                    <div key={p.id} className="grid grid-cols-3 gap-px bg-white/10">
-                      <div className="bg-navy-900/60 px-3 py-2">
-                        <div className="tnum text-sm font-semibold text-slate-50">
-                          {p.kn} kn
-                        </div>
-                        <div className="text-[11px] text-slate-400">{p.label}</div>
-                      </div>
-                      <div className="bg-navy-900/60 px-3 py-2">
-                        <div className="tnum text-sm font-semibold text-slate-50">
-                          {Number.isFinite(p.hours) ? formatDuration(p.hours) : '—'}
-                        </div>
-                        {p.fuel !== null ? (
-                          <div className="text-[11px] text-slate-400">
-                            {p.fuel.toFixed(0)} gal
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="bg-navy-900/60 px-3 py-2">
-                        <div className="tnum text-sm font-semibold text-slate-50">
-                          {formatEtaClock(p.hours) || '—'}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <Stat
-                  label="Time to run"
-                  value="—"
-                  hint="set a cruise speed on the boat"
-                />
-              )}
-            </div>
-
-            <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-              <strong className="font-semibold">Not for navigation.</strong>{' '}
-              Charted depths are at mean lower low water and were not surveyed
-              for your passage. Check this against the chart and your own eyes
-              before you run it.
-            </p>
-
-            {plan.warnings.map((w) => (
-              <p
-                key={w}
-                className="mt-1.5 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-100"
-              >
-                {w}
-              </p>
-            ))}
 
             <div className="mt-2 space-y-1">
-              {plan.legs.map((leg) => (
-                <div
-                  key={leg.n}
-                  className={
-                    'flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm ' +
-                    (leg.caution === 'unsafe-depth' || leg.caution === 'reduced-clearance'
-                      ? 'border-red-400/50 bg-red-500/10'
-                      : leg.caution === 'shallow-approach'
-                        ? 'border-dashed border-amber-400/50'
-                        : 'border-white/10')
-                  }
-                >
-                  <span className="tnum text-slate-100">
-                    {leg.n}. {formatBearing(leg.courseDeg)}
-                  </span>
-                  <span className="tnum text-xs text-slate-300">
-                    {fmt.length(leg.lengthNM)}
-                    {leg.minChartedDepthM !== null
-                      ? ` · ${fmt.depth(leg.minChartedDepthM + tideOffsetM)} least`
-                      : ' · not charted'}
-                    {/* Null means nothing is marked in this area at all,
-                        which is not the same as being outside the channel. */}
-                    {leg.channelFraction !== null && leg.channelFraction < 0.5 ? (
-                      <span className="text-amber-200"> · outside channel</span>
-                    ) : null}
-                    {leg.caution === 'unsafe-depth' ? (
-                      <span className="font-semibold text-red-200"> · too shallow</span>
-                    ) : leg.caution === 'reduced-clearance' ? (
-                      <span className="font-semibold text-red-200"> · close to land or a hazard</span>
-                    ) : leg.caution === 'shallow-approach' ? (
-                      <span className="text-amber-200"> · check depth here</span>
-                    ) : null}
-                  </span>
-                </div>
-              ))}
+              {rows.map((leg) => {
+                const behind = steering && targetIdx != null && leg.n < targetIdx
+                const current = steering && targetIdx != null && leg.n === targetIdx
+                const src = plan.legs[leg.n - 1]
+                return (
+                  <div
+                    key={leg.n}
+                    className={
+                      'flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm ' +
+                      (leg.flagged
+                        ? 'border-red-400/50 bg-red-500/10'
+                        : leg.dotted
+                          ? 'border-dashed border-amber-400/60'
+                          : current
+                            ? 'border-sky-400/50 bg-sky-500/10'
+                            : 'border-white/10') +
+                      (behind ? ' opacity-50' : '')
+                    }
+                  >
+                    <span className="tnum text-slate-100">
+                      {leg.n}. {bearingText(leg.courseDeg, bearingPref, declination)}
+                    </span>
+                    <span className="tnum text-right text-xs text-slate-300">
+                      {fmt.length(leg.lengthNM)}
+                      {src?.minChartedDepthM != null
+                        ? ` · ${fmt.depth(src.minChartedDepthM + tideOffsetM)} least`
+                        : ' · not charted'}
+                      {/* Null means nothing is marked in this area at all,
+                          which is not the same as being outside the channel. */}
+                      {src?.channelFraction != null && src.channelFraction < 0.5 ? (
+                        <span className="text-amber-200"> · outside channel</span>
+                      ) : null}
+                      {leg.note ? (
+                        <span
+                          className={
+                            'block font-semibold ' +
+                            (leg.flagged ? 'text-red-200' : 'text-amber-200')
+                          }
+                        >
+                          {leg.note}
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
 
-            {tideAvailable && (
+            {!steering && paces.length > 0 ? (
+              <div className="mt-2 overflow-hidden rounded-xl border border-white/10">
+                <div className="grid grid-cols-3 gap-px bg-white/10 text-[11px] font-semibold tracking-wide text-slate-300 uppercase">
+                  <div className="bg-navy-900/60 px-3 py-1.5">Speed</div>
+                  <div className="bg-navy-900/60 px-3 py-1.5">Time to run</div>
+                  <div className="bg-navy-900/60 px-3 py-1.5">Arrive</div>
+                </div>
+                {paces.map((p) => (
+                  <div key={p.id} className="grid grid-cols-3 gap-px bg-white/10">
+                    <div className="bg-navy-900/60 px-3 py-2">
+                      <div className="tnum text-sm font-semibold text-slate-50">{p.kn} kn</div>
+                      <div className="text-[11px] text-slate-400">{p.label}</div>
+                    </div>
+                    <div className="bg-navy-900/60 px-3 py-2">
+                      <div className="tnum text-sm font-semibold text-slate-50">
+                        {Number.isFinite(p.hours) ? formatDuration(p.hours) : '—'}
+                      </div>
+                      {p.fuel !== null ? (
+                        <div className="text-[11px] text-slate-400">{p.fuel.toFixed(0)} gal</div>
+                      ) : null}
+                    </div>
+                    <div className="bg-navy-900/60 px-3 py-2">
+                      <div className="tnum text-sm font-semibold text-slate-50">
+                        {formatEtaClock(p.hours) || '—'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {tideFt != null && (
               <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-white/10 px-3 py-2">
                 <span className="text-xs text-slate-300">
                   Add the tide to these depths
                   <span className="tnum block text-[11px] text-slate-400">
-                    {formatTideHeight(tideFt!)} over chart datum now
+                    {formatTideHeight(tideFt)} over chart datum now, near the destination
                   </span>
                 </span>
                 <button
@@ -812,13 +779,13 @@ export function ChartTab() {
 
             {tide.next && (
               <p className="mt-2 text-xs text-slate-400">
-                Tide {tide.trend} · next {tide.next.type === 'H' ? 'high' : 'low'}{' '}
-                {formatTideClock(tide.next.at)} at{' '}
+                Tide at the destination {tide.trend} · next{' '}
+                {tide.next.type === 'H' ? 'high' : 'low'} {formatTideClock(tide.next.at)} at{' '}
                 {formatTideHeight(tide.next.heightFt)}.{' '}
                 {withTide ? (
                   <span className="text-amber-200">
                     Depths above are <strong>predicted for now</strong>, not
-                    charted — the course itself was planned at chart datum and
+                    charted — the route itself was planned at chart datum and
                     has not changed. Wind can take the tide away.
                   </span>
                 ) : (
@@ -832,55 +799,22 @@ export function ChartTab() {
             )}
 
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <Button
-                variant={mustConfirm && !confirmed && !running ? 'danger' : 'primary'}
-                disabled={!steerable}
-                onClick={() => {
-                  if (running) {
-                    setTargetIdx(null)
-                    return
-                  }
-                  // A route that is not fully safe is steered only once the
-                  // crew has said, in so many words, that they read why.
-                  if (mustConfirm && !confirmed) {
-                    setConfirmed(true)
-                    return
-                  }
-                  setTargetIdx(1)
-                  // Steering needs a live position, not the single fix that
-                  // set the start point. Without this the fix never changes,
-                  // so no leg ever completes and the card sits on leg 1 for
-                  // the whole passage — the search patterns have always
-                  // started the watch here and this did not.
-                  if (!tracker.watching) tracker.start()
-                }}
-              >
-                {running
-                  ? 'Stop steering'
-                  : mustConfirm && !confirmed
-                    ? 'I understand — not fully safe'
-                    : mustConfirm
-                      ? 'Steer anyway'
-                      : 'Steer this route'}
-              </Button>
               <Button variant="ghost" onClick={() => void saveRoute()}>
                 Save as waypoints
               </Button>
+              {!steering ? (
+                <Button variant="ghost" onClick={clearNav}>
+                  Clear route
+                </Button>
+              ) : null}
             </div>
           </>
-        )}
+        ) : null}
+
+        {arrivalSetting}
       </Card>
 
-      {running && plan && targetIdx !== null && (
-        <SteerCard
-          plan={plan}
-          targetIdx={targetIdx}
-          setTargetIdx={setTargetIdx}
-          fix={fix}
-          lastLabel="Last leg — you are on the destination when you arrive."
-          footnote="Advances by itself within each turn point. Keep tracking on so the track records where you actually went."
-        />
-      )}
+      {steering && boatCard}
 
       {sheet ? (
         <Sheet
@@ -895,16 +829,12 @@ export function ChartTab() {
         >
           {sheet.how === 'coords' ? (
             <>
-              <Label>
-                {sheet.end === 'start' ? 'Start position' : 'Destination'}
-              </Label>
+              <Label>{sheet.end === 'start' ? 'Start position' : 'Destination'}</Label>
               <CoordInput
                 label={sheet.end === 'start' ? 'Start' : 'Destination'}
                 value={draft}
                 onChange={setDraft}
-                onUseFix={
-                  fix ? () => setDraft({ lat: fix.lat, lon: fix.lon }) : undefined
-                }
+                onUseFix={fix ? () => setDraft({ lat: fix.lat, lon: fix.lon }) : undefined}
                 fixLabel="Fill from my current position"
               />
               <div className="mt-3 mb-3 grid grid-cols-2 gap-2">
@@ -913,17 +843,11 @@ export function ChartTab() {
                 </Button>
                 <Button
                   variant="primary"
-                  disabled={
-                    !Number.isFinite(draft.lat) || !Number.isFinite(draft.lon)
-                  }
+                  disabled={!Number.isFinite(draft.lat) || !Number.isFinite(draft.lon)}
                   onClick={() => {
-                    const place = {
-                      lat: draft.lat,
-                      lon: draft.lon,
-                      label: 'Typed position',
-                    }
-                    if (sheet.end === 'start') setStart(place)
-                    else setDest(place)
+                    const place = { lat: draft.lat, lon: draft.lon, label: 'Typed position' }
+                    if (sheet.end === 'start') chooseStart(place)
+                    else chooseDest(place)
                     setSheet(null)
                   }}
                 >
@@ -938,16 +862,14 @@ export function ChartTab() {
                 <AddWaypointButton label="Add waypoint" compact />
               </div>
               {waypoints.length === 0 ? (
-                <EmptyState>
-                  No saved waypoints in this scope yet.
-                </EmptyState>
+                <EmptyState>No saved waypoints in this scope yet.</EmptyState>
               ) : (
                 <div className="mb-3 space-y-1">
                   {waypoints.slice(0, 60).map((w) => (
                     <button
                       key={w.id}
                       onClick={() => {
-                        setDest({ lat: w.lat, lon: w.lon, label: w.name })
+                        chooseDest({ lat: w.lat, lon: w.lon, label: w.name })
                         setSheet(null)
                       }}
                       className="min-h-11 w-full rounded-lg border border-white/10 px-3 py-2 text-left hover:bg-white/5"
@@ -970,11 +892,9 @@ export function ChartTab() {
   /**
    * One end of the route: where it is, and the ways to set it.
    *
-   * Both ends offer the same two — type it, or tap the chart — with the
-   * shortcuts that only make sense for one of them alongside. Nothing here is
-   * gated on the other end being set: they are adjacent and equally reachable
-   * now, so the old "pick a start first" rule bought nothing and was
-   * re-implemented in six places.
+   * The destination row is the primary one. The start row only appears once
+   * the crew asks to "Change start" — the route starts from the boat's live
+   * position unless they are planning ahead from somewhere else.
    */
   function endRow({
     end,
@@ -995,63 +915,63 @@ export function ChartTab() {
 
     return (
       <div>
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
-            {label}
-          </span>
-          {place ? (
-            <button
-              onClick={onClear}
-              className="text-xs font-semibold text-slate-400 hover:text-slate-200"
-            >
-              Clear
-            </button>
-          ) : null}
-        </div>
+        {label ? (
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              {label}
+            </span>
+            {place ? (
+              <button
+                onClick={onClear}
+                className="text-xs font-semibold text-slate-400 hover:text-slate-200"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
-        <p
-          className={
-            'tnum truncate text-sm ' +
-            (place ? 'text-slate-100' : 'text-slate-400')
-          }
-        >
-          {place ? formatPlace(place, format) : 'Not set'}
-        </p>
-        {place ? (
-          <p className="truncate text-xs text-slate-400">{place.label}</p>
+        {end === 'dest' ? (
+          <>
+            <p className={'truncate text-sm ' + (place ? 'text-slate-100' : 'text-slate-400')}>
+              {place ? place.label : 'Where to?'}
+            </p>
+            {place ? (
+              <p className="tnum truncate text-xs text-slate-400">{formatPlace(place, format)}</p>
+            ) : null}
+          </>
         ) : null}
 
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {end === 'start' ? (
-            <Chip onClick={() => void startHere()}>Here</Chip>
+            <Chip
+              active={origin === null}
+              onClick={() => {
+                chooseStart(null)
+                setChangingStart(false)
+              }}
+            >
+              My location
+            </Chip>
           ) : null}
-          <Chip
-            active={picked}
-            onClick={() => setPicking(picked ? null : end)}
-          >
+          <Chip active={picked} onClick={() => setPicking(picked ? null : end)}>
             {picked ? 'Tap chart…' : 'Map'}
           </Chip>
           <Chip
             onClick={() => {
-              setDraft(
-                place
-                  ? { lat: place.lat, lon: place.lon }
-                  : { lat: NaN, lon: NaN },
-              )
+              setDraft(place ? { lat: place.lat, lon: place.lon } : { lat: NaN, lon: NaN })
               setSheet({ end, how: 'coords' })
             }}
           >
             Coords
           </Chip>
           {end === 'dest' && waypoints.length > 0 ? (
-            <Chip onClick={() => setSheet({ end: 'dest', how: 'waypoint' })}>
-              Waypoint
-            </Chip>
+            <Chip onClick={() => setSheet({ end: 'dest', how: 'waypoint' })}>Waypoint</Chip>
           ) : null}
           {lkp ? (
             <Chip
               onClick={() =>
-                setDest({
+                chooseDest({
                   lat: lkp.lkp_lat as number,
                   lon: lkp.lkp_lng as number,
                   label: `LKP — ${lkp.incident_name}`,
@@ -1065,6 +985,49 @@ export function ChartTab() {
       </div>
     )
   }
+}
+
+const ACTION_LABEL: Record<FailureAction, string> = {
+  retry: 'Retry',
+  'edit-boat': 'Edit boat',
+  'add-boat': 'Add your boat',
+  'pick-dest': 'Pick another point',
+  'change-start': 'Change start',
+}
+
+/** What the lines on the map mean — three words each, beside the map. */
+function RouteLegend() {
+  return (
+    <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-400">
+      <span className="flex items-center gap-1">
+        <svg width="18" height="6" aria-hidden>
+          <line x1="1" y1="3" x2="17" y2="3" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+        route
+      </span>
+      <span className="flex items-center gap-1">
+        <svg width="18" height="6" aria-hidden>
+          <line
+            x1="2"
+            y1="3"
+            x2="17"
+            y2="3"
+            stroke="#fcd34d"
+            strokeWidth="3"
+            strokeDasharray="0.1 5"
+            strokeLinecap="round"
+          />
+        </svg>
+        check depth
+      </span>
+      <span className="flex items-center gap-1">
+        <svg width="18" height="6" aria-hidden>
+          <line x1="1" y1="3" x2="17" y2="3" stroke="#f87171" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+        not safe
+      </span>
+    </span>
+  )
 }
 
 /** A small pill in an end row. Same shape as the app's segmented options. */
