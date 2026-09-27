@@ -31,7 +31,14 @@ const mem = vi.hoisted(() => {
  * held open to pin what happens when plans overlap.
  */
 
-const BOX = { minLat: 29, minLon: -95, maxLat: 30, maxLon: -94 }
+/**
+ * A harbour-sized planning box: small enough that the main chart query
+ * includes the harbour band, so no corridor pass runs unless a test asks for
+ * one with `LONG_BOX`.
+ */
+const BOX = { minLat: 29.3, minLon: -94.82, maxLat: 29.35, maxLon: -94.76 }
+/** A long passage's box — too big for the harbour band as a whole. */
+const LONG_BOX = { minLat: 29, minLon: -95, maxLat: 30, maxLon: -94 }
 
 vi.mock('@/lib/routing', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/routing')>()
@@ -58,6 +65,10 @@ vi.mock('@/store/useChartData', async () => {
   const useChartData = create(() => ({
     status: 'ready' as 'idle' | 'loading' | 'ready' | 'error',
     error: null as string | null,
+    /** What is in memory. `coverage: 'none'` = nothing loaded. */
+    features: { depthAreas: [], channels: [], land: [], hazards: [], lines: [], coverage: 'full' } as ChartFeatures,
+    covers: vi.fn((...args: unknown[]) => args.length < 0),
+    holds: vi.fn((...args: unknown[]) => args.length < 0),
     load: vi.fn(
       (bounds: unknown, opts: unknown) =>
         new Promise<ChartFeatures>((resolve) => {
@@ -111,6 +122,7 @@ import { useChartData } from '@/store/useChartData'
 import { useVessels } from '@/store/useVessels'
 import { useTracker } from '@/store/useTracker'
 import {
+  LIVE_CHART_TIMEOUT_MS,
   NAV_STORAGE_KEY,
   OFF_COURSE_HOLD_MS,
   REROUTE_MIN_GAP_MS,
@@ -154,6 +166,23 @@ function mkPlan(points: LatLon[], over: Partial<RoutePlan> = {}): RoutePlan {
   }
 }
 
+/** A sound leg of `mkPlan`'s shape. */
+function leg(n: number): RoutePlan['legs'][number] {
+  return {
+    n,
+    kind: 'search',
+    courseDeg: 0,
+    lengthNM: 1,
+    from: A,
+    to: B,
+    etaHours: 0.05,
+    minChartedDepthM: 5,
+    channelFraction: null,
+    caution: 'ok',
+    minClearanceM: 50,
+  } as RoutePlan['legs'][number]
+}
+
 function fixAt(p: LatLon, over: Partial<Fix> = {}): Fix {
   return {
     lat: p.lat,
@@ -186,7 +215,12 @@ beforeEach(() => {
   planRouteMock.mockImplementation((req: RouteRequest) => mkPlan([req.from, B, req.to]))
   vi.mocked(planningBounds).mockClear()
   vi.mocked(useChartData.getState().load).mockClear()
-  useChartData.setState({ status: 'ready', error: null })
+  vi.mocked(planningBounds).mockImplementation(() => BOX)
+  vi.mocked(useChartData.getState().holds).mockReset()
+  vi.mocked(useChartData.getState().holds).mockReturnValue(false)
+  vi.mocked(useChartData.getState().covers).mockReset()
+  vi.mocked(useChartData.getState().covers).mockReturnValue(false)
+  useChartData.setState({ status: 'ready', error: null, features: { ...FEATURES } })
   setBoat({ ...BOAT })
   trackerStart.mockReset()
   trackerOnce.mockReset()
@@ -568,11 +602,33 @@ describe('onFix — off course and re-routing', () => {
     const s = useNavigation.getState()
     expect(s.status).toBe('navigating')
     expect(s.plan).toBe(before)
-    expect(s.error).toMatch(/No water path from here/)
+    // Changed on purpose (finding R8/R5): a failed re-route is its own
+    // field, tied to being off the route, not the general `error`.
+    expect(s.rerouteError).toMatch(/No water path from here/)
   })
 
-  it('drops to the preview for confirmation when a re-route is best-effort', async () => {
+  it('clears a failed re-route’s message once the boat is back on the route', async () => {
     await navigating()
+    planRouteMock.mockImplementationOnce(() => mkPlan([], { source: 'none', failure: 'No water path.' }))
+    useNavigation.getState().onFix(fixAt(off()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    expect(useNavigation.getState().rerouteError).toMatch(/Could not re-route/)
+    vi.setSystemTime(T0 + 90_000)
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.5)))
+    const s = useNavigation.getState()
+    expect(s.offCourseSince).toBeNull()
+    expect(s.rerouteError).toBeNull()
+  })
+
+  it('keeps steering, and holds a best-effort re-route for confirmation, rather than dropping to the preview', async () => {
+    // Changed on purpose (finding R2, both lenses): this used to drop to
+    // 'preview' with no target, so the banner on every other tab vanished and
+    // steering silently ended exactly when the boat was off course.
+    await navigating()
+    const before = useNavigation.getState().plan
+    const target = useNavigation.getState().targetIdx
     planRouteMock.mockImplementationOnce((req) =>
       mkPlan([req.from, req.to], { source: 'best-effort', needsConfirm: true }),
     )
@@ -580,22 +636,91 @@ describe('onFix — off course and re-routing', () => {
     vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
     useNavigation.getState().onFix(fixAt(off()))
     await settle()
-    const s = useNavigation.getState()
-    expect(s.status).toBe('preview')
-    expect(s.confirmed).toBe(false)
+    let s = useNavigation.getState()
+    expect(s.status).toBe('navigating')
+    expect(s.plan).toBe(before)
+    expect(s.targetIdx).toBe(target)
+    expect(s.pendingPlan?.source).toBe('best-effort')
+    // While it waits, no re-route storm over the top of it.
+    planRouteMock.mockClear()
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS + REROUTE_MIN_GAP_MS + 1_000)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    expect(planRouteMock).not.toHaveBeenCalled()
+    // Accepting it steers it, from where the boat is.
+    useNavigation.getState().acceptPendingPlan()
+    s = useNavigation.getState()
     expect(s.plan?.source).toBe('best-effort')
-    expect(s.error).toMatch(/confirm/)
+    expect(s.pendingPlan).toBeNull()
+    expect(s.confirmed).toBe(true)
+    expect(s.status).toBe('navigating')
   })
 
-  it('treats a route planned ahead from elsewhere as "go to the start", not off course', async () => {
+  it('lets the crew keep the current route instead of a best-effort re-route', async () => {
+    await navigating()
+    const before = useNavigation.getState().plan
+    planRouteMock.mockImplementationOnce((req) =>
+      mkPlan([req.from, req.to], { source: 'best-effort', needsConfirm: true }),
+    )
+    useNavigation.getState().onFix(fixAt(off()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    useNavigation.getState().dismissPendingPlan()
+    const s = useNavigation.getState()
+    expect(s.pendingPlan).toBeNull()
+    expect(s.plan).toBe(before)
+    expect(s.status).toBe('navigating')
+  })
+
+  it('re-plans from the live position when Start is pressed away from a start chosen by hand', async () => {
+    // Changed on purpose (finding R7): this used to steer a straight,
+    // unchecked bearing to the hand-set start and never re-route.
     const origin = { ...go(A, 270, 2), label: 'Pier 21' }
     planRouteMock.mockImplementation((req) => mkPlan([req.from, B, req.to]))
     await useNavigation.getState().setDestination(DEST, origin)
-    useNavigation.getState().start()
-    expect(useNavigation.getState().targetIdx).toBe(0)
-    vi.setSystemTime(T0 + 60_000)
+    planRouteMock.mockClear()
+    expect(useNavigation.getState().start()).toBe(false)
+    await settle()
+    const s = useNavigation.getState()
+    expect(planRouteMock).toHaveBeenCalledTimes(1)
+    expect(planRouteMock.mock.calls[0][0].from).toEqual({ lat: A.lat, lon: A.lon })
+    expect(s.origin).toBeNull()
+    expect(s.status).toBe('preview')
+    expect(s.error).toMatch(/not at the planned start/)
+    // Start again: now from here, at the start.
+    expect(useNavigation.getState().start()).toBe(true)
+    expect(useNavigation.getState().targetIdx).toBe(1)
+  })
+
+  it('starts a hand-set route normally when the boat is at its start', async () => {
+    const origin = { ...go(A, 90, m(20)), label: 'Pier 21' }
+    planRouteMock.mockImplementation((req) => mkPlan([req.from, B, req.to]))
+    await useNavigation.getState().setDestination(DEST, origin)
+    planRouteMock.mockClear()
+    expect(useNavigation.getState().start()).toBe(true)
+    expect(useNavigation.getState().targetIdx).toBe(1)
+    expect(planRouteMock).not.toHaveBeenCalled()
+  })
+
+  it('re-routes from the live position when steering to a hand-set start the boat is nowhere near', async () => {
+    // Started with no fix (target guessed), then the first fix shows the
+    // boat 2 NM from the start: after 10 s that is off course like any leg.
+    const origin = { ...go(A, 270, 2), label: 'Pier 21' }
+    planRouteMock.mockImplementation((req) => mkPlan([req.from, B, req.to]))
+    await useNavigation.getState().setDestination(DEST, origin)
+    useTracker.setState({ fix: null })
+    expect(useNavigation.getState().start()).toBe(true)
     useNavigation.getState().onFix(fixAt(A))
-    expect(useNavigation.getState().offCourseSince).toBeNull()
+    expect(useNavigation.getState().targetIdx).toBe(0)
+    expect(useNavigation.getState().offCourseSince).toBe(T0)
+    planRouteMock.mockClear()
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(A))
+    await settle()
+    expect(planRouteMock).toHaveBeenCalledTimes(1)
+    expect(planRouteMock.mock.calls[0][0].from).toEqual({ lat: A.lat, lon: A.lon })
+    expect(useNavigation.getState().origin).toBeNull()
   })
 
   it('drops a re-route still in flight when steering stops', async () => {
@@ -689,8 +814,24 @@ describe('persistence', () => {
     await navigating()
     useNavigation.setState({ speedKn: 12, gpsPoor: true, offCourseSince: T0, rerouting: true })
     const kept = partializeNav(useNavigation.getState())
+    // Grown on purpose: what the plan was checked for (R1), the chart loads
+    // to replay offline after a reload (R3), the owning account (regress R3)
+    // and a paused-for-review flag (R2).
     expect(Object.keys(kept).sort()).toEqual(
-      ['confirmed', 'dest', 'error', 'lastPlannedAt', 'origin', 'plan', 'status', 'targetIdx'].sort(),
+      [
+        'chartLoads',
+        'confirmed',
+        'dest',
+        'error',
+        'lastPlannedAt',
+        'origin',
+        'ownerId',
+        'plan',
+        'plannedFor',
+        'reconfirm',
+        'status',
+        'targetIdx',
+      ].sort(),
     )
     const stored = JSON.parse(mem.get(NAV_STORAGE_KEY)!)
     expect(stored.state.status).toBe('navigating')
@@ -761,18 +902,46 @@ describe('the engine', () => {
     stop()
   })
 
-  it('re-plans when the stand-off, speed or arrival setting changes', async () => {
+  it('re-plans when the stand-off or speed changes', async () => {
     const stop = startNavigationEngine()
     await useNavigation.getState().setDestination(DEST, null)
     planRouteMock.mockClear()
     setBoat({ ...BOAT, clearance_m: 50 })
     vi.advanceTimersByTime(SETTINGS_SETTLE_MS + 10)
     await settle()
-    useTracker.setState({ arrivalFt: 200 })
+    setBoat({ ...BOAT, clearance_m: 50, cruise_speed_kn: 25 })
     vi.advanceTimersByTime(SETTINGS_SETTLE_MS + 10)
     await settle()
     expect(planRouteMock).toHaveBeenCalledTimes(2)
-    expect(planRouteMock.mock.calls[1][0].arrivalFt).toBe(200)
+    expect(planRouteMock.mock.calls[0][0].clearanceM).toBe(50)
+    expect(planRouteMock.mock.calls[1][0].speedKn).toBe(25)
+    stop()
+  })
+
+  it('does NOT re-plan for the arrival setting — it resizes the circles and keeps the waypoints', async () => {
+    // Changed on purpose (finding UI-6): the arrival setting used to be in
+    // the settings key, so tapping "200 ft" mid-passage re-planned from the
+    // live fix and renumbered the waypoints being followed.
+    const stop = startNavigationEngine()
+    await navigating(mkPlan([A, B, C], { arrivalFt: [150, 150, 150] }))
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(10))))
+    const before = useNavigation.getState()
+    expect(before.targetIdx).toBe(2)
+    planRouteMock.mockClear()
+    useTracker.setState({ arrivalFt: 100 })
+    vi.advanceTimersByTime(SETTINGS_SETTLE_MS + 10)
+    await settle()
+    const s = useNavigation.getState()
+    expect(planRouteMock).not.toHaveBeenCalled()
+    expect(s.status).toBe('navigating')
+    expect(s.targetIdx).toBe(2)
+    expect(s.plan?.points).toEqual(before.plan?.points)
+    // No chart in memory to re-measure against: every circle simply fits
+    // the new, smaller setting.
+    expect(s.plan?.arrivalFt).toEqual([100, 100, 100])
+    // A larger setting cannot widen circles that were never checked wider.
+    useTracker.setState({ arrivalFt: 200 })
+    expect(useNavigation.getState().plan?.arrivalFt).toEqual([100, 100, 100])
     stop()
   })
 
@@ -807,5 +976,235 @@ describe('the engine', () => {
     useTracker.setState({ watching: false }) // stopped from another tab
     expect(trackerStart).toHaveBeenCalledTimes(1)
     stop()
+  })
+})
+
+/* ------------------------------------------------ review fixes (regressions) */
+
+describe('a boat made stricter mid-passage (R1)', () => {
+  it('does not keep steering a route planned for a shallower boat when the re-plan finds nothing', async () => {
+    await navigating(mkPlan([A, B, C], { legs: [leg(1), leg(2)] }))
+    setBoat({ ...BOAT, draft_m: 2.5 })
+    planRouteMock.mockImplementationOnce(() => mkPlan([], { source: 'none', failure: 'No water path.' }))
+    await useNavigation.getState().replan('boat')
+    const s = useNavigation.getState()
+    expect(s.status).toBe('preview')
+    expect(s.targetIdx).toBeNull()
+    expect(s.reconfirm).toBe(true)
+    // No chart in memory to re-check it: every leg flagged as not checked.
+    expect(s.plan?.needsConfirm).toBe(true)
+    expect(s.plan?.legs.every((l) => l.caution === 'unsafe-depth' && l.unverified)).toBe(true)
+    expect(s.error).toMatch(/planned for a boat needing .* could not be re-planned/)
+    // Steering it again needs the explicit confirmation.
+    expect(useNavigation.getState().start()).toBe(false)
+  })
+
+  it('the same when the re-plan throws (no signal)', async () => {
+    await navigating(mkPlan([A, B, C], { legs: [leg(1), leg(2)] }))
+    setBoat({ ...BOAT, clearance_m: 90 })
+    planRouteMock.mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+    await useNavigation.getState().replan('boat')
+    expect(useNavigation.getState().status).toBe('preview')
+    expect(useNavigation.getState().reconfirm).toBe(true)
+  })
+
+  it('keeps steering when the boat asks less of the route (shallower draft, speed)', async () => {
+    await navigating(mkPlan([A, B, C], { legs: [leg(1), leg(2)] }))
+    setBoat({ ...BOAT, draft_m: 0.5, cruise_speed_kn: 25 })
+    planRouteMock.mockImplementationOnce(() => mkPlan([], { source: 'none', failure: 'No water path.' }))
+    await useNavigation.getState().replan('boat')
+    const s = useNavigation.getState()
+    expect(s.status).toBe('navigating')
+    expect(s.reconfirm).toBe(false)
+    expect(s.plan?.legs.every((l) => l.caution === 'ok')).toBe(true)
+  })
+
+  it('does not re-plan for a "change" to the boat the plan was made for', async () => {
+    await navigating()
+    planRouteMock.mockClear()
+    setBoat({ ...BOAT })
+    await useNavigation.getState().replan('boat')
+    expect(planRouteMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('re-routing without a signal (R3 / regress R1)', () => {
+  const off = () => go(go(A, 0, 0.5), 90, m(300))
+
+  it('re-routes on the chart already in memory when it holds the new box — no download', async () => {
+    await navigating()
+    const load = vi.mocked(useChartData.getState().load)
+    load.mockClear()
+    vi.mocked(useChartData.getState().holds).mockReturnValue(true)
+    useNavigation.getState().onFix(fixAt(off()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    expect(load).not.toHaveBeenCalled()
+    expect(useNavigation.getState().reroutes).toBe(1)
+    expect(useNavigation.getState().plan?.points[0].lat).toBeCloseTo(off().lat, 9)
+  })
+
+  it('still re-routes on the chart in memory when the download fails', async () => {
+    await navigating()
+    vi.mocked(useChartData.getState().load).mockImplementationOnce(async () => {
+      useChartData.setState({ error: 'Failed to fetch' })
+      return { ...FEATURES, coverage: 'none' }
+    })
+    useNavigation.getState().onFix(fixAt(off()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    const s = useNavigation.getState()
+    expect(s.rerouteError).toBeNull()
+    expect(s.plan?.points[0].lat).toBeCloseTo(off().lat, 9)
+    expect(planRouteMock.mock.calls.at(-1)![0].features.coverage).toBe('full')
+  })
+
+  it('after a reload, replays the passage’s own chart loads (the same queries the device cache holds) before going further', async () => {
+    await navigating()
+    const loadsBefore = useNavigation.getState().chartLoads
+    expect(loadsBefore).toEqual([{ bounds: BOX, detailAround: [{ lat: A.lat, lon: A.lon }, { lat: C.lat, lon: C.lon }] }])
+    // The reload: nothing in memory; the replayed load then holds the box.
+    useChartData.setState({ features: { ...FEATURES, coverage: 'none' } })
+    const load = vi.mocked(useChartData.getState().load)
+    load.mockClear()
+    load.mockImplementationOnce(async () => {
+      useChartData.setState({ features: { ...FEATURES } })
+      vi.mocked(useChartData.getState().holds).mockReturnValue(true)
+      return FEATURES
+    })
+    useNavigation.getState().onFix(fixAt(off()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(load.mock.calls[0][0]).toEqual(loadsBefore[0].bounds)
+    expect(load.mock.calls[0][1]).toEqual({ detailAround: loadsBefore[0].detailAround })
+    expect(useNavigation.getState().reroutes).toBe(1)
+    expect(useNavigation.getState().rerouteError).toBeNull()
+  })
+})
+
+describe('a chart load that never answers (R4)', () => {
+  const off = () => go(go(A, 0, 0.5), 90, m(300))
+
+  it('gives up on it, clears "Re-routing…", and tries again after the gap', async () => {
+    await navigating()
+    // Nothing in memory to fall back on.
+    useChartData.setState({ features: { ...FEATURES, coverage: 'none' } })
+    autoRelease = false
+    useNavigation.getState().onFix(fixAt(off()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    expect(useNavigation.getState().rerouting).toBe(true)
+    await vi.advanceTimersByTimeAsync(LIVE_CHART_TIMEOUT_MS + 10)
+    await settle()
+    let s = useNavigation.getState()
+    expect(s.rerouting).toBe(false)
+    expect(s.rerouteError).toMatch(/did not answer in time/)
+    expect(s.status).toBe('navigating')
+    // The next off-course window, past the gap, tries again.
+    const before = loads.length
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS + REROUTE_MIN_GAP_MS + LIVE_CHART_TIMEOUT_MS)
+    useNavigation.getState().onFix(fixAt(off()))
+    await settle()
+    s = useNavigation.getState()
+    expect(s.reroutes).toBe(2)
+    expect(loads.length).toBe(before + 1)
+  })
+})
+
+describe('the chart along a long passage (R6 / R3)', () => {
+  it('reads the finest charts along the route found, and plans again on them', async () => {
+    vi.mocked(planningBounds).mockImplementation(() => LONG_BOX)
+    await useNavigation.getState().setDestination(DEST, null)
+    const load = vi.mocked(useChartData.getState().load)
+    expect(load).toHaveBeenCalledTimes(2)
+    const second = load.mock.calls[1][1] as { detailAround: LatLon[] }
+    // Both ends, and points all along the first route.
+    expect(second.detailAround.length).toBeGreaterThan(2)
+    expect(planRouteMock).toHaveBeenCalledTimes(2)
+    const s = useNavigation.getState()
+    expect(s.status).toBe('preview')
+    // Both loads are remembered, to replay after a reload.
+    expect(s.chartLoads).toHaveLength(2)
+  })
+
+  it('keeps the first plan when the corridor cannot be read', async () => {
+    vi.mocked(planningBounds).mockImplementation(() => LONG_BOX)
+    const load = vi.mocked(useChartData.getState().load)
+    load.mockImplementationOnce(async () => FEATURES)
+    load.mockImplementationOnce(async () => ({ ...FEATURES, coverage: 'none' }))
+    await useNavigation.getState().setDestination(DEST, null)
+    expect(planRouteMock).toHaveBeenCalledTimes(1)
+    expect(useNavigation.getState().status).toBe('preview')
+  })
+})
+
+describe('arrival distance for routes (R13)', () => {
+  it('plans with 100 ft when the shared setting is the Search tab’s 50 ft', async () => {
+    useTracker.setState({ arrivalFt: 50 })
+    await useNavigation.getState().setDestination(DEST, null)
+    expect(planRouteMock.mock.calls[0][0].arrivalFt).toBe(100)
+  })
+})
+
+describe('ending a passage (UI-7)', () => {
+  it('End after arriving finishes the passage — no old route offered again as a new one', async () => {
+    await navigating()
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(10))))
+    vi.setSystemTime(T0 + 1_000)
+    useNavigation.getState().onFix(fixAt(C))
+    expect(useNavigation.getState().status).toBe('arrived')
+    useNavigation.getState().stop()
+    const s = useNavigation.getState()
+    expect(s.status).toBe('idle')
+    expect(s.plan).toBeNull()
+    expect(s.dest).toBeNull()
+    expect(useNavigation.getState().start()).toBe(false)
+  })
+})
+
+describe('the passage belongs to the account (regress R3)', () => {
+  it('clears a passage left by another account, and keeps its own', async () => {
+    useNavigation.getState().bindOwner('u1')
+    await useNavigation.getState().setDestination(DEST, null)
+    useNavigation.getState().bindOwner('u1')
+    expect(useNavigation.getState().dest).not.toBeNull()
+    useNavigation.getState().bindOwner('u2')
+    const s = useNavigation.getState()
+    expect(s.dest).toBeNull()
+    expect(s.plan).toBeNull()
+    expect(s.ownerId).toBe('u2')
+  })
+
+  it('reset forgets the owner too (sign-out)', async () => {
+    useNavigation.getState().bindOwner('u1')
+    await navigating()
+    useNavigation.getState().reset()
+    const s = useNavigation.getState()
+    expect(s.status).toBe('idle')
+    expect(s.ownerId).toBeNull()
+  })
+})
+
+describe('storage (regress R7)', () => {
+  it('does not write to localStorage on a fix that changed nothing persisted', async () => {
+    await navigating()
+    const spy = vi.spyOn(localStorage, 'setItem')
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.2)))
+    vi.setSystemTime(T0 + 1_000)
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.21)))
+    vi.setSystemTime(T0 + 2_000)
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.22)))
+    expect(spy.mock.calls.filter((c) => c[0] === NAV_STORAGE_KEY).length).toBe(0)
+    // A change that matters still is written.
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(10))))
+    expect(spy.mock.calls.filter((c) => c[0] === NAV_STORAGE_KEY).length).toBe(1)
+    spy.mockRestore()
   })
 })

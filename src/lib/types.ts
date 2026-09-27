@@ -399,4 +399,14 @@ export interface Fix {
   /** Metres above the WGS-84 ellipsoid, or null. */
   altitude: number | null
   timestamp: number
+  /**
+   * The phone's own clock (ms since the epoch) when this position arrived —
+   * or, for a receiver repeating a position it already gave, when that
+   * position first arrived. Freshness is judged on this, never on
+   * `timestamp`: some platforms stamp positions with GNSS time, and a phone
+   * clock set by hand can be minutes off it, which made every fix look stale
+   * and froze the route. `timestamp` stays for the time BETWEEN fixes.
+   * Absent on fixes made before this existed; `timestamp` is used then.
+   */
+  receivedAt?: number
 }

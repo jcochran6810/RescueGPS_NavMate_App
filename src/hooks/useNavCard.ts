@@ -7,6 +7,7 @@ import { useNavigation } from '@/store/useNavigation'
 import { useTeams } from '@/store/useTeams'
 import { useTracker } from '@/store/useTracker'
 import { useVessels } from '@/store/useVessels'
+import { routeArrivalFt } from '@/lib/steer'
 
 /**
  * The steering card's contents, live — shared by the big card on the Chart
@@ -28,6 +29,9 @@ export function useNavCard(): NavCardView | null {
   const rerouting = useNavigation((s) => s.rerouting)
   const offCourseSince = useNavigation((s) => s.offCourseSince)
   const error = useNavigation((s) => s.error)
+  const rerouteError = useNavigation((s) => s.rerouteError)
+  const pendingReroute = useNavigation((s) => s.pendingPlan != null)
+  const shallowHere = useNavigation((s) => s.shallowHere)
   const dest = useNavigation((s) => s.dest)
   const fix = useTracker((s) => s.fix)
   const arrivalFt = useTracker((s) => s.arrivalFt)
@@ -53,14 +57,18 @@ export function useNavCard(): NavCardView | null {
     now,
     speedKn,
     cruiseKn,
-    arrivalFt,
+    arrivalFt: routeArrivalFt(arrivalFt),
     bearingPref,
     declination,
     gpsPoor,
     rerouting,
     offCourseSince,
     error,
+    rerouteError,
+    pendingReroute,
+    shallowHere,
     destLabel: dest?.label ?? null,
     formatLength: fmt.length,
+    formatDepth: (m) => fmt.depth(m),
   })
 }

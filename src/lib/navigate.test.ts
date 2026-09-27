@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   arrivalRadiusFt,
   isOffCourse,
+  fixTime,
   isStale,
   legGeometry,
   navProgress,
   offCourseThresholdM,
+  PASS_ABEAM_MAX_FT,
   recoverTarget,
   smoothSpeedKn,
   startTarget,
@@ -254,14 +256,24 @@ describe('stepTarget — passing abeam', () => {
     expect(stepTarget(plan, 1, past, { arrivalFt: 150 }).targetIdx).toBe(1)
   })
 
-  it('never beyond 400 ft, however wide the circle', () => {
-    // Old rule: 3 × 150 = 450 ft. Now two circles, and 400 ft at most.
+  it('never beyond 200 ft, however wide the circle — the crew’s 100–200 ft rule', () => {
+    // Behaviour changed on purpose (review finding voyage-4): the cap was
+    // 400 ft (two 200 ft circles), which selected the next waypoint up to
+    // 300–400 ft out — outside the user's "within 100–200 ft" rule and
+    // outside anything the planner's corner check measured. Old rule before
+    // that: 3 × 150 = 450 ft.
+    expect(PASS_ABEAM_MAX_FT).toBe(200)
     const wide = { points: [A, B, C], arrivalFt: [200, 200, 200] }
+    const at190 = { ...go(B, 0, ft(190)), heading: 0 }
+    const at250 = { ...go(B, 0, ft(250)), heading: 0 }
     const at390 = { ...go(B, 0, ft(390)), heading: 0 }
-    const at420 = { ...go(B, 0, ft(420)), heading: 0 }
-    expect(stepTarget(wide, 1, at390, { arrivalFt: 200 }).targetIdx).toBe(2)
-    expect(stepTarget(wide, 1, at420, { arrivalFt: 200 }).targetIdx).toBe(1)
-    expect(stepTarget(L, 1, { ...go(B, 0, ft(420)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
+    expect(stepTarget(wide, 1, at190, { arrivalFt: 200 }).targetIdx).toBe(2)
+    expect(stepTarget(wide, 1, at250, { arrivalFt: 200 }).targetIdx).toBe(1)
+    expect(stepTarget(wide, 1, at390, { arrivalFt: 200 }).targetIdx).toBe(1)
+    // At the 150 ft setting: 256 ft and 298 ft past (the drift runs) no
+    // longer switch.
+    expect(stepTarget(L, 1, { ...go(B, 0, ft(256)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
+    expect(stepTarget(L, 1, { ...go(B, 0, ft(298)), heading: 0 }, { arrivalFt: 150 }).targetIdx).toBe(1)
   })
 
   it('gives the mark back to a boat that is coming round again', () => {
@@ -299,7 +311,9 @@ describe('stepTarget — arrival', () => {
   })
 
   it('arrives on running past the destination between fixes', () => {
-    const past = { ...go(C, 90, ft(200)), heading: 90 }
+    // 180 ft, not 200: pass-abeam now reaches 200 ft at most (voyage-4),
+    // and exactly 200 ft sits on the edge of that.
+    const past = { ...go(C, 90, ft(180)), heading: 90 }
     expect(stepTarget(L, 2, past, { arrivalFt: 150 }).arrived).toBe(true)
   })
 })
@@ -449,6 +463,18 @@ describe('isStale', () => {
   it('takes another limit', () => {
     expect(isStale({ timestamp: now - 6_000 }, now, 5)).toBe(true)
   })
+  it('judges the age on the phone clock at arrival, not the position’s own stamp (clock skew)', () => {
+    // A position stamped with GNSS time on a phone whose clock is a minute
+    // off either way, but that has just arrived: live.
+    expect(isStale({ timestamp: now - 60_000, receivedAt: now }, now)).toBe(false)
+    expect(isStale({ timestamp: now + 60_000, receivedAt: now }, now)).toBe(false)
+    // …and it still goes stale 15 s after it arrived, even with a stamp in
+    // the future.
+    expect(isStale({ timestamp: now + 60_000, receivedAt: now - 16_000 }, now)).toBe(true)
+    expect(fixTime({ timestamp: 5, receivedAt: 9 })).toBe(9)
+    expect(fixTime({ timestamp: 5 })).toBe(5)
+    expect(fixTime({})).toBeNull()
+  })
 })
 
 describe('smoothSpeedKn', () => {
@@ -492,5 +518,23 @@ describe('the geometry is the drawn line', () => {
       haversineNM(A.lat, A.lon, B.lat, B.lon) + haversineNM(B.lat, B.lon, C.lat, C.lon),
       6,
     )
+  })
+})
+
+describe('a short hop between turn points (UI-5)', () => {
+  it('with the planner’s capped circles, reaching one point never lands the boat inside the next', () => {
+    // wp1 → wp2 is 122 ft. The planner now caps each circle at half the
+    // legs either side (61 ft), so arriving at wp1 cannot also be arriving
+    // at wp2, and wp2 is steered to in turn instead of flashing past.
+    const P1 = go(A, 0, 0.5)
+    const P2 = go(P1, 0, ft(122))
+    const P3 = go(P2, 90, 0.5)
+    const plan = { points: [A, P1, P2, P3], arrivalFt: [150, 61, 61, 150] }
+    const atP1 = { ...go(P1, 180, ft(55)), heading: 0, accuracy: 3 }
+    const s1 = stepTarget(plan, 1, atP1, { arrivalFt: 150 })
+    expect(s1.targetIdx).toBe(2)
+    // The next fix from the same place does not skip wp2.
+    const s2 = stepTarget(plan, s1.targetIdx, atP1, { arrivalFt: 150 })
+    expect(s2.targetIdx).toBe(2)
   })
 })

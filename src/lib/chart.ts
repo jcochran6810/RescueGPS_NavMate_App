@@ -744,10 +744,23 @@ export function encRequestUrl(url: string): string {
   return `/api/enc?u=${encodeURIComponent(url)}`
 }
 
+/** Longest one chart query may take before it is abandoned, ms. */
+export const FETCH_TIMEOUT_MS = 20_000
+
+/** An abort signal that fires after `FETCH_TIMEOUT_MS`, where the platform has one. */
+function fetchTimeoutSignal(): AbortSignal | null {
+  const T = typeof AbortSignal !== 'undefined' ? AbortSignal : null
+  return T && typeof T.timeout === 'function' ? T.timeout(FETCH_TIMEOUT_MS) : null
+}
+
 /** How chart queries are fetched in the app. Exported for its tests. */
 export const defaultFetcher: Fetcher = async (url) => {
   const res = await fetch(encRequestUrl(url), {
     credentials: 'omit',
+    // A request on a stalled marginal link used to hang for minutes, and the
+    // load waiting on it held up every re-route and every new plan behind it
+    // ("Re-routing…" for ever). Now it ends, as a failure the plan can report.
+    ...(fetchTimeoutSignal() ? { signal: fetchTimeoutSignal()! } : {}),
   })
   if (!res.ok) {
     // The relay passes NOAA's status through, so this number is the service's
@@ -1148,6 +1161,57 @@ export function detailBox(p: LatLon, halfNM = DETAIL_HALF_NM): ChartBounds {
   }
 }
 
+/**
+ * The most detail boxes a corridor is given — a very long passage must not
+ * fire hundreds of queries. Past this the samples are spread further apart.
+ */
+export const MAX_CORRIDOR_BOXES = 40
+
+/**
+ * Positions along a route to fetch the finest charts round, so the harbour
+ * (and approach) band covers the whole passage, not just its two ends.
+ *
+ * A long passage's main query leaves the harbour band out (its box is too
+ * big), and the detail boxes used to sit only round the start and the
+ * destination. Everything between was planned — and every automatic
+ * re-route from mid-passage re-planned — on the coastal band, which at
+ * Galveston reads nearly all the water as 0 m. Sampled every
+ * `1.5 × DETAIL_HALF_NM` along the line, the boxes overlap, so a band of
+ * well over a mile either side of the route is read at harbour scale: room
+ * for a re-route from anywhere near it.
+ */
+export function corridorPoints(
+  points: readonly LatLon[],
+  stepNM = 1.5 * DETAIL_HALF_NM,
+  maxPoints = MAX_CORRIDOR_BOXES,
+): LatLon[] {
+  const pts = points.filter(isPosition)
+  if (pts.length === 0) return []
+  let total = 0
+  for (let i = 1; i < pts.length; i++) {
+    total += haversineNM(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon)
+  }
+  // Spread further apart rather than exceed the cap.
+  const step = Math.max(stepNM, total / Math.max(1, maxPoints - 1))
+  const out: LatLon[] = [pts[0]]
+  let carried = 0
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    const len = haversineNM(a.lat, a.lon, b.lat, b.lon)
+    let at = step - carried
+    while (at < len) {
+      const f = at / len
+      out.push({ lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f })
+      at += step
+    }
+    carried = len - (at - step)
+    if (out.length >= maxPoints - 1) break
+  }
+  out.push(pts[pts.length - 1])
+  return out.slice(0, maxPoints)
+}
+
 /** The overlap of two boxes, or null when they do not overlap. */
 export function intersectBounds(a: ChartBounds, b: ChartBounds): ChartBounds | null {
   const out = {
@@ -1405,10 +1469,26 @@ export interface ChartArea extends ChartFeatures {
  */
 export async function fetchChartArea(
   bounds: ChartBounds,
-  options: { fetcher?: Fetcher; bands?: EncBand[]; detailAround?: readonly LatLon[] } = {},
+  options: {
+    fetcher?: Fetcher
+    bands?: EncBand[]
+    detailAround?: readonly LatLon[]
+    /**
+     * What is already loaded. Any box-and-band it has already read is not
+     * fetched again, and its features are merged into the result — so adding
+     * the corridor round a route to the chart already read for its ends asks
+     * only for the new boxes, not the whole area a second time.
+     */
+    base?: { features: ChartFeatures; regions: readonly LoadedRegion[] }
+  } = {},
 ): Promise<ChartArea> {
   const plan = planChartRegions(bounds, options)
-  const jobs = plan.flatMap((region) => region.bands.map((band) => ({ region, band })))
+  const have = options.base?.regions ?? []
+  const already = (region: ChartRegion, band: EncBand) =>
+    regionsSatisfy(have, [{ bounds: region.bounds, bands: [band.id] }])
+  const jobs = plan.flatMap((region) =>
+    region.bands.filter((band) => !already(region, band)).map((band) => ({ region, band })),
+  )
   const settled = await Promise.all(
     jobs.map(async ({ region, band }) => {
       try {
@@ -1442,6 +1522,19 @@ export async function fetchChartArea(
     (l) => `${l.level}|${l.kind}|${l.paths.length}|${l.paths[0]?.[0]}`,
   )
 
+  // What is already loaded goes in first, through the same once-each
+  // filters, so a polygon read again by an overlapping new box is kept once.
+  const base = options.base?.features
+  if (base && base.coverage !== 'none') {
+    for (const p of base.depthAreas) if (newDepth(p)) depthAreas.push(p)
+    for (const p of base.land) if (newLand(p)) land.push(p)
+    for (const l of base.lines ?? []) if (newLine(l)) lines.push(l)
+    for (const c of base.channels) if (newChannel(c)) channels.push(c)
+    for (const h of base.hazards) if (newHazard(h)) hazards.push(h)
+    if (base.coverage === 'partial' && !(base.failedBands?.length)) partial = true
+    for (const r of have) for (const id of r.bands) used.add(id)
+  }
+
   for (const { band, features: f, error } of settled) {
     if (error != null) {
       failed.add(band.id)
@@ -1470,12 +1563,22 @@ export async function fetchChartArea(
 
   const inOrder = (ids: Set<string>) =>
     ENC_BANDS.map((b) => b.id).filter((id) => ids.has(id))
-  const regions: LoadedRegion[] = plan.map((region) => ({
-    bounds: region.bounds,
-    bands: settled
-      .filter((s) => s.region === region && s.error == null)
-      .map((s) => s.band.id),
+  const planned: LoadedRegion[] = plan.map((region) => ({
+      bounds: region.bounds,
+      bands: region.bands
+        .filter(
+          (band) =>
+            already(region, band) ||
+            settled.some((s) => s.region === region && s.band === band && s.error == null),
+        )
+        .map((band) => band.id),
   }))
+  const regions: LoadedRegion[] = [
+    ...planned,
+    // Boxes read before, remembered so a later request can still be met
+    // from them (unless this load's own boxes already say as much).
+    ...have.filter((h) => h.bands.length > 0 && !regionsSatisfy(planned, [h])),
+  ]
   const failedBands = inOrder(failed)
 
   if (depthAreas.length === 0) {

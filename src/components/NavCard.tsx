@@ -1,6 +1,8 @@
+import { useMemo } from 'react'
 import { Button } from '@/components/ui'
+import { useFormat } from '@/hooks/useFormat'
 import { useNavCard } from '@/hooks/useNavCard'
-import { etaText, type NavNotice } from '@/lib/navView'
+import { legRows, routeSummary, type NavNotice } from '@/lib/navView'
 import { useNavigation } from '@/store/useNavigation'
 
 /**
@@ -18,7 +20,6 @@ import { useNavigation } from '@/store/useNavigation'
 export function NavCard() {
   const v = useNavCard()
   const stop = useNavigation((s) => s.stop)
-  const clear = useNavigation((s) => s.clear)
   if (!v) return null
 
   if (v.phase === 'arrived') {
@@ -29,16 +30,14 @@ export function NavCard() {
       >
         <p className="text-2xl font-semibold text-emerald-100">{v.arrivedText}</p>
         <p className="mt-1 text-sm text-emerald-100/80">
-          Steering has stopped moving on. End the route when you are done with it.
+          You are within the arrival circle of your destination. Press Done
+          when you are finished with this route.
         </p>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button variant="primary" onClick={stop}>
-            End
-          </Button>
-          <Button variant="ghost" onClick={clear}>
-            Clear route
-          </Button>
-        </div>
+        {/* One button: after arriving, ending the route and clearing it are
+            the same thing — the passage is over. */}
+        <Button variant="primary" className="mt-3 w-full" onClick={stop}>
+          Done
+        </Button>
       </section>
     )
   }
@@ -58,7 +57,7 @@ export function NavCard() {
         <span className="tnum text-5xl leading-none font-bold text-slate-50">
           {v.atMark ? 'Here' : (v.bearing ?? '—')}
         </span>
-        <span className="tnum text-3xl leading-none font-semibold text-slate-100">
+        <span className="tnum text-3xl leading-none font-semibold whitespace-nowrap text-slate-100">
           {v.distance}
         </span>
       </div>
@@ -97,6 +96,7 @@ export function NavCard() {
           label="Arrive"
           value={v.eta?.text ?? '—'}
           hint={v.eta?.dayMark || undefined}
+          small
         />
       </div>
       {v.speedNote && (
@@ -109,23 +109,93 @@ export function NavCard() {
         <Notice key={n.kind + n.text} notice={n} />
       ))}
 
+      <PendingReroute />
+
       <Button variant="danger" className="mt-3 w-full" onClick={stop}>
         End
       </Button>
+      {/* Read aloud only when it changes meaning — a new waypoint, a new
+          notice — never the distance and ETA ticking over every second, which
+          queued an announcement a second for the whole passage. The numbers
+          stay on the card for a screen reader to read when asked; the
+          "last fix N s ago" count is left out for the same reason. */}
       <span className="sr-only" aria-live="polite">
-        {v.title}. {v.bearing ?? ''} {v.distance}. {etaText(v.eta) ?? ''}
+        {v.title}.
+        {v.notices
+          .filter((n) => n.kind !== 'stale')
+          .map((n) => ` ${n.text}`)
+          .join('')}
+        {v.stale ? ' GPS signal lost.' : ''}
       </span>
     </section>
   )
 }
 
-function Cell({ label, value, hint }: { label: string; value: string; hint?: string }) {
+/**
+ * A re-route that came back best-effort, laid out for the crew to decide:
+ * what it breaks, and the two choices. Steering the current route carries
+ * on until they choose.
+ */
+function PendingReroute() {
+  const pending = useNavigation((s) => s.pendingPlan)
+  const accept = useNavigation((s) => s.acceptPendingPlan)
+  const dismiss = useNavigation((s) => s.dismissPendingPlan)
+  const fmt = useFormat()
+  const flagged = useMemo(
+    () =>
+      pending
+        ? legRows(pending.legs, { formatDepth: (m) => fmt.depth(m) }).filter((r) => r.flagged)
+        : [],
+    [pending, fmt],
+  )
+  if (!pending) return null
+  const summary = routeSummary(pending, { now: Date.now(), formatLength: fmt.length })
+  return (
+    <div className="mt-2 rounded-lg border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+      <p className="font-semibold">New route from here: {summary.distance}</p>
+      <p className="mt-1 text-xs">
+        {pending.confirmReason ??
+          'No route from here keeps your depth and stand-off the whole way.'}
+      </p>
+      {flagged.map((r) => (
+        <p key={r.n} className="mt-1 text-xs font-semibold text-red-200">
+          Leg {r.n}: {r.note}
+        </p>
+      ))}
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Button variant="danger" onClick={accept}>
+          I understand — steer it
+        </Button>
+        <Button variant="ghost" onClick={dismiss}>
+          Keep current route
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function Cell({
+  label,
+  value,
+  hint,
+  small = false,
+}: {
+  label: string
+  value: string
+  hint?: string
+  small?: boolean
+}) {
   return (
     <div className="bg-navy-900 px-3 py-2">
       <div className="text-[10px] font-semibold tracking-wide text-slate-400 uppercase">
         {label}
       </div>
-      <div className="text-lg font-semibold text-slate-50">
+      <div
+        className={
+          'font-semibold whitespace-nowrap text-slate-50 ' +
+          (small ? 'text-base sm:text-lg' : 'text-lg')
+        }
+      >
         {value}
         {hint ? <span className="ml-1 text-xs font-semibold text-amber-300">{hint}</span> : null}
       </div>
@@ -140,13 +210,26 @@ const NOTICE_TONE: Record<NavNotice['kind'], string> = {
   'off-course': 'border-amber-400/50 bg-amber-500/15 text-amber-100',
   'gps-poor': 'border-amber-400/40 bg-amber-500/10 text-amber-100',
   error: 'border-red-400/40 bg-red-500/10 text-red-100',
+  'leg-caution': 'border-amber-400/50 bg-amber-500/10 text-amber-100',
+  'reroute-confirm': 'border-red-400/60 bg-red-500/15 text-red-100',
+  'shallow-here': 'border-red-400/60 bg-red-500/20 text-red-50',
 }
 
 function Notice({ notice }: { notice: NavNotice }) {
+  const tone =
+    notice.kind === 'leg-caution' && notice.tone === 'alert'
+      ? 'border-red-400/50 bg-red-500/10 text-red-100'
+      : NOTICE_TONE[notice.kind]
   return (
     <p
-      role={notice.kind === 'stale' || notice.kind === 'rerouting' ? 'status' : undefined}
-      className={'mt-2 rounded-lg border px-3 py-2 text-sm font-semibold ' + NOTICE_TONE[notice.kind]}
+      role={
+        notice.kind === 'shallow-here' || notice.kind === 'reroute-confirm'
+          ? 'alert'
+          : notice.kind === 'rerouting'
+            ? 'status'
+            : undefined
+      }
+      className={'mt-2 rounded-lg border px-3 py-2 text-sm font-semibold ' + tone}
     >
       {notice.text}
     </p>

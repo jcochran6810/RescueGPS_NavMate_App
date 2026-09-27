@@ -114,6 +114,10 @@ function render(status: NavStatus, plan: RoutePlan | null, extra: object = {}) {
     rerouting: false,
     gpsPoor: false,
     error: null,
+    rerouteError: null,
+    pendingPlan: null,
+    reconfirm: false,
+    shallowHere: null,
     ...extra,
   })
   return {
@@ -205,10 +209,96 @@ describe('Chart tab, by navigation state', () => {
     expect(r.banner).toContain('WP 1 · 000°T · 0.50 NM')
   })
 
-  it('arrived: says so, with End', () => {
+  it('arrived: says so, with Done (one button — the passage is over)', () => {
     const r = render('arrived', CHARTED)
     expect(r.tab).toContain('You have arrived at Datum')
-    expect(r.tab).toContain('>End</button>')
+    // Renamed on purpose (finding UI-7): End after arriving finishes the
+    // passage — "Done" — instead of offering the old route again.
+    expect(r.tab).toContain('>Done</button>')
+    expect(r.tab).not.toContain('Clear route')
     expect(r.banner).toContain('You have arrived at Datum')
+  })
+
+  it('preview: the summary and Start come before the map, on the first screen (UI-2)', () => {
+    const r = render('preview', CHARTED)
+    const start = r.tab.indexOf('>Start</button>')
+    const map = r.tab.indexOf('Base layer')
+    expect(start).toBeGreaterThan(-1)
+    expect(start).toBeLessThan(map)
+    expect(r.tab.indexOf('1.05 NM · 3 min')).toBeLessThan(map)
+    // The intro paragraph folds away once there is a destination.
+    expect(r.tab).not.toContain('Pick where you are going')
+  })
+
+  it('best-effort: the red box leads with how the route falls short, not the dock note (R5)', () => {
+    const plan = {
+      ...BEST_EFFORT,
+      warnings: [
+        'The chart shows your start on land…',
+        'No route keeps 5 ft of water the whole way. The safest route crosses 3 ft near leg 2.',
+      ],
+      confirmReason: 'No route keeps 5 ft of water the whole way. The safest route crosses 3 ft near leg 2.',
+    } as unknown as RoutePlan
+    const r = render('preview', plan)
+    const red = r.tab.indexOf('Not a fully safe route.')
+    expect(r.tab.slice(red, red + 300)).toContain('No route keeps 5 ft of water')
+    // The dock note is still there, among the other warnings.
+    expect(r.tab).toContain('The chart shows your start on land')
+    const map = r.tab.indexOf('Base layer')
+    expect(r.tab.indexOf('I understand — start anyway')).toBeLessThan(map)
+  })
+
+  it('a dock hop is dotted and "by eye", and does not make the route unsafe (R5)', () => {
+    const plan = {
+      ...CHARTED,
+      legs: [{ ...leg(1, 'off-chart-end') }, leg(2, 'ok')],
+    } as unknown as RoutePlan
+    const r = render('preview', plan)
+    expect(r.tab).toContain('Leave the dock by eye')
+    expect(r.tab).toContain('>Start</button>')
+    expect(r.tab).not.toContain('Not a fully safe route.')
+  })
+
+  it('shows the arrival distance a route really uses when the Search tab set 50 ft (R13)', () => {
+    useTracker.setState({ arrivalFt: 50 } as never)
+    const r = render('preview', CHARTED)
+    expect(r.tab).toMatch(/aria-checked="true"[^>]*>100 ft/)
+    expect(r.tab).toContain('routes use 100 ft')
+    useTracker.setState({ arrivalFt: 150 } as never)
+  })
+
+  it('says where an old route is really from, not "My location" (UI-7)', () => {
+    // The fix is 0.5 NM from the route's start.
+    const r = render('preview', CHARTED)
+    expect(r.tab).toContain('Where you were when planned')
+  })
+
+  it('navigating a flagged leg says so on the card (R11)', () => {
+    const plan = { ...CHARTED, legs: [leg(1, 'unsafe-depth'), leg(2, 'ok')], source: 'best-effort', needsConfirm: true } as unknown as RoutePlan
+    const r = render('navigating', plan, { confirmed: true })
+    expect(r.tab).toContain('This leg: too shallow')
+    expect(r.banner).toContain('Shallow leg')
+  })
+
+  it('a best-effort re-route waiting for the crew: still steering, with the choice on the card and an alert banner (R2)', () => {
+    const r = render('navigating', CHARTED, { pendingPlan: BEST_EFFORT })
+    expect(r.tab).toContain('To waypoint 1 of 2')
+    expect(r.tab).toContain('I understand — steer it')
+    expect(r.tab).toContain('Keep current route')
+    expect(r.banner).toContain('Re-route needs your OK')
+  })
+
+  it('steering paused for a changed boat keeps an alert banner on the other tabs (R2 / R1)', () => {
+    const r = render('preview', BEST_EFFORT, { reconfirm: true })
+    expect(r.banner).toContain('Route changed — not fully safe')
+    expect(render('preview', BEST_EFFORT, { reconfirm: false }).banner).toBe('')
+  })
+
+  it('does not put the moving numbers in the live region (regress R8)', () => {
+    const r = render('navigating', CHARTED)
+    const live = r.tab.match(/<span class="sr-only" aria-live="polite">([\s\S]*?)<\/span>/)
+    expect(live).not.toBeNull()
+    expect(live![1]).toContain('To waypoint 1 of 2')
+    expect(live![1]).not.toMatch(/NM|ETA|°T/)
   })
 })

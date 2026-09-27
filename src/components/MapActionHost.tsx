@@ -28,16 +28,19 @@ export function MapActionHost({ onNavigate }: { onNavigate: (tab: TabId) => void
 
   useEffect(() => {
     if (request?.kind !== 'navigate') return
+    // Cleared here: this request is finished the moment it has been handed on.
+    clear()
     void navigateTo({
       lat: request.lat,
       lon: request.lon,
       // A press on the chart has no name; a waypoint asked for by name keeps
       // it, so the plotter says where the crew is going rather than "pin".
       label: request.label ?? 'Dropped pin',
+    }).then((went) => {
+      // Mid-passage the crew is asked first (see navigateTo); declined, they
+      // stay where they were and the route being steered is untouched.
+      if (went) onNavigate('chart')
     })
-    onNavigate('chart')
-    // Cleared here: this request is finished the moment it has been handed on.
-    clear()
   }, [request, onNavigate, clear])
 
   // The Datum worksheet's "Take me there" — it switches tab itself; the place

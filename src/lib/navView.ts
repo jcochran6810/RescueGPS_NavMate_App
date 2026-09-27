@@ -25,6 +25,7 @@ import { bearingDeg, formatDuration, haversineNM } from './geo'
 import { declinationAt } from './geomag'
 import {
   arrivalRadiusFt,
+  fixTime,
   isStale,
   navProgress,
   STALE_FIX_S,
@@ -81,10 +82,18 @@ export function formatClock(ms: number, nowMs: number): ClockText | null {
   const now = new Date(nowMs)
   const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
   const dayOffset = Math.round((day(at) - day(now)) / 86_400_000)
-  const text = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const text = noBreakMeridiem(at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
   const dayMark =
     dayOffset <= 0 ? '' : dayOffset === 1 ? '+1 day' : `+${dayOffset} days`
   return { text, dayOffset, dayMark }
+}
+
+/**
+ * "04:10 AM" with a no-break space before the AM/PM, so a narrow screen never
+ * wraps the clock into "04:10 / AM". A 24-hour clock is left as it is.
+ */
+export function noBreakMeridiem(text: string): string {
+  return text.replace(/[ \u202f](?=[AaPp]\.?\s?[Mm])/, '\u00a0')
 }
 
 /** "ETA 14:52" / "ETA 01:10 +1 day". */
@@ -163,45 +172,108 @@ export interface LegRow {
   caution: LegCaution
   /** Breaks the boat's depth or stand-off — drawn red, needs confirmation. */
   flagged: boolean
-  /** Shallow approach at an end — drawn dotted, "check depth here". */
+  /**
+   * Shallow approach at an end, or the hop off / onto a dock the chart draws
+   * as land — drawn dotted, checked by eye.
+   */
   dotted: boolean
   /** What is wrong with it, in plain words; null for a sound leg. */
   note: string | null
 }
 
 type LegLike = Pick<RouteLeg, 'n' | 'courseDeg' | 'lengthNM' | 'caution'> &
-  Partial<Pick<RouteLeg, 'minChartedDepthM' | 'minClearanceM'>>
+  Partial<
+    Pick<
+      RouteLeg,
+      | 'minChartedDepthM'
+      | 'minClearanceM'
+      | 'minDepthOutsideM'
+      | 'overLand'
+      | 'approachReasons'
+      | 'nearShoalDepthM'
+      | 'nearShoalDistM'
+      | 'unverified'
+    >
+  >
+
+/** Flagged: breaks the boat's depth or stand-off — drawn red. */
+export function isFlagged(caution: LegCaution | null | undefined): boolean {
+  return caution === 'unsafe-depth' || caution === 'reduced-clearance'
+}
+
+/** Checked by eye at the ends — drawn dotted. */
+export function isDotted(caution: LegCaution | null | undefined): boolean {
+  return caution === 'shallow-approach' || caution === 'off-chart-end'
+}
+
+/**
+ * Why a leg needs the crew's eyes, in plain words — null for a sound leg.
+ *
+ * Worded from what the planner actually found on it: a hop over what the
+ * chart draws as land is not "too shallow — 0 ft"; a leg flagged for shallow
+ * water beside it says how close, not the (deep) water under it; an approach
+ * leg says whether it was the depth, the stand-off, or both.
+ *
+ * `first` / `last`: the leg is the route's first / last (for "leave" /
+ * "come alongside" on a dock hop).
+ */
+export function legNote(
+  leg: LegLike,
+  opts: { formatDepth?: (m: number) => string; first?: boolean; last?: boolean } = {},
+): string | null {
+  const depth = opts.formatDepth ?? feetFirst
+  const caution = leg.caution ?? 'ok'
+  if (leg.unverified) {
+    return 'Not checked for your boat’s new settings — check it on the chart'
+  }
+  if (caution === 'off-chart-end') {
+    return opts.first && !opts.last
+      ? 'Leave the dock by eye — the chart shows land here'
+      : 'Come alongside by eye — the chart shows land here'
+  }
+  if (caution === 'unsafe-depth') {
+    if (leg.overLand) return 'Over land on the chart — leave or approach by eye'
+    // Shallow water beside a track that is itself deep enough (the planner
+    // only measures that when the track is sound): say how close it is.
+    if (leg.nearShoalDistM != null && leg.nearShoalDepthM != null) {
+      return `Passes ${feetFirst(leg.nearShoalDistM)} from ${depth(leg.nearShoalDepthM)} water`
+    }
+    // Outside the dock stretches — the figure the plan's warning quotes.
+    const d = leg.minDepthOutsideM !== undefined ? leg.minDepthOutsideM : leg.minChartedDepthM
+    return d != null ? `Too shallow — ${depth(d)} charted` : 'Too shallow — not surveyed'
+  }
+  if (caution === 'reduced-clearance') {
+    return leg.minClearanceM != null
+      ? `Close to land or a hazard — ${feetFirst(leg.minClearanceM)} off`
+      : 'Close to land or a hazard'
+  }
+  if (caution === 'shallow-approach') {
+    const reasons = leg.approachReasons ?? []
+    const close =
+      reasons.includes('clearance')
+        ? `Passes ${leg.minClearanceM != null ? feetFirst(leg.minClearanceM) : 'close'} from land or a structure near the end — keep a lookout`
+        : null
+    const shallow = reasons.includes('depth') || reasons.length === 0 ? 'Check depth here' : null
+    return [shallow, close].filter(Boolean).join(' · ')
+  }
+  return null
+}
 
 /** One row per leg, with the reason it is flagged. */
 export function legRows(
   legs: readonly LegLike[],
   opts: { formatDepth?: (m: number) => string } = {},
 ): LegRow[] {
-  const depth = opts.formatDepth ?? feetFirst
-  return legs.map((leg) => {
+  return legs.map((leg, i) => {
     const caution = leg.caution ?? 'ok'
-    let note: string | null = null
-    if (caution === 'unsafe-depth') {
-      note =
-        leg.minChartedDepthM != null
-          ? `Too shallow — ${depth(leg.minChartedDepthM)} charted`
-          : 'Too shallow — not surveyed'
-    } else if (caution === 'reduced-clearance') {
-      note =
-        leg.minClearanceM != null
-          ? `Close to land or a hazard — ${feetFirst(leg.minClearanceM)} off`
-          : 'Close to land or a hazard'
-    } else if (caution === 'shallow-approach') {
-      note = 'Check depth here'
-    }
     return {
       n: leg.n,
       courseDeg: leg.courseDeg,
       lengthNM: leg.lengthNM,
       caution,
-      flagged: caution === 'unsafe-depth' || caution === 'reduced-clearance',
-      dotted: caution === 'shallow-approach',
-      note,
+      flagged: isFlagged(caution),
+      dotted: isDotted(caution),
+      note: legNote(leg, { ...opts, first: i === 0, last: i === legs.length - 1 }),
     }
   })
 }
@@ -292,7 +364,7 @@ export function routeMarks(points: readonly LatLon[], targetIdx: number | null):
  * ---------------------------------------------------------------------- */
 
 export interface NavCardInput {
-  plan: Pick<RoutePlan, 'points' | 'legs' | 'arrivalFt'>
+  plan: Pick<RoutePlan, 'points' | 'arrivalFt'> & { legs?: readonly LegLike[] }
   status: 'navigating' | 'arrived'
   targetIdx: number | null
   fix: NavFix | null
@@ -307,8 +379,19 @@ export interface NavCardInput {
   gpsPoor: boolean
   rerouting: boolean
   offCourseSince: number | null
-  /** A message from the store — e.g. a re-route that could not be made. */
+  /** A message from the store. */
   error?: string | null
+  /** A re-route that could not be made, while still off the route. */
+  rerouteError?: string | null
+  /** A best-effort re-route is waiting for the crew to read and confirm it. */
+  pendingReroute?: boolean
+  /**
+   * The chart puts the boat in water shallower than it needs (`depthM`), or
+   * on land, away from the dock stretches at the ends.
+   */
+  shallowHere?: { depthM: number | null; land: boolean } | null
+  /** How depths are written on this card (default feet first). */
+  formatDepth?: (m: number) => string
   destLabel?: string | null
   formatLength?: LengthFormatter
 }
@@ -318,8 +401,19 @@ export type TurnCue =
   | { kind: 'ahead'; text: string }
 
 export interface NavNotice {
-  kind: 'stale' | 'waiting' | 'rerouting' | 'off-course' | 'gps-poor' | 'error'
+  kind:
+    | 'stale'
+    | 'waiting'
+    | 'rerouting'
+    | 'off-course'
+    | 'gps-poor'
+    | 'error'
+    | 'leg-caution'
+    | 'reroute-confirm'
+    | 'shallow-here'
   text: string
+  /** How loud: red for a rule broken, amber for "check this". */
+  tone?: 'alert' | 'caution'
 }
 
 export interface NavCardView {
@@ -349,6 +443,8 @@ export interface NavCardView {
   notices: NavNotice[]
   /** "You have arrived at Datum". */
   arrivedText: string | null
+  /** The caution of the leg being run (into the target), or null. */
+  legCaution: LegCaution | null
 }
 
 /** Turn-cue deadband, degrees: inside it the boat is "on course". */
@@ -367,6 +463,10 @@ export function navCardView(input: NavCardInput): NavCardView {
 
   const stale = !fix || isStale(fix, now)
   const { radiusFt } = arrivalRadiusFt(plan, idx, fix?.accuracy, { arrivalFt: input.arrivalFt })
+  const depth = input.formatDepth ?? feetFirst
+  // The leg being run is the one INTO the target: legs[idx − 1].
+  const leg = idx >= 1 ? (plan.legs?.[idx - 1] ?? null) : null
+  const legCaution: LegCaution | null = leg ? (leg.caution ?? 'ok') : null
 
   const prog = fix
     ? navProgress(plan, idx, fix, { speedKn: input.speedKn, cruiseKn: input.cruiseKn, now })
@@ -428,8 +528,8 @@ export function navCardView(input: NavCardInput): NavCardView {
   if (!fix) {
     notices.push({ kind: 'waiting', text: 'Waiting for a GPS fix…' })
   } else if (stale) {
-    const ts = fix.timestamp
-    const ageS = ts != null && Number.isFinite(ts) ? Math.max(0, Math.round((now - ts) / 1000)) : null
+    const ts = fixTime(fix)
+    const ageS = ts != null ? Math.max(0, Math.round((now - ts) / 1000)) : null
     notices.push({
       kind: 'stale',
       text:
@@ -455,6 +555,41 @@ export function navCardView(input: NavCardInput): NavCardView {
         } — waypoints switch only when you are clearly there.`,
       })
     }
+    if (input.pendingReroute) {
+      notices.push({
+        kind: 'reroute-confirm',
+        tone: 'alert',
+        text:
+          'Re-route needs your confirmation — the only route found from here is not fully safe. ' +
+          'Still steering the current route until you choose.',
+      })
+    }
+    if (input.shallowHere && !stale) {
+      notices.push({
+        kind: 'shallow-here',
+        tone: 'alert',
+        text: input.shallowHere.land
+          ? 'The chart shows land or a structure here — check your position and depth now.'
+          : `Charted depth here ${depth(input.shallowHere.depthM ?? 0)} — less than your boat needs. Check your depth now.`,
+      })
+    }
+    if (legCaution && legCaution !== 'ok' && leg) {
+      const note = legNote(leg, {
+        formatDepth: depth,
+        first: idx - 1 === 0,
+        last: idx === last,
+      })
+      if (note) {
+        notices.push({
+          kind: 'leg-caution',
+          tone: isFlagged(legCaution) ? 'alert' : 'caution',
+          text: `This leg: ${note.charAt(0).toLowerCase()}${note.slice(1)}`,
+        })
+      }
+    }
+  }
+  if (input.rerouteError && input.status === 'navigating') {
+    notices.push({ kind: 'error', text: input.rerouteError })
   }
   if (input.error) notices.push({ kind: 'error', text: input.error })
 
@@ -479,6 +614,7 @@ export function navCardView(input: NavCardInput): NavCardView {
       input.status === 'arrived'
         ? `You have arrived${input.destLabel ? ` at ${input.destLabel}` : ''}`
         : null,
+    legCaution,
   }
 }
 
@@ -506,11 +642,21 @@ export interface NavBannerView {
   /** "4.2 NM to go · ETA 14:52" */
   secondary: string | null
   tone: 'normal' | 'stale' | 'alert' | 'arrived'
+  /**
+   * The words to announce, once, for an alert — "Shallow here", "Re-route
+   * needs your OK" — never the numbers, which change every second.
+   */
+  alertText?: string | null
 }
 
 export function navBannerView(v: NavCardView): NavBannerView {
   if (v.phase === 'arrived') {
-    return { primary: v.arrivedText ?? 'You have arrived', secondary: null, tone: 'arrived' }
+    return {
+      primary: v.arrivedText ?? 'You have arrived',
+      secondary: null,
+      tone: 'arrived',
+      alertText: null,
+    }
   }
   const rerouting = v.notices.some((x) => x.kind === 'rerouting')
   const target =
@@ -524,10 +670,50 @@ export function navBannerView(v: NavCardView): NavBannerView {
   ]
     .filter(Boolean)
     .join(' · ')
+  const pending = v.notices.some((x) => x.kind === 'reroute-confirm')
+  const shallow = v.notices.some((x) => x.kind === 'shallow-here')
+  const flaggedLeg = isFlagged(v.legCaution)
+  const prefix = pending
+    ? 'Re-route needs your OK'
+    : shallow
+      ? 'Shallow here'
+      : rerouting
+        ? 'Re-routing…'
+        : flaggedLeg
+          ? v.legCaution === 'reduced-clearance'
+            ? 'Close leg'
+            : 'Shallow leg'
+          : isDotted(v.legCaution)
+            ? 'Check depth'
+            : null
+  const alert =
+    pending ||
+    shallow ||
+    flaggedLeg ||
+    rerouting ||
+    v.notices.some((x) => x.kind === 'off-course' || x.kind === 'error')
   return {
-    primary: rerouting ? `Re-routing… · ${parts.join(' · ')}` : parts.join(' · '),
+    primary: prefix ? `${prefix} · ${parts.join(' · ')}` : parts.join(' · '),
     secondary: secondary || null,
-    tone: v.stale ? 'stale' : rerouting || v.notices.some((x) => x.kind === 'off-course') ? 'alert' : 'normal',
+    // A frozen fix greys the banner; but a rule being broken right now is
+    // louder than the fix being old.
+    tone: pending || shallow ? 'alert' : v.stale ? 'stale' : alert ? 'alert' : 'normal',
+    alertText: pending || shallow || flaggedLeg ? prefix : null,
+  }
+}
+
+/**
+ * The banner while steering is PAUSED for the crew to review the route — a
+ * boat change the route no longer suits. There is no card to draw it from
+ * (status 'preview'), and without it the banner on every other tab simply
+ * vanished: steering stopped with nothing on screen to say so.
+ */
+export function reconfirmBannerView(): NavBannerView {
+  return {
+    primary: 'Route changed — not fully safe',
+    secondary: 'Steering paused · tap to review the flagged legs',
+    tone: 'alert',
+    alertText: 'Route changed — not fully safe. Steering paused.',
   }
 }
 
@@ -601,9 +787,12 @@ export function arrivalSettingNote(arrivalFt: number, choices: readonly number[]
   const base =
     'Steering moves on to the next waypoint inside this distance. Tight turns use a smaller circle, ' +
     'shown on the card while you steer.'
-  return choices.includes(arrivalFt)
-    ? base
-    : `Now ${arrivalFt} ft (set for search patterns). ${base}`
+  if (choices.includes(arrivalFt)) return base
+  const used = Math.max(choices[0], Math.min(arrivalFt, choices[choices.length - 1]))
+  return (
+    `The Search tab is set to ${arrivalFt} ft for search patterns; routes use ${used} ft — ` +
+    `their turn points are placed round shoals and jetties. ${base}`
+  )
 }
 
 /* -------------------------------------------------------------------------
@@ -630,8 +819,8 @@ export interface SegmentStyle {
  *   - The leg being run: brightest and widest. The rest ahead: plain blue.
  */
 export function segmentStyle(seg: Pick<RouteSegment, 'state' | 'caution'>): SegmentStyle {
-  const flagged = seg.caution === 'unsafe-depth' || seg.caution === 'reduced-clearance'
-  const dotted = seg.caution === 'shallow-approach'
+  const flagged = isFlagged(seg.caution)
+  const dotted = isDotted(seg.caution)
   if (seg.state === 'behind') {
     return {
       color: '#94a3b8',
@@ -654,5 +843,128 @@ export function segmentStyle(seg: Pick<RouteSegment, 'state' | 'caution'>): Segm
     dash: null,
     opacity: 1,
     linecap: 'round',
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * The GPS chip in the header
+ * ---------------------------------------------------------------------- */
+
+export interface GpsChip {
+  label: 'GPS live' | 'GPS lost' | 'GPS fix' | 'GPS off'
+  kind: 'live' | 'lost' | 'fix' | 'off'
+  title: string
+}
+
+/**
+ * What the header's GPS chip says — judged by the same freshness rule as the
+ * steering card, so the two can never disagree. A running watch with no fix
+ * for 15 s is "GPS lost", not "GPS live": the chip used to read the watch
+ * alone and stayed green beside a card saying the signal was gone.
+ */
+export function gpsChip(
+  watching: boolean,
+  fix: { timestamp?: number | null; receivedAt?: number | null } | null,
+  now: number,
+): GpsChip {
+  if (watching) {
+    if (fix && !isStale(fix, now)) {
+      return { label: 'GPS live', kind: 'live', title: 'Recording a continuous track' }
+    }
+    const t = fixTime(fix)
+    return {
+      label: 'GPS lost',
+      kind: 'lost',
+      title:
+        t != null
+          ? `No fix for ${formatAge(Math.max(0, Math.round((now - t) / 1000)))} — the track is still running`
+          : 'Waiting for the first fix — the track is running',
+    }
+  }
+  if (fix) {
+    return {
+      label: 'GPS fix',
+      kind: 'fix',
+      title: 'A position fix is in hand; the continuous track is not running',
+    }
+  }
+  return { label: 'GPS off', kind: 'off', title: 'No position yet' }
+}
+
+/* -------------------------------------------------------------------------
+ * Turn points on a small map
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Which numbered turn points to draw at this zoom.
+ *
+ * A best-effort route framed whole puts its short flagged hops — 122, 172,
+ * 244 ft — under a pile of marker circles, and the red legs the crew most
+ * needs to see are hidden beneath them. So a turn point closer than `minPx`
+ * to the last one drawn is left out, unless it is the start, the
+ * destination, or the one being steered to. Each kept mark says how many it
+ * stands for (`hidden`), so the map can show "5–8".
+ */
+export function declutterMarks<M extends Pick<RouteMark, 'kind' | 'state' | 'idx'>>(
+  marks: readonly M[],
+  project: (m: M) => { x: number; y: number },
+  minPx = 20,
+): { mark: M; hidden: number[] }[] {
+  const out: { mark: M; hidden: number[]; p: { x: number; y: number } }[] = []
+  for (const m of marks) {
+    const p = project(m)
+    const keep = m.kind !== 'turn' || m.state === 'active'
+    const prev = out[out.length - 1]
+    if (!keep && prev && Math.hypot(p.x - prev.p.x, p.y - prev.p.y) < minPx) {
+      prev.hidden.push(m.idx)
+      continue
+    }
+    out.push({ mark: m, hidden: [], p })
+  }
+  return out.map(({ mark, hidden }) => ({ mark, hidden }))
+}
+
+/**
+ * Whether the one-line route banner is up.
+ *
+ * On every tab but the Chart tab while a route is steered (or just arrived
+ * at) — and on the Chart tab too whenever its big card is scrolled out of
+ * view, which is where Start used to leave it: no bearing, distance or ETA
+ * anywhere on screen. Also while steering is paused for the crew to review a
+ * changed route, so that pause is never silent.
+ */
+export function showNavBanner(o: {
+  onChartTab: boolean
+  status: string
+  reconfirm: boolean
+  cardInView: boolean
+}): boolean {
+  const live =
+    o.status === 'navigating' || o.status === 'arrived' || (o.status === 'preview' && o.reconfirm)
+  return live && (!o.onChartTab || !o.cardInView)
+}
+
+/**
+ * What the map frames when planning found no route: the boat (or the start
+ * chosen by hand) and the destination that failed — so the crew can see the
+ * point they picked, instead of a map still zoomed on the boat. Null unless
+ * the plan failed with a destination. Keyed per attempt, so it frames once
+ * and a pan afterwards is left alone.
+ */
+export function failureFrame(o: {
+  status: string
+  dest: LatLon | null
+  origin: LatLon | null
+  fix: LatLon | null
+  lastPlannedAt: number | null
+}): { key: string; points: LatLon[] } | null {
+  if (o.status !== 'failed' || !o.dest) return null
+  const start = o.origin ?? o.fix
+  return {
+    key: `none:${o.lastPlannedAt ?? `${o.dest.lat},${o.dest.lon}`}`,
+    points: [
+      ...(start ? [{ lat: start.lat, lon: start.lon }] : []),
+      { lat: o.dest.lat, lon: o.dest.lon },
+    ],
   }
 }

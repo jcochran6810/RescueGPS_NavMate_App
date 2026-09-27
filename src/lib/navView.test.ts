@@ -16,6 +16,13 @@ import {
   routeSegments,
   routeSummary,
   segmentStyle,
+  declutterMarks,
+  gpsChip,
+  legNote,
+  noBreakMeridiem,
+  reconfirmBannerView,
+  showNavBanner,
+  failureFrame,
   type NavCardInput,
 } from './navView'
 import { projectPosition } from './sar'
@@ -363,7 +370,12 @@ describe('navBannerView', () => {
 
   it('says arrived', () => {
     const b = navBannerView(navCardView(input({ status: 'arrived' })))
-    expect(b).toEqual({ primary: 'You have arrived at Datum', secondary: null, tone: 'arrived' })
+    expect(b).toEqual({
+      primary: 'You have arrived at Datum',
+      secondary: null,
+      tone: 'arrived',
+      alertText: null,
+    })
   })
 })
 
@@ -407,6 +419,198 @@ describe('planFailureView', () => {
 describe('arrivalSettingNote', () => {
   it('explains the setting, and a 50 ft search setting', () => {
     expect(arrivalSettingNote(150, ROUTE_ARRIVAL_FT_CHOICES)).toMatch(/^Steering moves on/)
-    expect(arrivalSettingNote(50, ROUTE_ARRIVAL_FT_CHOICES)).toMatch(/^Now 50 ft \(set for search patterns\)/)
+    // Reworded on purpose (finding R13): a 50 ft Search-tab setting no
+    // longer applies to routes — they use 100 ft, and the note says so.
+    expect(arrivalSettingNote(50, ROUTE_ARRIVAL_FT_CHOICES)).toMatch(
+      /^The Search tab is set to 50 ft for search patterns; routes use 100 ft/,
+    )
+  })
+})
+
+/* -------------------------------------------------------------------------
+ * Review fixes
+ * ---------------------------------------------------------------------- */
+
+describe('leg notes say what is actually wrong (R5, R10, R12)', () => {
+  it('a hop off a dock the chart draws as land is dotted, "by eye" — not red', () => {
+    const rows = legRows([leg(1, { caution: 'off-chart-end' }), leg(2), leg(3, { caution: 'off-chart-end' })])
+    expect(rows[0].dotted).toBe(true)
+    expect(rows[0].flagged).toBe(false)
+    expect(rows[0].note).toMatch(/^Leave the dock by eye/)
+    expect(rows[2].note).toMatch(/^Come alongside by eye/)
+    expect(segmentStyle({ state: 'ahead', caution: 'off-chart-end' }).dash).not.toBeNull()
+  })
+
+  it('a leg over land is not "too shallow — 0 ft"', () => {
+    const [row] = legRows([leg(1, { caution: 'unsafe-depth', minChartedDepthM: 0, overLand: true })])
+    expect(row.note).toBe('Over land on the chart — leave or approach by eye')
+  })
+
+  it('quotes the least depth OUTSIDE the dock stretches — the figure the warning quotes', () => {
+    const [row] = legRows([
+      leg(1, { caution: 'unsafe-depth', minChartedDepthM: 0.3, minDepthOutsideM: 0.8 }),
+    ])
+    expect(row.note).toBe(`Too shallow — ${feetFirst(0.8)} charted`)
+  })
+
+  it('a leg flagged for shallow water beside it says how close', () => {
+    const [row] = legRows([
+      leg(1, { caution: 'unsafe-depth', minChartedDepthM: 4, nearShoalDepthM: 1.8, nearShoalDistM: 2 }),
+    ])
+    expect(row.note).toBe(`Passes ${feetFirst(2)} from ${feetFirst(1.8)} water`)
+  })
+
+  it('an approach leg says whether it was the depth, the stand-off, or both', () => {
+    const depth = legNote(leg(1, { caution: 'shallow-approach', approachReasons: ['depth'] }))
+    const close = legNote(
+      leg(1, { caution: 'shallow-approach', approachReasons: ['clearance'], minClearanceM: 4.6 }),
+    )
+    const both = legNote(
+      leg(1, { caution: 'shallow-approach', approachReasons: ['depth', 'clearance'], minClearanceM: 4.6 }),
+    )
+    expect(depth).toBe('Check depth here')
+    expect(close).toBe(`Passes ${feetFirst(4.6)} from land or a structure near the end — keep a lookout`)
+    expect(both).toMatch(/^Check depth here · Passes/)
+  })
+
+  it('a leg not checked for the new boat says so', () => {
+    expect(legNote(leg(1, { caution: 'unsafe-depth', unverified: true }))).toMatch(/Not checked/)
+  })
+})
+
+describe('the card and banner on a flagged leg (R11)', () => {
+  const flaggedPlan = {
+    ...PLAN,
+    legs: [leg(1), leg(2, { caution: 'unsafe-depth' as const, minChartedDepthM: 0.9 }), leg(3)],
+  }
+
+  it('says the leg being run is flagged, in red, and the banner turns to an alert', () => {
+    const v = navCardView(input({ plan: flaggedPlan, targetIdx: 2 }))
+    expect(v.legCaution).toBe('unsafe-depth')
+    const n = v.notices.find((x) => x.kind === 'leg-caution')
+    expect(n?.tone).toBe('alert')
+    expect(n?.text).toBe(`This leg: too shallow — ${feetFirst(0.9)} charted`)
+    const b = navBannerView(v)
+    expect(b.tone).toBe('alert')
+    expect(b.primary).toMatch(/^Shallow leg · /)
+  })
+
+  it('says nothing for a sound leg, or one already run', () => {
+    expect(navCardView(input({ plan: flaggedPlan, targetIdx: 3 })).notices.some((x) => x.kind === 'leg-caution')).toBe(false)
+    const ok = navCardView(input({ targetIdx: 2 }))
+    expect(ok.notices.some((x) => x.kind === 'leg-caution')).toBe(false)
+    expect(navBannerView(ok).tone).toBe('normal')
+  })
+
+  it('a shallow approach leg is a caution (amber), not an alert', () => {
+    const plan = { ...PLAN, legs: [leg(1), leg(2, { caution: 'shallow-approach' as const }), leg(3)] }
+    const v = navCardView(input({ plan, targetIdx: 2 }))
+    expect(v.notices.find((x) => x.kind === 'leg-caution')?.tone).toBe('caution')
+    expect(navBannerView(v).tone).toBe('normal')
+  })
+})
+
+describe('re-route needing confirmation, and water too shallow under the boat (R2, voyage-1)', () => {
+  it('keeps the card, says a re-route needs the crew’s OK, and the banner alerts on every tab', () => {
+    const v = navCardView(input({ pendingReroute: true }))
+    expect(v.notices.find((x) => x.kind === 'reroute-confirm')?.text).toMatch(/needs your confirmation/)
+    const b = navBannerView(v)
+    expect(b.tone).toBe('alert')
+    expect(b.primary).toMatch(/^Re-route needs your OK/)
+    expect(b.alertText).toBe('Re-route needs your OK')
+  })
+
+  it('says so when the chart puts the boat in water shallower than it needs', () => {
+    const v = navCardView(input({ shallowHere: { depthM: 1.8, land: false } }))
+    expect(v.notices.find((x) => x.kind === 'shallow-here')?.text).toBe(
+      `Charted depth here ${feetFirst(1.8)} — less than your boat needs. Check your depth now.`,
+    )
+    expect(navBannerView(v).tone).toBe('alert')
+  })
+
+  it('a paused route keeps a banner up, as an alert', () => {
+    const b = reconfirmBannerView()
+    expect(b.tone).toBe('alert')
+    expect(b.primary).toMatch(/not fully safe/)
+  })
+})
+
+describe('a failed re-route on the card (R8)', () => {
+  it('is shown while it stands, and not once the store has cleared it', () => {
+    const v = navCardView(input({ rerouteError: 'Could not re-route: offline' }))
+    expect(v.notices.some((x) => x.kind === 'error' && /offline/.test(x.text))).toBe(true)
+    expect(navCardView(input({ rerouteError: null })).notices.some((x) => x.kind === 'error')).toBe(false)
+  })
+})
+
+describe('freshness on the phone clock (R14)', () => {
+  it('a fix stamped a minute off by GNSS time, that has just arrived, is live on the card', () => {
+    const fix = { ...go(B, 90, 0.5), timestamp: NOW - 60_000, receivedAt: NOW - 1_000, accuracy: 5, heading: 90 }
+    const v = navCardView(input({ fix }))
+    expect(v.stale).toBe(false)
+  })
+})
+
+describe('the clock never wraps (UI-11)', () => {
+  it('puts a no-break space before AM/PM', () => {
+    expect(noBreakMeridiem('04:10 AM')).toBe('04:10\u00a0AM')
+    expect(noBreakMeridiem('04:10\u202fp.m.')).toBe('04:10\u00a0p.m.')
+    expect(noBreakMeridiem('14:52')).toBe('14:52')
+  })
+})
+
+describe('gpsChip — the header agrees with the card (UI-8)', () => {
+  it('says "GPS lost" while the watch runs but no fix has come for 15 s', () => {
+    expect(gpsChip(true, { timestamp: NOW - 18_000 }, NOW).label).toBe('GPS lost')
+    expect(gpsChip(true, null, NOW).label).toBe('GPS lost')
+    expect(gpsChip(true, { timestamp: NOW - 2_000 }, NOW).label).toBe('GPS live')
+    expect(gpsChip(false, { timestamp: NOW - 2_000 }, NOW).label).toBe('GPS fix')
+    expect(gpsChip(false, null, NOW).label).toBe('GPS off')
+    expect(gpsChip(true, { timestamp: NOW - 18_000 }, NOW).title).toMatch(/No fix for 18 s/)
+  })
+})
+
+describe('declutterMarks (UI-4)', () => {
+  it('leaves out turn points on top of each other, never the start, the end or the active one', () => {
+    const marks = routeMarks([A, B, B, B, C], 3)
+    const xy = (m: { idx: number }) => ({ x: [0, 100, 105, 110, 200][m.idx], y: 0 })
+    const kept = declutterMarks(marks, xy)
+    expect(kept.map((k) => k.mark.idx)).toEqual([0, 1, 3, 4])
+    expect(kept[1].hidden).toEqual([2])
+  })
+})
+
+describe('showNavBanner (UI-1, R2)', () => {
+  const base = { onChartTab: false, status: 'navigating', reconfirm: false, cardInView: true }
+  it('is up on the other tabs while steering, and on the Chart tab only when its card is out of view', () => {
+    expect(showNavBanner(base)).toBe(true)
+    expect(showNavBanner({ ...base, onChartTab: true })).toBe(false)
+    expect(showNavBanner({ ...base, onChartTab: true, cardInView: false })).toBe(true)
+    expect(showNavBanner({ ...base, status: 'arrived' })).toBe(true)
+  })
+  it('stays up while steering is paused for review, and not for an ordinary preview', () => {
+    expect(showNavBanner({ ...base, status: 'preview', reconfirm: true })).toBe(true)
+    expect(showNavBanner({ ...base, status: 'preview' })).toBe(false)
+    expect(showNavBanner({ ...base, status: 'idle' })).toBe(false)
+  })
+})
+
+describe('failureFrame (UI-10)', () => {
+  it('frames the boat and the destination that failed, 0.87 NM away — not just the boat', () => {
+    const dest = go(A, 217, 0.87)
+    const f = failureFrame({ status: 'failed', dest, origin: null, fix: A, lastPlannedAt: 5 })!
+    expect(f.points).toEqual([
+      { lat: A.lat, lon: A.lon },
+      { lat: dest.lat, lon: dest.lon },
+    ])
+    expect(f.key).toBe('none:5')
+  })
+  it('uses a start chosen by hand, and frames the destination alone with no position', () => {
+    const origin = go(A, 90, 1)
+    expect(failureFrame({ status: 'failed', dest: B, origin, fix: A, lastPlannedAt: 1 })!.points[0]).toEqual(origin)
+    expect(failureFrame({ status: 'failed', dest: B, origin: null, fix: null, lastPlannedAt: 1 })!.points).toHaveLength(1)
+  })
+  it('is nothing unless planning failed', () => {
+    expect(failureFrame({ status: 'preview', dest: B, origin: null, fix: A, lastPlannedAt: 1 })).toBeNull()
   })
 })

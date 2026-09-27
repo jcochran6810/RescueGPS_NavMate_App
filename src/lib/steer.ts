@@ -48,6 +48,22 @@ export const ROUTE_ARRIVAL_FT_CHOICES = [100, 150, 200] as const satisfies reado
 export const MAX_ARRIVAL_FT = 200
 
 /**
+ * The arrival distance a ROUTE is steered with, feet: the crew's shared
+ * setting held to the route choices, 100–200 ft.
+ *
+ * The setting is one value shared with the Search tab, where 50 ft is a
+ * legitimate choice for a tight pattern. Carried through to a route it
+ * switched turn points only inside 50 ft (and pass-abeam inside 100) — below
+ * the 100–200 ft the crew asked routes to use — while the plotter's control
+ * showed nothing selected. So routes read it through this: 50 counts as 100,
+ * and the plotter shows 100 as the one in effect.
+ */
+export function routeArrivalFt(ft: number | null | undefined): number {
+  const v = ft != null && Number.isFinite(ft) && ft > 0 ? ft : DEFAULT_ARRIVAL_FT
+  return Math.max(ROUTE_ARRIVAL_FT_CHOICES[0], Math.min(v, MAX_ARRIVAL_FT))
+}
+
+/**
  * How far past the arrival circle the pass-abeam rule still applies.
  *
  * Keeps "sailed through the circle between two fixes" separate from "happens

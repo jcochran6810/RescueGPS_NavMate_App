@@ -23,6 +23,7 @@ import {
   planRoute,
   prepareGrid,
   recomputeArrivalRadii,
+  recheckPlan,
   rasterise,
   routeBounds,
   snapToWater,
@@ -2694,5 +2695,38 @@ describe('chartStateAt', () => {
     expect(chartStateAt(features, at(0, 0))).toBe(10)
     expect(chartStateAt(features, at(200, 0))).toBe(1)
     expect(chartStateAt(features, at(90000, 0))).toBeNull()
+  })
+})
+
+describe('recheckPlan — a plan made for one boat, measured for another', () => {
+  // A 3 m band across the middle of the passage: fine for a 1.5 m boat,
+  // too shallow for a 2.5 m one.
+  const features = sea({
+    depthAreas: [...sea().depthAreas, { minDepthM: 3, rings: [rect(-12000, -200, 12000, 200)] }],
+  })
+  const req = { from: SOUTH, to: NORTH, safeDepthM: 1.5, clearanceM: 30, speedKn: 20, features }
+
+  it('keeps a plan that still holds for the new boat, points and all', () => {
+    const plan = planRoute(req)
+    expect(plan.source).toBe('charted')
+    const again = recheckPlan(plan, { ...req, safeDepthM: 2 })!
+    expect(again.source).toBe('charted')
+    expect(again.needsConfirm).toBe(false)
+    expect(again.points).toEqual(plan.points)
+  })
+
+  it('flags the legs a deeper boat can no longer run, and asks for confirmation', () => {
+    const plan = planRoute(req)
+    const again = recheckPlan(plan, { ...req, safeDepthM: 3.5 })!
+    expect(again.points).toEqual(plan.points)
+    expect(again.source).toBe('best-effort')
+    expect(again.needsConfirm).toBe(true)
+    expect(again.legs.some((l) => l.caution === 'unsafe-depth')).toBe(true)
+    expect(again.confirmReason).toMatch(/No route keeps/)
+  })
+
+  it('has nothing to say with no chart', () => {
+    const plan = planRoute(req)
+    expect(recheckPlan(plan, { ...req, features: { ...features, depthAreas: [], coverage: 'none' } })).toBeNull()
   })
 })

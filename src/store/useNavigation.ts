@@ -1,6 +1,28 @@
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
-import { planningBounds, planRoute, type RoutePlan } from '@/lib/routing'
+import {
+  persist,
+  createJSONStorage,
+  type PersistStorage,
+  type StorageValue,
+} from 'zustand/middleware'
+import {
+  chartStateAt,
+  planningBounds,
+  planRoute,
+  recheckPlan,
+  recomputeArrivalRadii,
+  type ChartFeatures,
+  type RoutePlan,
+} from '@/lib/routing'
+import {
+  bandsForSpan,
+  boundsSpanNM,
+  containsBounds,
+  corridorPoints,
+  detailBox,
+  padBounds,
+  type ChartBounds,
+} from '@/lib/chart'
 import {
   isOffCourse,
   isStale,
@@ -10,9 +32,11 @@ import {
   stepTarget,
   type ArrivalOptions,
 } from '@/lib/navigate'
+import { haversineNM, NM_TO_METERS } from '@/lib/geo'
+import { routeArrivalFt } from '@/lib/steer'
 import type { LatLon } from '@/lib/search'
 import type { Fix } from '@/lib/types'
-import { safeDepthM, type Vessel } from '@/lib/vessel'
+import { safeDepthM, M_TO_FEET, type Vessel } from '@/lib/vessel'
 import { describeError } from '@/lib/retry'
 import { useChartData } from '@/store/useChartData'
 import { useTeams } from '@/store/useTeams'
@@ -39,9 +63,15 @@ import { useVessels } from '@/store/useVessels'
  *   - **Steer a best-effort route unconfirmed.** A plan the router could not
  *     make fully safe (`needsConfirm`) can be looked at but not started until
  *     the crew has said, in so many words, that they have read the flagged
- *     legs. A re-route that comes back best-effort drops back to the preview
- *     for the same confirmation: the crew accepted the old route's problems,
- *     not the new one's.
+ *     legs. A re-route that comes back best-effort is held as `pendingPlan`
+ *     for the same confirmation while the crew keeps steering the route they
+ *     already accepted — it never silently ends the steering, and the banner
+ *     on every tab says a new route is waiting.
+ *   - **Keep steering a route planned for a different boat.** A boat made
+ *     deeper (or given a wider stand-off) mid-passage is re-planned; when that
+ *     fails the current route is re-checked against the chart for the new
+ *     boat, and one that no longer suits it goes back to the preview, flagged,
+ *     for confirmation.
  *   - **Let an older plan overwrite a newer one.** Every plan carries a
  *     sequence number; a plan finishing after a newer one was asked for is
  *     thrown away. Plotting a destination, changing your mind and plotting
@@ -49,6 +79,11 @@ import { useVessels } from '@/store/useVessels'
  *   - **Re-route on a whim.** Off course has to be continuous for 10 s, and
  *     re-routes are at least 20 s apart, so one bad fix or a wide turn does
  *     not throw a new route at the crew every second.
+ *   - **Wait for ever.** A chart load that does not answer is given up on
+ *     (`LIVE_CHART_TIMEOUT_MS`), so "Re-routing…" can never stick.
+ *   - **Need a signal to re-route.** The chart is loaded along the whole
+ *     route when the passage is planned, and a re-route plans on what is
+ *     already in memory when it covers the new box.
  *   - **Make a noise.** Alerts are on screen only — the crew asked for that.
  */
 
@@ -72,9 +107,9 @@ export type NavStatus =
  *
  * - `user` — the crew picked or changed an end. Always a fresh preview.
  * - `reroute` — the boat left the route. From the live fix, keeps steering.
- * - `boat` — the boat's draft, margin, stand-off or speed (or the arrival
- *   setting) changed. While steering: from the live fix, keeps steering;
- *   otherwise a fresh preview.
+ * - `boat` — the boat's draft, margin, stand-off or speed changed. While
+ *   steering: from the live fix, keeps steering; otherwise a fresh preview.
+ *   (The arrival setting does NOT re-plan: see `setArrivalCap`.)
  * - `retry` — the last attempt failed (no signal, no fix); try again.
  */
 export type ReplanReason = 'user' | 'reroute' | 'boat' | 'retry'
@@ -83,8 +118,39 @@ export type ReplanReason = 'user' | 'reroute' | 'boat' | 'retry'
 export const OFF_COURSE_HOLD_MS = 10_000
 /** Least time between two automatic re-routes, ms. */
 export const REROUTE_MIN_GAP_MS = 20_000
+/**
+ * Longest a re-route waits for the chart, ms. On a stalled link the load
+ * used to hang for minutes with "Re-routing…" on the card and every later
+ * re-route blocked behind it; now the attempt fails in plain words and the
+ * next off-course window tries again.
+ */
+export const LIVE_CHART_TIMEOUT_MS = 25_000
+/** Longest a new plan waits for the chart, ms. A first load is many queries. */
+export const PLAN_CHART_TIMEOUT_MS = 90_000
+/** The approach stretch round each end the planner uses, metres. */
+const APPROACH_M = 120
 
 export const NAV_STORAGE_KEY = 'navmate.nav.v1'
+
+/** What a plan was checked against — the boat it was made for. */
+export interface PlannedFor {
+  safeDepthM: number
+  clearanceM: number
+  speedKn: number
+}
+
+/** One chart load a passage was planned on — replayed after a reload. */
+export interface ChartLoadRecord {
+  bounds: ChartBounds
+  detailAround: LatLon[]
+}
+
+/** Charted water under the boat shallower than it needs, or land. */
+export interface ShallowHere {
+  /** Charted depth, metres, or null for land / a structure. */
+  depthM: number | null
+  land: boolean
+}
 
 export interface NavigationState {
   dest: Place | null
@@ -96,8 +162,31 @@ export interface NavigationState {
   targetIdx: number | null
   /** Plain words for the crew — why planning failed, or what to do next. */
   error: string | null
+  /**
+   * An automatic re-route (or boat re-plan) that could not be made, while the
+   * current route is still being steered. Kept apart from `error` because it
+   * is tied to being off the route: back on it, this clears itself.
+   */
+  rerouteError: string | null
   /** The crew has accepted this best-effort plan's flagged legs. */
   confirmed: boolean
+  /**
+   * A re-route that came back best-effort, waiting for the crew to read it.
+   * Steering carries on along the current (accepted) route meanwhile.
+   */
+  pendingPlan: RoutePlan | null
+  /**
+   * Steering was paused for the crew to review the route — a boat change it
+   * no longer suits. Status is 'preview'; the banner stays up on every tab
+   * with an alert until the crew has looked.
+   */
+  reconfirm: boolean
+  /** The boat `plan` was made (or last checked) for. */
+  plannedFor: PlannedFor | null
+  /** The chart loads `plan` was made on, in order — replayed after a reload. */
+  chartLoads: ChartLoadRecord[]
+  /** Account the passage belongs to — cleared when another signs in. */
+  ownerId: string | null
   /** When the boat went off course (ms), while it stays off; else null. */
   offCourseSince: number | null
   /** When the current plan was made (ms), or null. */
@@ -111,6 +200,12 @@ export interface NavigationState {
    * error than the target point's safe radius (see `arrivalRadiusFt`).
    */
   gpsPoor: boolean
+  /**
+   * The chart puts the boat's position in water shallower than it needs (or
+   * on land), away from the dock stretches at either end. On screen at once,
+   * whether or not the boat is far enough off the line to count as off course.
+   */
+  shallowHere: ShallowHere | null
   /**
    * A re-route (or boat-change re-plan) is being worked out while the crew
    * keeps steering the current route. The card says "Re-routing…".
@@ -136,14 +231,29 @@ export interface NavigationState {
   replan: (reason: ReplanReason) => Promise<void>
   /**
    * Begin steering. False (with `error` set) when there is nothing safe to
-   * start: no plan, a `none` plan, or a best-effort plan not yet confirmed.
+   * start: no plan, a `none` plan, or a best-effort plan not yet confirmed —
+   * or when the boat is away from a start chosen by hand, in which case the
+   * route is re-planned from where the boat is (status 'planning').
    */
   start: () => boolean
   confirmBestEffort: () => void
-  /** Stop steering; the route stays on the chart as a preview. */
+  /** Steer the re-route waiting for confirmation (its flagged legs accepted). */
+  acceptPendingPlan: () => void
+  /** Keep steering the current route; drop the waiting re-route. */
+  dismissPendingPlan: () => void
+  /**
+   * The crew changed the arrival setting: resize the turn points' circles for
+   * it, WITHOUT re-planning — the points and their numbers stay as they are.
+   */
+  setArrivalCap: (ft: number) => void
+  /** Stop steering; the route stays on the chart as a preview. After arrival, finish the passage. */
   stop: () => void
   /** Forget the destination and the route. */
   clear: () => void
+  /** Forget everything, the owner too — sign-out. */
+  reset: () => void
+  /** The signed-in account: a passage left by another account is cleared. */
+  bindOwner: (uid: string) => void
   /** Feed a (filtered) GPS fix while navigating. */
   onFix: (fix: Fix) => void
 }
@@ -154,11 +264,35 @@ export function activeVessel(): Vessel | null {
 }
 
 /**
- * The crew's arrival setting — the same one the Search tab steers with, and
- * the cap for every per-point radius the planner sets.
+ * The crew's arrival setting as a route uses it — the same setting the Search
+ * tab steers with, held to 100–200 ft (`routeArrivalFt`), and the cap for
+ * every per-point radius the planner sets.
  */
 function arrivalOpts(): ArrivalOptions {
-  return { arrivalFt: useTracker.getState().arrivalFt }
+  return { arrivalFt: routeArrivalFt(useTracker.getState().arrivalFt) }
+}
+
+function plannedForBoat(boat: Vessel): PlannedFor {
+  return {
+    safeDepthM: safeDepthM(boat),
+    clearanceM: boat.clearance_m,
+    speedKn: boat.cruise_speed_kn,
+  }
+}
+
+/** Does the boat now ask more of the route than the one it was planned for? */
+function stricter(boat: Vessel | null, was: PlannedFor | null): boolean {
+  if (!boat || !was) return true
+  return safeDepthM(boat) > was.safeDepthM + 1e-9 || boat.clearance_m > was.clearanceM + 1e-9
+}
+
+function samePlannedFor(a: PlannedFor | null, b: PlannedFor): boolean {
+  return (
+    !!a &&
+    Math.abs(a.safeDepthM - b.safeDepthM) < 1e-9 &&
+    Math.abs(a.clearanceM - b.clearanceM) < 1e-9 &&
+    a.speedKn === b.speedKn
+  )
 }
 
 /**
@@ -173,6 +307,57 @@ async function freshFix(): Promise<Fix | null> {
   return got && !isStale(got) ? got : null
 }
 
+/** A promise that gives up after `ms` with `message`. */
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  return Promise.race([p, limit]).finally(() => clearTimeout(timer))
+}
+
+const SLOW_CHART = 'The chart service did not answer in time'
+
+/**
+ * Let the screen paint before the router's long synchronous search — so
+ * "Re-routing…" / "Finding a safe route…" is on screen before the phone
+ * spends a second or more planning. A frame, then a task. Where there is no
+ * frame to wait for (node, tests) it does not wait.
+ */
+function yieldToPaint(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') return Promise.resolve()
+  return new Promise((resolve) => {
+    let done = false
+    const go = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    requestAnimationFrame(() => setTimeout(go, 0))
+    // A page in the background gets no frames at all; a re-route must not
+    // wait for the crew to look at the phone again.
+    setTimeout(go, 100)
+  })
+}
+
+/**
+ * Does a planning box this size leave the harbour band out of its main query?
+ * Then the finest charts exist only where detail boxes are asked for, and a
+ * long passage needs them all along its line, not just at the ends.
+ */
+function needsCorridor(box: ChartBounds): boolean {
+  return !bandsForSpan(boundsSpanNM(padBounds(box))).some((b) => b.id === 'harbour')
+}
+
+/**
+ * The chart loads kept for replaying after a reload: the first (the passage's
+ * own box) and the most recent ones — a long session of re-routes must not
+ * grow the persisted record without bound.
+ */
+function capLoads(loads: ChartLoadRecord[]): ChartLoadRecord[] {
+  return loads.length <= 6 ? loads : [loads[0], ...loads.slice(-5)]
+}
+
 /** Bumped by every plan, `stop` and `clear`; a result from an older one is dropped. */
 let seq = 0
 
@@ -183,12 +368,19 @@ const INITIAL = {
   status: 'idle' as NavStatus,
   targetIdx: null,
   error: null,
+  rerouteError: null,
   confirmed: false,
+  pendingPlan: null,
+  reconfirm: false,
+  plannedFor: null,
+  chartLoads: [] as ChartLoadRecord[],
+  ownerId: null,
   offCourseSince: null,
   lastPlannedAt: null,
   reroutes: 0,
   speedKn: null,
   gpsPoor: false,
+  shallowHere: null,
   rerouting: false,
   lastRerouteAt: null,
   lastFixAt: null,
@@ -206,6 +398,40 @@ export function partializeNav(s: NavigationState) {
     confirmed: s.confirmed,
     lastPlannedAt: s.lastPlannedAt,
     error: s.error,
+    reconfirm: s.reconfirm,
+    plannedFor: s.plannedFor,
+    chartLoads: s.chartLoads,
+    ownerId: s.ownerId,
+  }
+}
+type PersistedNav = ReturnType<typeof partializeNav>
+
+/**
+ * localStorage, written only when something persisted changed.
+ *
+ * Every GPS fix sets the store (speed, target, off-course clock), and the
+ * persist middleware writes the partialized state after every set — the whole
+ * route, stringified and stored synchronously, once a second for the whole
+ * passage, when almost always nothing that is persisted had moved. The fields
+ * are compared by reference first, so an unchanged passage costs nothing.
+ */
+function navStorage(): PersistStorage<PersistedNav> | undefined {
+  const json = createJSONStorage<PersistedNav>(() => localStorage)
+  if (!json) return undefined
+  let last: StorageValue<PersistedNav> | null = null
+  const same = (a: PersistedNav, b: PersistedNav) =>
+    (Object.keys(b) as (keyof PersistedNav)[]).every((k) => a[k] === b[k])
+  return {
+    getItem: (name) => json.getItem(name),
+    setItem: (name, value) => {
+      if (last && last.version === value.version && same(last.state, value.state)) return
+      last = value
+      return json.setItem(name, value)
+    },
+    removeItem: (name) => {
+      last = null
+      return json.removeItem(name)
+    },
   }
 }
 
@@ -218,9 +444,196 @@ function needsConfirm(plan: RoutePlan): boolean {
   return plan.needsConfirm || plan.source === 'best-effort'
 }
 
+/** "5 ft (1.5 m)" — for the store's own messages. */
+function feet(m: number): string {
+  const ft = m * M_TO_FEET
+  return `${ft < 10 ? ft.toFixed(1).replace(/\.0$/, '') : Math.round(ft)} ft (${m.toFixed(1)} m)`
+}
+
+/**
+ * A plan that could not be checked for the boat now being steered: every leg
+ * flagged as not checked, needing confirmation. Used only when there is no
+ * chart in memory to re-check it against.
+ */
+function unverifiedPlan(plan: RoutePlan, reason: string): RoutePlan {
+  return {
+    ...plan,
+    legs: plan.legs.map((l) => ({
+      ...l,
+      caution: l.caution === 'off-chart-end' ? l.caution : 'unsafe-depth',
+      unverified: true,
+    })),
+    source: 'best-effort',
+    needsConfirm: true,
+    confirmReason: reason,
+  }
+}
+
+/** Has the harbour or approach chart been read round this position? */
+function detailNear(p: LatLon): boolean {
+  const near = detailBox(p, 0.5)
+  const regions = useChartData.getState().regions ?? []
+  return regions.some(
+    (r) =>
+      (r.bands.includes('harbour') || r.bands.includes('approach')) &&
+      containsBounds(r.bounds, near),
+  )
+}
+
+function metres(a: LatLon, b: LatLon): number {
+  return haversineNM(a.lat, a.lon, b.lat, b.lon) * NM_TO_METERS
+}
+
 export const useNavigation = create<NavigationState>()(
   persist(
     (set, get) => {
+      /**
+       * The chart to plan on, and the loads that fetched it.
+       *
+       * A new plan loads the planning box with detail round both ends, and
+       * — when the box is too big for the harbour band — a second time with
+       * detail all along the first route found (`corridorPoints`), so the
+       * middle of a long passage is planned on the finest chart too, and a
+       * re-route from anywhere near the route finds it already in memory.
+       *
+       * A re-route (`live`) plans on what is in memory when that was read over
+       * the whole of the new box; after a reload it first replays the
+       * passage's own loads (the same queries, which the device's cache can
+       * answer with no signal); only then does it go to the network, and if
+       * that fails it still plans on whatever chart is in memory.
+       */
+      async function chartFor(
+        from: LatLon,
+        to: LatLon,
+        live: boolean,
+        my: number,
+      ): Promise<{ features: ChartFeatures; loads: ChartLoadRecord[]; fromMemory: boolean } | null> {
+        const box = planningBounds(from, to)
+        const detailAround = [from, to]
+        // One time limit for the whole attempt, however many loads it takes.
+        const deadline = Date.now() + (live ? LIVE_CHART_TIMEOUT_MS : PLAN_CHART_TIMEOUT_MS)
+        const chart = () => useChartData.getState()
+        const load = (b: ChartBounds, d: LatLon[]) =>
+          withTimeout(
+            chart().load(b, { detailAround: d }),
+            Math.max(0, deadline - Date.now()),
+            SLOW_CHART,
+          )
+
+        if (live) {
+          const mem = chart()
+          if (mem.covers(box, { detailAround }) || mem.holds(box)) {
+            return { features: mem.features, loads: get().chartLoads, fromMemory: true }
+          }
+          const replay = get().chartLoads
+          if (replay.length > 0 && mem.features.coverage === 'none') {
+            for (const l of replay) {
+              try {
+                await load(l.bounds, l.detailAround)
+              } catch {
+                break
+              }
+              if (seq !== my) return null
+            }
+            if (chart().holds(box)) {
+              return { features: chart().features, loads: replay, fromMemory: true }
+            }
+          }
+          let fresh: ChartFeatures | null = null
+          let failure: unknown = null
+          try {
+            fresh = await load(box, detailAround)
+          } catch (e) {
+            failure = e
+          }
+          if (seq !== my) return null
+          if (fresh && fresh.coverage !== 'none') {
+            return {
+              features: fresh,
+              loads: [...get().chartLoads, { bounds: box, detailAround }],
+              fromMemory: false,
+            }
+          }
+          // The download failed. Whatever chart is in memory is still a
+          // chart: plan on it rather than not at all.
+          const held = chart().features
+          if (held.coverage !== 'none') {
+            return { features: held, loads: get().chartLoads, fromMemory: true }
+          }
+          if (failure) throw failure
+          return { features: fresh ?? held, loads: get().chartLoads, fromMemory: false }
+        }
+
+        const features = await load(box, detailAround)
+        return { features, loads: [{ bounds: box, detailAround }], fromMemory: false }
+      }
+
+      /** The error to raise when the chart could not be read at all. */
+      function chartError(features: ChartFeatures): Error | null {
+        const chart = useChartData.getState()
+        if (features.coverage !== 'none' || !chart.error) return null
+        return new Error(
+          `Could not read the chart for this area — ${chart.error}. Check your signal and try again.`,
+        )
+      }
+
+      /**
+       * A boat made stricter mid-passage, and no new plan could be made for
+       * it: re-check the route being steered against the chart for the new
+       * boat. Still sound → keep steering it. Not → back to the preview,
+       * flagged, for confirmation. Never carry on steering a route checked
+       * only for a shallower boat as if nothing had changed.
+       */
+      function boatFallback(boat: Vessel | null, why: string): void {
+        const s = get()
+        const cur = s.plan
+        if (!cur || !steerable(cur)) return
+        const nowFor = boat ? plannedForBoat(boat) : null
+        const checked =
+          nowFor != null
+            ? recheckPlan(cur, {
+                safeDepthM: nowFor.safeDepthM,
+                clearanceM: nowFor.clearanceM,
+                features: useChartData.getState().features,
+                arrivalFt: arrivalOpts().arrivalFt,
+              })
+            : null
+        if (checked && checked.source === 'charted' && nowFor) {
+          set({
+            plan: checked,
+            plannedFor: nowFor,
+            rerouting: false,
+            rerouteError: null,
+          })
+          return
+        }
+        const was = s.plannedFor
+        const needs = was
+          ? `a boat needing ${feet(was.safeDepthM)} of water and a ${feet(was.clearanceM)} stand-off`
+          : 'a different boat'
+        const message =
+          `This route was planned for ${needs}, and could not be re-planned for the new boat settings (${why}). ` +
+          (checked
+            ? 'The legs it no longer suits are red — read them and confirm before steering it.'
+            : 'It has not been checked for them — read it and confirm before steering it.')
+        seq++ // a plan in flight belongs to the old settings
+        set({
+          plan: checked ?? unverifiedPlan(cur, message),
+          plannedFor: nowFor ?? s.plannedFor,
+          status: 'preview',
+          targetIdx: null,
+          confirmed: false,
+          pendingPlan: null,
+          reconfirm: true,
+          rerouting: false,
+          rerouteError: null,
+          offCourseSince: null,
+          resume: false,
+          shallowHere: null,
+          error: message,
+        })
+      }
+
       /**
        * Plan (or re-plan) to the destination.
        *
@@ -229,8 +642,14 @@ export const useNavigation = create<NavigationState>()(
        * until the new one is in, and never drop the crew onto a blank card
        * if the re-plan fails. Otherwise: a fresh preview, the old route
        * cleared at once so it cannot be mistaken for the new one.
+       *
+       * `notice` is shown with a successful preview (why it was re-planned).
        */
-      async function runPlan(reason: ReplanReason, liveFix?: Fix | null): Promise<void> {
+      async function runPlan(
+        reason: ReplanReason,
+        liveFix?: Fix | null,
+        notice?: string,
+      ): Promise<void> {
         const s = get()
         if (!s.dest) return
         const dest = s.dest
@@ -251,15 +670,20 @@ export const useNavigation = create<NavigationState>()(
             plan: null,
             targetIdx: null,
             confirmed: false,
+            pendingPlan: null,
+            reconfirm: false,
             error: null,
+            rerouteError: null,
             offCourseSince: null,
             rerouting: false,
             resume: false,
+            shallowHere: null,
           })
         }
 
+        let boat: Vessel | null = null
         try {
-          const boat = activeVessel()
+          boat = activeVessel()
           if (!boat) {
             throw new Error(
               'Set up your boat first — its draft and stand-off are what keep the route safe.',
@@ -282,62 +706,174 @@ export const useNavigation = create<NavigationState>()(
           }
           const to = { lat: dest.lat, lon: dest.lon }
 
-          const features = await useChartData
-            .getState()
-            .load(planningBounds(from, to), { detailAround: [from, to] })
-          if (seq !== my) return
-          const chart = useChartData.getState()
-          if (features.coverage === 'none' && chart.status === 'error') {
-            throw new Error(
-              `Could not read the chart for this area${chart.error ? ` — ${chart.error}` : ''}. ` +
-                'Check your signal and try again.',
-            )
-          }
+          const got = await chartFor(from, to, live, my)
+          if (seq !== my || !got) return
+          const { features, fromMemory } = got
+          let loads = got.loads
+          const bad = chartError(features)
+          if (bad) throw bad
 
-          const plan = planRoute({
+          const forBoat = plannedForBoat(boat)
+          const request = (f: ChartFeatures) => ({
             from,
             to,
-            safeDepthM: safeDepthM(boat),
-            clearanceM: boat.clearance_m,
-            speedKn: boat.cruise_speed_kn,
-            features,
-            arrivalFt: useTracker.getState().arrivalFt,
+            safeDepthM: forBoat.safeDepthM,
+            clearanceM: forBoat.clearanceM,
+            speedKn: forBoat.speedKn,
+            features: f,
+            arrivalFt: arrivalOpts().arrivalFt,
           })
+
+          // Paint "Re-routing…" / "Finding a safe route…" before the search.
+          await yieldToPaint()
+          if (seq !== my) return
+          let plan = planRoute(request(features))
+
+          // A long passage: read the finest charts all along the route found
+          // (or the direct line, when none was), and plan again on them. A
+          // re-route that had to download its chart afresh does the same; one
+          // planned on the chart in memory already has the passage's corridor.
+          const box = planningBounds(from, to)
+          if (needsCorridor(box) && (!live || !fromMemory)) {
+            const along = corridorPoints(steerable(plan) ? plan.points : [from, to])
+            const detailAround = [from, to, ...along]
+            try {
+              const more = await withTimeout(
+                useChartData.getState().load(box, { detailAround }),
+                live ? LIVE_CHART_TIMEOUT_MS : PLAN_CHART_TIMEOUT_MS,
+                SLOW_CHART,
+              )
+              if (seq !== my) return
+              if (more.coverage !== 'none') {
+                await yieldToPaint()
+                if (seq !== my) return
+                const second = planRoute(request(more))
+                const rank = (p: RoutePlan) =>
+                  p.source === 'charted' ? 2 : steerable(p) ? 1 : 0
+                if (rank(second) >= rank(plan)) plan = second
+                loads = [...loads, { bounds: box, detailAround }]
+              }
+            } catch {
+              // The first plan stands; the chart it was made on is what the
+              // crew is told about in its warnings.
+            }
+          }
+          // A live re-route whose own box came back coarse (the boat far from
+          // the loaded corridor) gets one fresh read when there is a signal.
+          if (
+            live &&
+            fromMemory &&
+            plan.source !== 'charted' &&
+            typeof navigator !== 'undefined' &&
+            navigator.onLine !== false &&
+            !useChartData.getState().covers(box, { detailAround: [from, to] })
+          ) {
+            try {
+              const more = await withTimeout(
+                useChartData.getState().load(box, { detailAround: [from, to] }),
+                LIVE_CHART_TIMEOUT_MS,
+                SLOW_CHART,
+              )
+              if (seq !== my) return
+              if (more.coverage !== 'none') {
+                const second = planRoute(request(more))
+                if (second.source === 'charted' || (steerable(second) && !steerable(plan))) {
+                  plan = second
+                  loads = [...loads, { bounds: box, detailAround: [from, to] }]
+                }
+              }
+            } catch {
+              // Keep what was planned on the chart in memory.
+            }
+          }
           if (seq !== my) return
           const done = Date.now()
+          if (live && fromMemory && steerable(plan) && !detailNear(from)) {
+            // Planned on the chart already on the phone, and it holds only
+            // the coarser charts round here: say so, rather than pass it off
+            // as the harbour-scale route the passage was planned on.
+            plan = {
+              ...plan,
+              warnings: [
+                'Re-routed on the chart already on this phone — there was no signal to download ' +
+                  'more. The finest (harbour) chart was not loaded round your position, so detail ' +
+                  'near you may be missing: check the first legs against the chart.',
+                ...plan.warnings,
+              ],
+            }
+          }
 
           if (live) {
+            const boatStricter = reason === 'boat' && stricter(boat, get().plannedFor)
             if (!steerable(plan)) {
+              if (boatStricter) {
+                boatFallback(boat, plan.failure ?? 'no water path found')
+                return
+              }
+              if (reason === 'boat') {
+                // No stricter than the boat it was planned for (a speed
+                // change, a shallower draft): the current route still holds.
+                set({ rerouting: false })
+                return
+              }
               // Keep steering what we have; it was safe when it was made.
               set({
                 rerouting: false,
-                error: `Could not re-route from here: ${plan.failure ?? 'no water path found'}`,
+                rerouteError: `Could not re-route from here: ${plan.failure ?? 'no water path found'}`,
               })
               return
             }
             if (needsConfirm(plan)) {
+              if (boatStricter) {
+                // The route being steered was checked for the old boat; the
+                // new one's route needs reading before anything is steered.
+                set({
+                  plan,
+                  plannedFor: forBoat,
+                  chartLoads: capLoads(loads),
+                  origin: null,
+                  status: 'preview',
+                  targetIdx: null,
+                  confirmed: false,
+                  pendingPlan: null,
+                  reconfirm: true,
+                  rerouting: false,
+                  rerouteError: null,
+                  offCourseSince: null,
+                  resume: false,
+                  lastPlannedAt: done,
+                  error:
+                    'Re-planned for the new boat settings, but no fully safe route was found from here. ' +
+                    'Steering is paused — read the flagged legs and confirm before steering it.',
+                })
+                return
+              }
+              if (reason === 'boat') {
+                // No stricter than before: the route being steered still
+                // holds for this boat. Nothing to confirm.
+                set({ rerouting: false })
+                return
+              }
+              // A re-route: keep steering the route the crew accepted, and
+              // hold this one for them to read.
               set({
-                plan,
-                origin: null,
-                status: 'preview',
-                targetIdx: null,
-                confirmed: false,
+                pendingPlan: plan,
                 rerouting: false,
                 offCourseSince: null,
-                resume: false,
-                lastPlannedAt: done,
-                error:
-                  'Re-routed, but no fully safe route was found from here. ' +
-                  'Read the flagged legs and confirm before steering it.',
+                rerouteError: null,
               })
               return
             }
             const fixNow = liveFix ?? useTracker.getState().fix
             set({
               plan,
+              plannedFor: forBoat,
+              chartLoads: capLoads(loads),
               origin: null,
               targetIdx: startTarget(plan, fixNow, arrivalOpts()),
+              pendingPlan: null,
               rerouting: false,
+              rerouteError: null,
               offCourseSince: null,
               resume: false,
               lastPlannedAt: done,
@@ -349,18 +885,33 @@ export const useNavigation = create<NavigationState>()(
           if (!steerable(plan)) {
             set({
               plan,
+              plannedFor: forBoat,
+              chartLoads: capLoads(loads),
               status: 'failed',
               error: plan.failure ?? 'No route could be found to this destination.',
               lastPlannedAt: done,
             })
             return
           }
-          set({ plan, status: 'preview', error: null, lastPlannedAt: done })
+          set({
+            plan,
+            plannedFor: forBoat,
+            chartLoads: capLoads(loads),
+            status: 'preview',
+            error: notice ?? null,
+            lastPlannedAt: done,
+          })
         } catch (e) {
           if (seq !== my) return
           const message = e instanceof Error ? e.message : describeError(e)
           if (live) {
-            set({ rerouting: false, error: `Could not re-route: ${message}` })
+            if (reason === 'boat') {
+              if (stricter(boat, get().plannedFor)) boatFallback(boat, message)
+              // No stricter: the current route still holds for this boat.
+              else set({ rerouting: false })
+              return
+            }
+            set({ rerouting: false, rerouteError: `Could not re-route: ${message}` })
           } else {
             set({ status: 'failed', plan: null, error: message })
           }
@@ -384,12 +935,19 @@ export const useNavigation = create<NavigationState>()(
         },
 
         replan: async (reason) => {
-          const { status, dest } = get()
+          const { status, dest, plan, plannedFor } = get()
           if (!dest) return
           // Nothing to re-plan once there: a boat edited at the dock after
           // arriving should not throw a new route onto the "arrived" card.
           if (status === 'arrived' || status === 'idle') {
             if (reason !== 'user' && reason !== 'retry') return
+          }
+          // A "boat change" that changes nothing the plan was made for — the
+          // same boat seen again after a team list reloads, a sync writing
+          // the same row back — is not a reason to re-plan mid-passage.
+          if (reason === 'boat' && plan && steerable(plan)) {
+            const boat = activeVessel()
+            if (boat && samePlannedFor(plannedFor, plannedForBoat(boat))) return
           }
           await runPlan(reason)
         },
@@ -412,15 +970,34 @@ export const useNavigation = create<NavigationState>()(
           if (s.status === 'navigating') return true
           const tracker = useTracker.getState()
           const fix = tracker.fix && !isStale(tracker.fix) ? tracker.fix : null
+          const targetIdx = startTarget(plan, fix, arrivalOpts())
+          if (s.origin !== null && fix && targetIdx === 0) {
+            // Away from a start chosen by hand, and not on the route: the
+            // only way to "the start" would be a straight bearing nobody has
+            // checked against the chart. Re-plan from where the boat is.
+            set({ origin: null })
+            void runPlan(
+              'user',
+              fix,
+              'You are not at the planned start, so the route has been re-planned from where you are. ' +
+                'Check it, then press Start.',
+            )
+            if (!tracker.watching) tracker.start()
+            return false
+          }
           set({
             status: 'navigating',
-            targetIdx: startTarget(plan, fix, arrivalOpts()),
+            targetIdx,
             resume: fix == null,
             error: null,
+            rerouteError: null,
+            pendingPlan: null,
+            reconfirm: false,
             offCourseSince: null,
             speedKn: null,
             lastFixAt: null,
             gpsPoor: false,
+            shallowHere: null,
             rerouting: false,
             reroutes: 0,
             lastRerouteAt: null,
@@ -432,7 +1009,61 @@ export const useNavigation = create<NavigationState>()(
         confirmBestEffort: () => {
           const { plan } = get()
           if (!plan || !steerable(plan) || !needsConfirm(plan)) return
-          set({ confirmed: true, error: null })
+          set({ confirmed: true, error: null, reconfirm: false })
+        },
+
+        acceptPendingPlan: () => {
+          const s = get()
+          const pending = s.pendingPlan
+          if (!pending || s.status !== 'navigating') return
+          const boat = activeVessel()
+          seq++
+          set({
+            plan: pending,
+            pendingPlan: null,
+            confirmed: true,
+            origin: null,
+            plannedFor: boat ? plannedForBoat(boat) : s.plannedFor,
+            targetIdx: startTarget(pending, useTracker.getState().fix, arrivalOpts()),
+            offCourseSince: null,
+            rerouteError: null,
+            error: null,
+            lastPlannedAt: Date.now(),
+          })
+        },
+
+        dismissPendingPlan: () => {
+          if (get().pendingPlan) set({ pendingPlan: null })
+        },
+
+        setArrivalCap: (ft) => {
+          const s = get()
+          const plan = s.plan
+          if (!plan || !steerable(plan)) return
+          const req = routeArrivalFt(ft)
+          const boat = activeVessel()
+          const was = s.plannedFor ?? (boat ? plannedForBoat(boat) : null)
+          const radii = was
+            ? recomputeArrivalRadii(
+                plan,
+                {
+                  safeDepthM: was.safeDepthM,
+                  clearanceM: was.clearanceM,
+                  features: useChartData.getState().features,
+                },
+                req,
+              )
+            : null
+          // No chart to measure against: a smaller setting still shrinks
+          // every circle at once; a larger one keeps the checked radii.
+          const next =
+            radii && radii.length === plan.points.length
+              ? radii
+              : plan.arrivalFt.map((r) => Math.min(r, req))
+          if (next.length === plan.arrivalFt.length && next.every((r, i) => r === plan.arrivalFt[i])) {
+            return
+          }
+          set({ plan: { ...plan, arrivalFt: next } })
         },
 
         stop: () => {
@@ -440,6 +1071,13 @@ export const useNavigation = create<NavigationState>()(
           if (status !== 'navigating' && status !== 'arrived') return
           // A re-route still in flight belongs to the passage being ended.
           seq++
+          if (status === 'arrived') {
+            // The passage is over. Putting the completed route back up as a
+            // fresh preview — "From: My location", a Start button — invited a
+            // crew at the destination to start it again from the far end.
+            set({ ...INITIAL, ownerId: get().ownerId })
+            return
+          }
           set({
             status: plan && steerable(plan) ? 'preview' : 'idle',
             targetIdx: null,
@@ -447,13 +1085,34 @@ export const useNavigation = create<NavigationState>()(
             rerouting: false,
             resume: false,
             gpsPoor: false,
+            shallowHere: null,
+            pendingPlan: null,
+            reconfirm: false,
             error: null,
+            rerouteError: null,
           })
         },
 
         clear: () => {
           seq++
+          set({ ...INITIAL, ownerId: get().ownerId })
+        },
+
+        reset: () => {
+          seq++
           set({ ...INITIAL })
+        },
+
+        bindOwner: (uid) => {
+          const owner = get().ownerId
+          if (owner && owner !== uid) {
+            // Another account's passage — its destination, its route, the
+            // names of its waypoints — is not this crew's to see or steer.
+            seq++
+            set({ ...INITIAL, ownerId: uid })
+            return
+          }
+          if (owner !== uid) set({ ownerId: uid })
         },
 
         onFix: (fix) => {
@@ -483,6 +1142,10 @@ export const useNavigation = create<NavigationState>()(
               targetIdx: step.targetIdx,
               offCourseSince: null,
               rerouting: false,
+              rerouteError: null,
+              pendingPlan: null,
+              shallowHere: null,
+              error: null,
             })
             return
           }
@@ -490,18 +1153,32 @@ export const useNavigation = create<NavigationState>()(
           let idx = step.targetIdx
           if (idx === from) idx = recoverTarget(plan, idx, fix, opts)
 
-          // Steering to the first point of a route planned ahead from
-          // somewhere else is not "off course" — it is getting to the start.
-          // For a route from my own position it is: the route no longer
-          // starts where the boat is.
-          const off =
-            (idx >= 1 || s.origin === null) && isOffCourse(plan, idx, fix, opts)
+          // Off the leg being run — including, now, steering to the first
+          // point: a start chosen by hand that the boat is not at is not a
+          // line anyone checked, so after the usual 10 s the route is
+          // re-planned from where the boat is.
+          const off = isOffCourse(plan, idx, fix, opts)
           const offCourseSince = off ? (s.offCourseSince ?? now) : null
-          set({ ...base, targetIdx: idx, offCourseSince })
+
+          // The chart under the boat, whatever the off-course rule says: a
+          // boat 20 m off the line can be in water too shallow for it, and
+          // the off-course threshold is 60 m or more.
+          const shallowHere = shallowAt(plan, fix, s.plannedFor)
+
+          set({
+            ...base,
+            targetIdx: idx,
+            offCourseSince,
+            // Back on the route: an old "could not re-route" is no longer
+            // true, and a re-route waiting for confirmation is moot.
+            ...(off ? {} : { rerouteError: null, pendingPlan: null }),
+            ...(sameShallow(s.shallowHere, shallowHere) ? {} : { shallowHere }),
+          })
 
           if (
             off &&
             !s.rerouting &&
+            !s.pendingPlan &&
             now - offCourseSince! >= OFF_COURSE_HOLD_MS &&
             (s.lastRerouteAt == null || now - s.lastRerouteAt >= REROUTE_MIN_GAP_MS)
           ) {
@@ -513,7 +1190,7 @@ export const useNavigation = create<NavigationState>()(
     {
       name: NAV_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(() => localStorage),
+      storage: navStorage(),
       partialize: partializeNav,
       onRehydrateStorage: () => (state) => {
         if (!state) return
@@ -533,3 +1210,27 @@ export const useNavigation = create<NavigationState>()(
     },
   ),
 )
+
+/**
+ * What the chart says under the boat, when that is water shallower than the
+ * boat needs or land — away from the dock stretches at each end, where the
+ * route is allowed shallow water and is drawn dotted already. Null otherwise,
+ * or when no chart covering the position is in memory.
+ */
+function shallowAt(plan: RoutePlan, fix: Fix, was: PlannedFor | null): ShallowHere | null {
+  if (!was) return null
+  const first = plan.points[0]
+  const last = plan.points[plan.points.length - 1]
+  if (metres(fix, first) <= APPROACH_M || metres(fix, last) <= APPROACH_M) return null
+  const here = chartStateAt(useChartData.getState().features, fix)
+  if (here === 'land') return { depthM: null, land: true }
+  if (typeof here === 'number' && here < was.safeDepthM) return { depthM: here, land: false }
+  return null
+}
+
+function sameShallow(a: ShallowHere | null, b: ShallowHere | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.land === b.land && a.depthM === b.depthM
+}
+

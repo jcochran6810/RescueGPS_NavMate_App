@@ -3,6 +3,7 @@ import { activeVessel, useNavigation } from '@/store/useNavigation'
 import { useTeams } from '@/store/useTeams'
 import { useTracker } from '@/store/useTracker'
 import { useVessels } from '@/store/useVessels'
+import { routeArrivalFt } from '@/lib/steer'
 
 /**
  * What drives the route while the crew is looking at something else.
@@ -13,10 +14,13 @@ import { useVessels } from '@/store/useVessels'
  *
  *   - every new GPS fix, while navigating → `onFix` (advance, arrive,
  *     re-route);
- *   - the boat's draft, under-keel margin, stand-off or cruise speed — or
- *     the arrival setting, which caps every turn point's circle — changing,
- *     or a different boat being chosen → re-plan, because a route planned
- *     for a 3 ft draft is not a route for a 5 ft one;
+ *   - the boat's draft, under-keel margin, stand-off or cruise speed
+ *     changing, or a different boat being chosen → re-plan, because a route
+ *     planned for a 3 ft draft is not a route for a 5 ft one;
+ *   - the arrival setting changing → the turn points' circles resized for
+ *     it (`setArrivalCap`), NOT a re-plan: a re-plan from the live fix
+ *     renumbered the waypoints the crew was following, for a setting that
+ *     only says how close to them counts as there;
  *   - the network coming back while the last plan failed → try again (most
  *     failures underway are a chart that could not be read);
  *   - navigating → the GPS kept on. Stopping the tracker on the Track tab
@@ -34,20 +38,19 @@ export function useNavigationEngine(): void {
 export const SETTINGS_SETTLE_MS = 400
 
 /**
- * Everything the plan depends on besides its two ends, as one comparable
- * string. 'none' when no boat is chosen.
+ * Everything the plan's geometry depends on besides its two ends, as one
+ * comparable string. 'none' when no boat is chosen. The arrival setting is
+ * not in it — see `setArrivalCap`.
  */
 export function planSettingsKey(): string {
   const boat = activeVessel()
-  const arrival = useTracker.getState().arrivalFt
-  if (!boat) return `none|${arrival}`
+  if (!boat) return 'none'
   return [
     boat.id,
     boat.draft_m,
     boat.under_keel_margin_m,
     boat.clearance_m,
     boat.cruise_speed_kn,
-    arrival,
   ].join('|')
 }
 
@@ -79,9 +82,11 @@ export function startNavigationEngine(): () => void {
   }
   const offVessels = useVessels.subscribe(onSettings)
   const offTeams = useTeams.subscribe(onSettings)
-  // Not on every fix — only when the arrival setting itself moved.
+  // Not on every fix — only when the arrival setting a route uses moved
+  // (50 → 100 on the Search tab is no change for a route: both are 100).
   const offArrival = useTracker.subscribe((s, prev) => {
-    if (s.arrivalFt !== prev.arrivalFt) onSettings()
+    if (routeArrivalFt(s.arrivalFt) === routeArrivalFt(prev.arrivalFt)) return
+    nav.getState().setArrivalCap(s.arrivalFt)
   })
 
   const onOnline = () => {

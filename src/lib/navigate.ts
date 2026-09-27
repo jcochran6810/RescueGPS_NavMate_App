@@ -77,6 +77,11 @@ export interface NavPlan {
 export interface NavFix extends SteerFix {
   /** ms since the epoch. Missing means the age is unknown — treated as stale. */
   timestamp?: number | null
+  /**
+   * The phone's clock when the fix arrived (see `Fix.receivedAt`). When
+   * present, the age is measured from this, not from `timestamp`.
+   */
+  receivedAt?: number | null
 }
 
 /* -------------------------------------------------------------------------
@@ -87,11 +92,16 @@ export interface NavFix extends SteerFix {
 export const STALE_FIX_S = 15
 
 /**
- * The pass-abeam rule never reaches further than this past a mark, feet.
- * Twice the widest circle. Before this rule had a cap it switched up to
- * 3 × 150 = 450 ft out, which on a tight harbour turn is the next jetty.
+ * The pass-abeam rule never reaches further than this past a mark, feet:
+ * the widest circle a route ever uses, 200 ft. The crew's rule is "the next
+ * waypoint is selected within 100–200 ft", and a switch 300–400 ft out (twice
+ * the setting, as this once allowed) is outside it — and outside anything the
+ * planner's corner check measured. A mark missed further out than this is
+ * `recoverTarget`'s and the off-course re-route's to deal with. Before this
+ * rule had a cap at all it switched up to 3 × 150 = 450 ft out, which on a
+ * tight harbour turn is the next jetty.
  */
-export const PASS_ABEAM_MAX_FT = 2 * MAX_ARRIVAL_FT
+export const PASS_ABEAM_MAX_FT = MAX_ARRIVAL_FT
 
 /** The floor of the off-course threshold, metres. */
 export const OFF_COURSE_MIN_M = 60
@@ -401,7 +411,8 @@ export interface StepResult {
  *   1. Inside its circle — `arrivalRadiusFt`: the planned radius, widened by
  *      the fix's error but never past the point's own safe radius.
  *   2. Past it and still running the leg into it (`pastMark`), no further
- *      than twice the point's SAFE radius and never more than 400 ft. That
+ *      than twice the point's SAFE radius and never more than 200 ft — the
+ *      top of the crew's 100–200 ft rule (`PASS_ABEAM_MAX_FT`). That
  *      limit is new for routes: a planned turn point sits where it does
  *      because of a shoal or a jetty, and "past it" half a football field
  *      later is not rounding it. It is what catches a mark a poor fix could
@@ -605,14 +616,34 @@ export function isOffCourse(
  * stale too — an age that cannot be known cannot be trusted.
  */
 export function isStale(
-  fix: { timestamp?: number | null } | null | undefined,
+  fix: { timestamp?: number | null; receivedAt?: number | null } | null | undefined,
   now: number = Date.now(),
   maxAgeS: number = STALE_FIX_S,
 ): boolean {
   if (!fix) return true
-  const ts = fix.timestamp
-  if (ts == null || !Number.isFinite(ts)) return true
+  const ts = fixTime(fix)
+  if (ts == null) return true
   return now - ts > maxAgeS * 1000
+}
+
+/**
+ * When a fix arrived, on the phone's own clock: `receivedAt` when the
+ * tracker stamped one, else the position's `timestamp`. Null when neither is
+ * known.
+ *
+ * Freshness against the phone clock only works with a time FROM the phone
+ * clock. A position stamped with GNSS time, on a phone whose clock is 20 s
+ * off, looked 20 s old the moment it arrived — every fix "stale", nothing
+ * advancing, while fixes were pouring in.
+ */
+export function fixTime(
+  fix: { timestamp?: number | null; receivedAt?: number | null } | null | undefined,
+): number | null {
+  if (!fix) return null
+  const r = fix.receivedAt
+  if (r != null && Number.isFinite(r)) return r
+  const ts = fix.timestamp
+  return ts != null && Number.isFinite(ts) ? ts : null
 }
 
 /**

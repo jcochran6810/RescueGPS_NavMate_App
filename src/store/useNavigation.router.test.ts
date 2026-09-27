@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ChartFeatures, Ring } from '@/lib/routing'
+import { DETAIL_HALF_NM } from '@/lib/chart'
 import type { Fix } from '@/lib/types'
 import type { Vessel } from '@/lib/vessel'
 import type { LatLon } from '@/lib/search'
@@ -37,7 +38,19 @@ vi.mock('@/store/useChartData', async () => {
   const useChartData = create(() => ({
     status: 'ready' as 'idle' | 'loading' | 'ready' | 'error',
     error: null as string | null,
-    load: vi.fn(async () => chart.features as ChartFeatures),
+    // What is in memory: the synthetic chart once it has been "loaded".
+    features: { depthAreas: [], channels: [], land: [], hazards: [], lines: [], coverage: 'none' } as ChartFeatures,
+    covers: () => false,
+    holds: () => false,
+    load: vi.fn(async (bounds: unknown, opts?: { detailAround?: LatLon[] }) => {
+      const f = (
+        typeof chart.features === 'function'
+          ? (chart.features as (b: unknown, d: LatLon[]) => ChartFeatures)(bounds, opts?.detailAround ?? [])
+          : chart.features
+      ) as ChartFeatures
+      useChartData.setState({ features: f })
+      return f
+    }),
   }))
   return { useChartData }
 })
@@ -131,7 +144,11 @@ beforeEach(() => {
   mem.clear()
   chart.features = sea()
   vi.mocked(useChartData.getState().load).mockClear()
-  useChartData.setState({ status: 'ready', error: null })
+  useChartData.setState({
+    status: 'ready',
+    error: null,
+    features: { depthAreas: [], channels: [], land: [], hazards: [], lines: [], coverage: 'none' },
+  })
   useTracker.setState({
     fix: fixAt(SOUTH),
     watching: true,
@@ -209,4 +226,80 @@ describe('navigation store with the real router', () => {
     s = useNavigation.getState()
     expect(s.status).toBe('navigating')
   })
+
+  it('says so on screen when the chart puts the boat in water too shallow for it, on or off the line (voyage-1)', async () => {
+    // A 1 m shoal 30 m east of the line: a boat 30 m off it is inside the
+    // 60 m off-course threshold, and aground on the chart.
+    chart.features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 1, rings: [rect(25, -300, 200, 300)] },
+      ],
+    })
+    await useNavigation.getState().setDestination(DEST, null)
+    expect(useNavigation.getState().plan?.source).toBe('charted')
+    expect(useNavigation.getState().start()).toBe(true)
+    useNavigation.getState().onFix(fixAt(at(0, 0)))
+    expect(useNavigation.getState().shallowHere).toBeNull()
+    useNavigation.getState().onFix(fixAt(at(40, 10)))
+    const s = useNavigation.getState()
+    expect(s.offCourseSince).toBeNull()
+    expect(s.shallowHere).toEqual({ depthM: 1, land: false })
+    // Back over deep water, it goes away.
+    useNavigation.getState().onFix(fixAt(at(0, 20)))
+    expect(useNavigation.getState().shallowHere).toBeNull()
+  })
+
+  it('pauses steering for a deeper boat the route cannot be made safe for, with no signal to download (R1)', async () => {
+    // 3 m across the middle: fine for the 1.5 m boat, not for a 3.5 m one.
+    chart.features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 3, rings: [rect(-12000, -200, 12000, 200)] },
+      ],
+    })
+    await useNavigation.getState().setDestination(DEST, null)
+    expect(useNavigation.getState().start()).toBe(true)
+    // No signal now: the re-plan's download fails.
+    vi.mocked(useChartData.getState().load).mockRejectedValueOnce(new Error('Failed to fetch'))
+    const { useVessels } = await import('@/store/useVessels')
+    ;(useVessels as unknown as { setState: (p: object) => void }).setState({
+      boat: { ...BOAT, draft_m: 3, under_keel_margin_m: 0.5 },
+    })
+    await useNavigation.getState().replan('boat')
+    const s = useNavigation.getState()
+    expect(s.status).toBe('preview')
+    expect(s.reconfirm).toBe(true)
+    expect(s.plan?.source).toBe('best-effort')
+    expect(s.plan?.legs.some((l) => l.caution === 'unsafe-depth' && !l.unverified)).toBe(true)
+  })
+
+  it('plans the middle of a long passage on the harbour chart too, not the coastal chart’s 0 m (R6)', async () => {
+    // The coastal band reads the whole bay as 0 m (as at Galveston); the
+    // harbour band knows it is 9 m — but it is only ever read in the detail
+    // boxes asked for. Round the two ends alone, the middle is 0 m.
+    const half = DETAIL_HALF_NM * 1852
+    chart.features = (_b: unknown, around: LatLon[]) =>
+      sea({
+        depthAreas: [
+          { minDepthM: 0, level: 3, rings: [rect(-40000, -40000, 40000, 40000)] },
+          ...around.map((p) => {
+            const x = (p.lon - BASE_LON) * MPD.lon
+            const y = (p.lat - BASE_LAT) * MPD.lat
+            return { minDepthM: 9, level: 5, rings: [rect(x - half, y - half, x + half, y + half)] }
+          }),
+        ],
+      })
+    const from = at(0, -9000)
+    const to = { ...at(0, 9000), label: 'Up the bay' }
+    useTracker.setState({ fix: fixAt(from) })
+    await useNavigation.getState().setDestination(to, null)
+    const s = useNavigation.getState()
+    const load = vi.mocked(useChartData.getState().load)
+    expect(load).toHaveBeenCalledTimes(2)
+    expect((load.mock.calls[1][1] as { detailAround: LatLon[] }).detailAround.length).toBeGreaterThan(3)
+    expect(s.status).toBe('preview')
+    expect(s.plan?.source).toBe('charted')
+    expect(s.chartLoads).toHaveLength(2)
+  }, 30_000)
 })

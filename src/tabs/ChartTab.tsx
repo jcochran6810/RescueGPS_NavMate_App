@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFormat } from '@/hooks/useFormat'
 import { useNow } from '@/hooks/useNow'
 import { useTracker } from '@/store/useTracker'
@@ -12,13 +12,14 @@ import { useIncidents } from '@/store/useIncidents'
 import { useTides } from '@/store/useTides'
 import { useHeading } from '@/store/useHeading'
 import { useNavigation, type Place } from '@/store/useNavigation'
+import { useNavUi } from '@/store/useNavUi'
 import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
 import { toDD, toDDM, toDMS } from '@/lib/coords'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { CoordInput } from '@/components/CoordInput'
 import { Sheet } from '@/components/Sheet'
-import { formatDuration, formatEtaClock } from '@/lib/geo'
+import { formatDuration, formatEtaClock, haversineNM, NM_TO_METERS } from '@/lib/geo'
 import {
   fuelForHours,
   readVesselField,
@@ -34,11 +35,12 @@ import {
   tideNow,
 } from '@/lib/tides'
 import { FEET_TO_M } from '@/lib/units'
-import { ROUTE_ARRIVAL_FT_CHOICES, type ArrivalFt } from '@/lib/steer'
+import { ROUTE_ARRIVAL_FT_CHOICES, routeArrivalFt, type ArrivalFt } from '@/lib/steer'
 import {
   arrivalSettingNote,
   bearingText,
   declinationFor,
+  failureFrame,
   hasRoute,
   legRows,
   needsConfirmation,
@@ -147,6 +149,11 @@ export function ChartTab() {
   /** The "Change start" controls are open — planning ahead from elsewhere. */
   const [changingStart, setChangingStart] = useState(false)
   const now = useNow(30_000)
+  const setCardInView = useNavUi((s) => s.setCardInView)
+  /** The steering card, at the very top while steering. */
+  const navTopRef = useRef<HTMLDivElement>(null)
+  /** The route summary and Start, in preview. */
+  const ctaRef = useRef<HTMLDivElement>(null)
 
   // Loading once on mount is enough; the store is offline-first and the cache
   // is what plans routes.
@@ -172,6 +179,44 @@ export function ChartTab() {
   const steering = status === 'navigating' || status === 'arrived'
   const routeOk = hasRoute(plan)
   const mustConfirm = needsConfirmation(plan)
+
+  /*
+   * The card is the first thing on the page while steering — but Start sits
+   * below the map, and pressing it left the page scrolled where it was, the
+   * card 650 px above the top of the screen: no bearing, no distance, no
+   * ETA anywhere in view. So the page goes to the top when steering starts
+   * (and when this tab opens mid-passage), and while the card is scrolled out
+   * of view the one-line banner is put up at the bottom of this tab too.
+   */
+  useEffect(() => {
+    if (!steering) return
+    if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+      window.scrollTo({ top: 0 })
+    }
+  }, [steering])
+  // A new plan (or "no route") brings its summary and Start into view — the
+  // page may still be scrolled from the tab "Navigate here" came from.
+  useEffect(() => {
+    if (status !== 'preview' && status !== 'failed') return
+    ctaRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  }, [status, lastPlannedAt])
+  useEffect(() => {
+    if (!steering) {
+      setCardInView(true)
+      return
+    }
+    const el = navTopRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver(
+      ([entry]) => setCardInView(entry.isIntersecting),
+      { threshold: 0.2 },
+    )
+    io.observe(el)
+    return () => {
+      io.disconnect()
+      setCardInView(true)
+    }
+  }, [steering, setCardInView])
 
   /*
    * The route as the map draws it. Previewing: framed whole, every leg
@@ -215,8 +260,11 @@ export function ChartTab() {
   /** Start steering; if the store refuses, say why. */
   function start() {
     if (!startNav()) {
-      const why = useNavigation.getState().error
-      toast(why ?? 'Nothing to steer yet.', 'error')
+      const s = useNavigation.getState()
+      // Away from a start chosen by hand: the store is re-planning from here,
+      // and the new route will say so when it is shown.
+      if (s.status === 'planning') return
+      toast(s.error ?? 'Nothing to steer yet.', 'error')
     }
   }
 
@@ -377,6 +425,117 @@ export function ChartTab() {
     </Card>
   )
 
+  /*
+   * What the crew needs the moment a destination is set: that a route is
+   * being found; or why there is none, with what to change; or the summary,
+   * any red box, and Start. Placed above the map.
+   */
+  const redReason = mustConfirm && plan ? (plan.confirmReason ?? plan.warnings[0] ?? null) : null
+  const amberWarnings = plan ? plan.warnings.filter((w) => w !== redReason) : []
+  const previewCta =
+    status === 'planning' || failure || (plan && routeOk && summary) ? (
+      <Card>
+        {status === 'planning' ? (
+          <p className="flex items-center gap-2 text-sm text-slate-200" role="status">
+            <Spinner />
+            {`Finding a safe route from ${origin ? origin.label.toLowerCase() : 'your position'}…`}
+          </p>
+        ) : null}
+
+        {/* No honest route: no line, the plain reason, what to change, Retry. */}
+        {failure ? (
+          <div>
+            <p className="text-base font-semibold text-red-100">{failure.title}</p>
+            <p className="mt-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+              {failure.reason}
+            </p>
+            {failure.hints.map((h) => (
+              <p
+                key={h}
+                className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100"
+              >
+                {h}
+              </p>
+            ))}
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {failure.actions.map((a) => (
+                <Button
+                  key={a}
+                  variant={a === 'retry' || a === 'add-boat' ? 'primary' : 'ghost'}
+                  className={a === 'retry' ? 'col-span-2' : ''}
+                  onClick={() => act(a)}
+                >
+                  {ACTION_LABEL[a]}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {plan && routeOk && summary && !steering ? (
+          <>
+            {/* The summary, Google-Maps style, and the one button that matters. */}
+            <p className="tnum text-xl font-semibold text-slate-50">{summary.line}</p>
+            {dest ? <p className="truncate text-xs text-slate-400">to {dest.label}</p> : null}
+
+            {navError && status === 'preview' ? (
+              <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                {navError}
+              </p>
+            ) : null}
+
+            {mustConfirm ? (
+              <div className="mt-2 rounded-lg border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                <strong className="font-semibold">Not a fully safe route.</strong>{' '}
+                {redReason ?? 'No route keeps your depth and stand-off the whole way.'}{' '}
+                The legs that break them are red on the map and below.
+              </div>
+            ) : null}
+
+            {status === 'preview' ? (
+              mustConfirm && !confirmed ? (
+                <Button
+                  variant="danger"
+                  className="mt-3 min-h-14 w-full text-base"
+                  onClick={() => {
+                    // Accepting one route's problems is not accepting the next
+                    // one's — the store forgets this with every new plan.
+                    confirmBestEffort()
+                    start()
+                  }}
+                >
+                  I understand — start anyway
+                </Button>
+              ) : (
+                <Button
+                  variant={mustConfirm ? 'danger' : 'primary'}
+                  className="mt-3 min-h-14 w-full text-lg"
+                  onClick={start}
+                >
+                  Start
+                </Button>
+              )
+            ) : null}
+          </>
+        ) : null}
+      </Card>
+    ) : null
+
+  /*
+   * "From: My location" over a route that starts where the boat WAS when it
+   * was planned — the completed passage after arriving, say — reads as a new
+   * route from here. Say where it is really from.
+   */
+  const fromLabel = origin
+    ? origin.label
+    : plan &&
+        routeOk &&
+        !steering &&
+        fix &&
+        haversineNM(fix.lat, fix.lon, plan.points[0].lat, plan.points[0].lon) * NM_TO_METERS > 300
+      ? 'Where you were when planned'
+      : 'My location'
+
   const arrivalSetting = (
     <div className="mt-3 rounded-lg border border-white/10 px-3 py-2">
       <span className="mb-1.5 block text-xs font-semibold text-slate-300">
@@ -384,7 +543,9 @@ export function ChartTab() {
       </span>
       <Segmented
         label="Arrival distance"
-        value={String(arrivalFt)}
+        // The value a route actually uses: the Search tab's 50 ft shows (and
+        // steers) as 100 here.
+        value={String(routeArrivalFt(arrivalFt))}
         onChange={(v) => setArrivalFt(Number(v) as ArrivalFt)}
         options={ROUTE_ARRIVAL_FT_CHOICES.map((ft) => ({
           id: String(ft),
@@ -399,19 +560,25 @@ export function ChartTab() {
 
   return (
     <div className="space-y-3">
-      {steering ? <NavCard /> : null}
+      {steering ? (
+        <div ref={navTopRef}>
+          <NavCard />
+        </div>
+      ) : null}
 
       {!steering && (
         <>
           <h2 className="text-lg font-semibold text-slate-50">Chart plotter</h2>
-          <p className="text-sm text-slate-300">
-            Pick where you are going. The route is planned from where you are,
-            round the shoals and hazards for your boat — then press Start.
-          </p>
+          {/* Folded away once there is a destination, so the route summary
+              and Start fit on the first screen. */}
+          {!dest ? (
+            <p className="text-sm text-slate-300">
+              Pick where you are going. The route is planned from where you are,
+              round the shoals and hazards for your boat — then press Start.
+            </p>
+          ) : null}
         </>
       )}
-
-      {!steering && boatCard}
 
       {/* ---------------------------------------------------- where to */}
       {!steering && (
@@ -435,7 +602,7 @@ export function ChartTab() {
             ) : null}
           </div>
           <p className="truncate text-sm text-slate-100">
-            {origin ? origin.label : 'My location'}
+            {fromLabel}
             {origin ? (
               <span className="tnum block truncate text-xs text-slate-400">
                 {formatPlace(origin, format)}
@@ -458,6 +625,18 @@ export function ChartTab() {
             : null}
         </Card>
       )}
+
+      {/* The summary and the one button that matters, straight under where
+          the crew set the destination — not below the map, where "Navigate
+          here" left them 270 px under the bottom of the screen. */}
+      {!steering && previewCta ? (
+        // Clears the sticky header when scrolled to.
+        <div ref={ctaRef} className="scroll-mt-28">
+          {previewCta}
+        </div>
+      ) : null}
+
+      {!steering && boatCard}
 
       {/* ----------------------------------------------------------- chart */}
       <Card className="p-3">
@@ -538,6 +717,10 @@ export function ChartTab() {
                 : undefined
           }
           height={steering ? 380 : 320}
+          // No line to fit when no route was found: frame the boat (or the
+          // start) and the destination that failed, so the crew can see the
+          // point they picked.
+          frame={failureFrame({ status, dest, origin, fix, lastPlannedAt })}
         />
 
         {picking ? (
@@ -566,103 +749,22 @@ export function ChartTab() {
           </p>
         ) : null}
 
-        {status === 'planning' ? (
-          <p className="flex items-center gap-2 text-sm text-slate-200" role="status">
-            <Spinner />
-            {`Finding a safe route from ${origin ? origin.label.toLowerCase() : 'your position'}…`}
-          </p>
-        ) : null}
-
-        {/* No honest route: no line, the plain reason, what to change, Retry. */}
-        {failure ? (
-          <div>
-            <p className="text-base font-semibold text-red-100">{failure.title}</p>
-            <p className="mt-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-              {failure.reason}
-            </p>
-            {failure.hints.map((h) => (
-              <p
-                key={h}
-                className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100"
-              >
-                {h}
-              </p>
-            ))}
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              {failure.actions.map((a) => (
-                <Button
-                  key={a}
-                  variant={a === 'retry' || a === 'add-boat' ? 'primary' : 'ghost'}
-                  className={a === 'retry' ? 'col-span-2' : ''}
-                  onClick={() => act(a)}
-                >
-                  {ACTION_LABEL[a]}
-                </Button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
         {plan && routeOk && summary ? (
           <>
-            {/* The summary, Google-Maps style, and the one button that matters. */}
-            {!steering ? (
-              <>
-                <p className="tnum text-xl font-semibold text-slate-50">{summary.line}</p>
-                {dest ? (
-                  <p className="truncate text-xs text-slate-400">to {dest.label}</p>
-                ) : null}
-              </>
-            ) : null}
-
-            {navError && status === 'preview' ? (
-              <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                {navError}
+            {steering && mustConfirm ? (
+              <p className="mb-2 rounded-lg border border-red-400/50 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                <strong className="font-semibold">Not a fully safe route.</strong>{' '}
+                {redReason ?? 'No route keeps your depth and stand-off the whole way.'}
               </p>
             ) : null}
-
-            {mustConfirm ? (
-              <div className="mt-2 rounded-lg border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                <strong className="font-semibold">Not a fully safe route.</strong>{' '}
-                {plan.warnings[0] ??
-                  'No route keeps your depth and stand-off the whole way.'}{' '}
-                The legs that break them are red on the map and below.
-              </div>
-            ) : null}
-
-            {status === 'preview' ? (
-              mustConfirm && !confirmed ? (
-                <Button
-                  variant="danger"
-                  className="mt-3 min-h-14 w-full text-base"
-                  onClick={() => {
-                    // Accepting one route's problems is not accepting the next
-                    // one's — the store forgets this with every new plan.
-                    confirmBestEffort()
-                    start()
-                  }}
-                >
-                  I understand — start anyway
-                </Button>
-              ) : (
-                <Button
-                  variant={mustConfirm ? 'danger' : 'primary'}
-                  className="mt-3 min-h-14 w-full text-lg"
-                  onClick={start}
-                >
-                  Start
-                </Button>
-              )
-            ) : null}
-
-            <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            <p className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
               <strong className="font-semibold">Not for navigation.</strong>{' '}
               Charted depths are at mean lower low water and were not surveyed
               for your passage. Check this against the chart and your own eyes
               before you run it.
             </p>
 
-            {plan.warnings.slice(mustConfirm ? 1 : 0).map((w) => (
+            {amberWarnings.map((w) => (
               <p
                 key={w}
                 className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100"
@@ -691,7 +793,7 @@ export function ChartTab() {
                       (behind ? ' opacity-50' : '')
                     }
                   >
-                    <span className="tnum text-slate-100">
+                    <span className="tnum shrink-0 whitespace-nowrap text-slate-100">
                       {leg.n}. {bearingText(leg.courseDeg, bearingPref, declination)}
                     </span>
                     <span className="tnum text-right text-xs text-slate-300">
@@ -1018,7 +1120,7 @@ function RouteLegend() {
             strokeLinecap="round"
           />
         </svg>
-        check depth
+        check by eye
       </span>
       <span className="flex items-center gap-1">
         <svg width="18" height="6" aria-hidden>

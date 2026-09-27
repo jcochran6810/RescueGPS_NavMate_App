@@ -15,6 +15,8 @@ const calls: {
   fail: (e: unknown) => void
 }[] = []
 let autoRelease = true
+/** The `base` each call was given (what was already loaded), or null. */
+const bases: unknown[] = []
 /** Bands the stub pretends could not be read. */
 let failing: string[] = []
 
@@ -25,13 +27,22 @@ vi.mock('@/lib/chart', async (importOriginal) => {
     fetchChartArea: vi.fn(
       (
         bounds: ChartBounds,
-        opts: { detailAround?: readonly LatLon[]; bands?: EncBand[] } = {},
+        opts: {
+          detailAround?: readonly LatLon[]
+          bands?: EncBand[]
+          base?: { regions: readonly LoadedRegion[] }
+        } = {},
       ): Promise<ChartArea> => {
         const plan = real.planChartRegions(bounds, opts)
-        const regions: LoadedRegion[] = plan.map((r) => ({
-          bounds: r.bounds,
-          bands: r.bands.map((b) => b.id).filter((id) => !failing.includes(id)),
-        }))
+        const regions: LoadedRegion[] = [
+          ...plan.map((r) => ({
+            bounds: r.bounds,
+            bands: r.bands.map((b) => b.id).filter((id) => !failing.includes(id)),
+          })),
+          // As the real one does: what was loaded before is remembered.
+          ...(opts.base?.regions ?? []),
+        ]
+        bases.push(opts.base ?? null)
         const asked = [...new Set(plan.flatMap((r) => r.bands.map((b) => b.id)))]
         const failedBands = asked.filter((id) => failing.includes(id))
         const result: ChartArea = {
@@ -63,7 +74,7 @@ vi.mock('@/lib/chart', async (importOriginal) => {
 })
 
 // Imported after the mock so the store sees the stub.
-const { useChartData } = await import('./useChartData')
+const { useChartData, STALE_LOAD_MS } = await import('./useChartData')
 const chart = await import('@/lib/chart')
 
 /** About 55 NM corner to corner: too big for the harbour band as a whole. */
@@ -83,6 +94,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0))
 
 beforeEach(() => {
   calls.length = 0
+  bases.length = 0
   autoRelease = true
   failing = []
   useChartData.getState().clear()
@@ -307,5 +319,77 @@ describe('useChartData.saved', () => {
     await useChartData.getState().load(LONG)
     await useChartData.getState().load(LONG, true)
     expect(useChartData.getState().saved).toHaveLength(1)
+  })
+})
+
+describe('useChartData — keeping what is loaded (offline re-routes)', () => {
+  it('a failed load after a good one keeps the chart already in memory', async () => {
+    await useChartData.getState().load(LONG, { detailAround: [START, END] })
+    const before = useChartData.getState()
+    autoRelease = false
+    const elsewhere = hopAt({ lat: 29.2, lon: -95.0 })
+    const p = useChartData.getState().load(elsewhere, { detailAround: [{ lat: 29.2, lon: -95.0 }] })
+    await settle()
+    calls.at(-1)!.fail(new Error('Failed to fetch'))
+    const f = await p
+    // The caller is told it failed…
+    expect(f.coverage).toBe('none')
+    const s = useChartData.getState()
+    expect(s.error).toContain('Failed to fetch')
+    // …but the passage's chart is still there to re-route on.
+    expect(s.status).toBe('ready')
+    expect(s.features).toBe(before.features)
+    expect(s.regions).toEqual(before.regions)
+    expect(s.holds(chart.padBounds(LONG))).toBe(true)
+    // And the box that failed is still not covered, so it is asked again.
+    expect(s.covers(elsewhere, { detailAround: [{ lat: 29.2, lon: -95.0 }] })).toBe(false)
+  })
+
+  it('adds to what is loaded inside the same area rather than reading it all again', async () => {
+    await useChartData.getState().load(LONG, { detailAround: [START, END] })
+    const mid = { lat: 29.45, lon: -94.62 }
+    await useChartData.getState().load(LONG, { detailAround: [START, mid, END] })
+    expect(calls).toHaveLength(2)
+    expect(bases[0]).toBeNull()
+    expect(bases[1]).not.toBeNull()
+    // The ends read by the first load are still on record.
+    const s = useChartData.getState()
+    expect(s.regions.filter((r) => r.bands.includes('harbour')).length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('holds a box only when something was read over the whole of it', async () => {
+    expect(useChartData.getState().holds(LONG)).toBe(false)
+    await useChartData.getState().load(hopAt(START))
+    expect(useChartData.getState().holds(hopAt(START))).toBe(true)
+    expect(useChartData.getState().holds(LONG)).toBe(false)
+  })
+})
+
+describe('useChartData — a load that never answers', () => {
+  it('does not hold later requests behind a hung load for ever', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(1_000_000)
+      autoRelease = false
+      void useChartData.getState().load(LONG)
+      await settle()
+      expect(calls).toHaveLength(1)
+      // Long past the limit, a new request starts its own load at once.
+      vi.setSystemTime(1_000_000 + STALE_LOAD_MS + 1)
+      const elsewhere = hopAt({ lat: 29.2, lon: -95.0 })
+      const p = useChartData.getState().load(elsewhere)
+      await settle()
+      expect(calls).toHaveLength(2)
+      calls[1].release()
+      const f = await p
+      expect(f.depthAreas.length).toBeGreaterThan(0)
+      // The hung one, answering at last, writes nothing back over it.
+      const now = useChartData.getState().bounds
+      calls[0].release()
+      await settle()
+      expect(useChartData.getState().bounds).toEqual(now)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

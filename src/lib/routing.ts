@@ -318,6 +318,13 @@ export interface RouteLeg extends PatternLeg {
    */
   nearShoalDepthM?: number | null
   nearShoalDistM?: number | null
+  /**
+   * Not checked for the boat now being steered: the boat was made deeper or
+   * its stand-off wider, and neither a new plan nor a re-check against the
+   * chart could be made (no chart in memory). Drawn and flagged as unsafe
+   * until the crew has read it.
+   */
+  unverified?: boolean
 }
 
 /**
@@ -2846,26 +2853,8 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
 
   const checks = pts.slice(1).map((p, i) => check(ctx, ctx.clearanceM, pts[i], p))
   const snapLeg = (i: number) => (b.snapStart && i === 0) || (b.snapEnd && i === checks.length - 1)
-  const approachM = ctx.zones.length > 0 ? ctx.zones[0].r : 0
-  const cautions = checks.map((r, i): LegCaution => {
-    // The hop off (or onto) a dock the chart draws as land: nothing about it
-    // can be checked, but it is the dock, not the passage — flagged "by
-    // eye", not a reason to call a sound route unsafe. A long one is a
-    // different thing (the chart really puts the boat ashore), and stays
-    // unsafe.
-    if (
-      snapLeg(i) &&
-      (r.crossesLand || r.entersHazard) &&
-      approachM > 0 &&
-      distXY(pts[i], pts[i + 1]) <= approachM + 1e-6
-    ) {
-      return 'off-chart-end'
-    }
-    return cautionOf(r)
-  })
-  const charted = cautions.every(
-    (c) => c === 'ok' || c === 'shallow-approach' || c === 'off-chart-end',
-  )
+  const cautions = legCautions(ctx, pts, checks, snapLeg)
+  const charted = isCharted(cautions)
 
   const { legs: base, totalNM } = buildLegs(points, () => true)
   const speed = Number.isFinite(req.speedKn) && req.speedKn > 0 ? req.speedKn : NaN
@@ -2976,6 +2965,37 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
     needsConfirm: !charted,
     confirmReason,
   }
+}
+
+/** Each leg's caution, from its check against the chart. */
+function legCautions(
+  ctx: Ctx,
+  pts: XY[],
+  checks: SegmentCheck[],
+  snapLeg: (i: number) => boolean,
+): LegCaution[] {
+  const approachM = ctx.zones.length > 0 ? ctx.zones[0].r : 0
+  return checks.map((r, i): LegCaution => {
+    // The hop off (or onto) a dock the chart draws as land: nothing about it
+    // can be checked, but it is the dock, not the passage — flagged "by
+    // eye", not a reason to call a sound route unsafe. A long one is a
+    // different thing (the chart really puts the boat ashore), and stays
+    // unsafe.
+    if (
+      snapLeg(i) &&
+      (r.crossesLand || r.entersHazard) &&
+      approachM > 0 &&
+      distXY(pts[i], pts[i + 1]) <= approachM + 1e-6
+    ) {
+      return 'off-chart-end'
+    }
+    return cautionOf(r)
+  })
+}
+
+/** Every leg sound — the approach and dock exceptions aside. */
+function isCharted(cautions: LegCaution[]): boolean {
+  return cautions.every((c) => c === 'ok' || c === 'shallow-approach' || c === 'off-chart-end')
 }
 
 function joinWords(items: string[]): string {
@@ -3143,6 +3163,78 @@ export function recomputeArrivalRadii(
         }
   const req2 = Number.isFinite(arrivalFt) && arrivalFt > 0 ? Math.max(MIN_ARRIVAL_FT, arrivalFt) : DEFAULT_ARRIVAL_FT
   return arrivalRadii(ctx, mode, pts, req2)
+}
+
+/**
+ * A plan already made, checked again against the chart for a boat whose
+ * draft, margin or stand-off has changed — without moving a single point.
+ *
+ * What a route was checked against is the boat it was planned for. When the
+ * boat is made deeper (or its stand-off wider) mid-passage and a fresh plan
+ * cannot be made — no signal, no chart for the new box — the route being
+ * steered must not carry on looking sound: every leg is measured again for
+ * the new boat, and one that now falls short is flagged exactly as the
+ * planner would have flagged it, with the plan made `best-effort` and
+ * `needsConfirm` so it is not steered again until the crew has read it.
+ *
+ * Null when the plan has no line, or there is no chart to measure against.
+ */
+export function recheckPlan(
+  plan: RoutePlan,
+  req: Pick<RouteRequest, 'safeDepthM' | 'clearanceM' | 'features' | 'approachM' | 'depthMarginM' | 'arrivalFt'>,
+): RoutePlan | null {
+  if (plan.source === 'none' || plan.points.length < 2) return null
+  if (req.features.coverage === 'none' || req.features.depthAreas.length === 0) return null
+  if (plan.legs.length !== plan.points.length - 1) return null
+  const from = plan.points[0]
+  const to = plan.points[plan.points.length - 1]
+  const ctx = makeCtx({ ...req, from, to, speedKn: 0 })
+  const pts = plan.points.map((p) => toXY(ctx.ix.proj, p))
+  const checks = pts.slice(1).map((p, i) => check(ctx, ctx.clearanceM, pts[i], p))
+  const snapLeg = (i: number) =>
+    (plan.movedStart != null && i === 0) || (plan.movedEnd != null && i === checks.length - 1)
+  const cautions = legCautions(ctx, pts, checks, snapLeg)
+  const charted = isCharted(cautions)
+  const legs: RouteLeg[] = plan.legs.map((leg, i) => ({
+    ...leg,
+    caution: cautions[i],
+    minChartedDepthM: checks[i].minDepthM,
+    minClearanceM: checks[i].minClearanceM,
+    minDepthOutsideM: checks[i].minDepthOutsideM,
+    overLand: checks[i].crossesLand || (snapLeg(i) && checks[i].entersHazard),
+    approachReasons: [
+      ...(checks[i].approachDepth ? (['depth'] as const) : []),
+      ...(checks[i].approachClearance ? (['clearance'] as const) : []),
+    ],
+    nearShoalDepthM: checks[i].nearShoal ? checks[i].nearShoalDepthM : null,
+    nearShoalDistM: checks[i].nearShoal ? checks[i].nearShoalDistM : null,
+  }))
+  const shortfall = charted ? [] : shortfallWarnings(ctx, legs, checks, snapLeg)
+  // The old plan's own shortfall lines were about the old boat.
+  const kept = plan.warnings.filter(
+    (w) => !/^No route keeps /.test(w) && !/^This is the safest route found/.test(w),
+  )
+  const mode: Mode = charted
+    ? { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false }
+    : {
+        clearanceM: Math.min(ctx.clearanceM, CLEARANCE_FLOOR_M),
+        wantClearanceM: ctx.clearanceM,
+        allowShallow: true,
+        optimistic: false,
+      }
+  const arrivalReq =
+    Number.isFinite(req.arrivalFt) && (req.arrivalFt as number) > 0
+      ? Math.max(MIN_ARRIVAL_FT, req.arrivalFt as number)
+      : Math.max(...plan.arrivalFt, MIN_ARRIVAL_FT)
+  return {
+    ...plan,
+    legs,
+    source: charted ? 'charted' : 'best-effort',
+    needsConfirm: !charted,
+    confirmReason: charted ? null : (shortfall[0] ?? null),
+    warnings: [...shortfall, ...kept],
+    arrivalFt: arrivalRadii(ctx, mode, pts, arrivalReq),
+  }
 }
 
 /**

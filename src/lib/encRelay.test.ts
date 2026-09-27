@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 // @ts-expect-error — a plain-JS Vercel function with no type declarations.
 import handler, { isArcgisError } from '../../api/enc.js'
-import { defaultFetcher } from './chart'
+import { defaultFetcher, FETCH_TIMEOUT_MS } from './chart'
 
 const NOAA =
   'https://encdirect.noaa.gov/arcgis/rest/services/encdirect/enc_harbour/MapServer/227/query?f=geojson'
@@ -88,5 +88,19 @@ describe('defaultFetcher', () => {
   it('returns the parsed body on success', async () => {
     upstream('{"features":[]}')
     await expect(defaultFetcher(NOAA)).resolves.toEqual({ features: [] })
+  })
+
+  it('gives every query a time limit, so a stalled link ends instead of hanging a re-route', async () => {
+    let init: RequestInit | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i?: RequestInit) => {
+        init = i
+        return new Response('{"features":[]}', { status: 200 })
+      }),
+    )
+    await defaultFetcher(NOAA)
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+    expect(FETCH_TIMEOUT_MS).toBe(20_000)
   })
 })

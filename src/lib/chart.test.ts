@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { MERCATOR_HALF, NOAA_CHART, SEAMARKS, tileBbox3857, lonToTileX, latToTileY } from './tiles'
+import { haversineNM } from './geo'
 import {
   bandForSpan,
   bandsForSpan,
   boundsSpanNM,
   chartNeeds,
   containsBounds,
+  corridorPoints,
   DETAIL_HALF_NM,
+  MAX_CORRIDOR_BOXES,
   detailBox,
   encRequestUrl,
   intersectBounds,
@@ -1750,5 +1753,71 @@ describe('fetchChartArea — detail round the ends', () => {
     const asked: string[] = []
     await fetchChartArea(LONG_BOX, { fetcher: galveston(asked) })
     expect(asked.some((u) => u.includes('enc_harbour'))).toBe(false)
+  })
+
+  it('reads the harbour chart along the whole route, not just round its ends (corridor)', async () => {
+    // A long passage: without the corridor the middle is planned — and
+    // re-routed — on the coastal chart's 0 m.
+    const route = [START, { lat: 29.45, lon: -94.62 }, END]
+    const pts = corridorPoints(route)
+    expect(pts.length).toBeGreaterThan(3)
+    const f = await fetchChartArea(LONG_BOX, { fetcher: galveston([]), detailAround: pts })
+    // Every stretch of the route lies in a region read at harbour scale.
+    for (let i = 1; i < route.length; i++) {
+      for (let k = 0; k <= 20; k++) {
+        const p = {
+          lat: route[i - 1].lat + ((route[i].lat - route[i - 1].lat) * k) / 20,
+          lon: route[i - 1].lon + ((route[i].lon - route[i - 1].lon) * k) / 20,
+        }
+        expect(f.regions.some((r) => r.bands.includes('harbour') && inside(p, r.bounds))).toBe(true)
+      }
+    }
+  })
+
+  it('adds only what is missing to a chart already loaded, and keeps what was there', async () => {
+    const first = await fetchChartArea(LONG_BOX, { fetcher: galveston([]), detailAround: [START, END] })
+    const asked: string[] = []
+    const mid = { lat: 29.45, lon: -94.62 }
+    const more = await fetchChartArea(LONG_BOX, {
+      fetcher: galveston(asked),
+      detailAround: [START, mid, END],
+      base: { features: first, regions: first.regions },
+    })
+    const queries = asked.filter((u) => u.includes('/query'))
+    // The whole-area bands and the two ends were read already: only the box
+    // round the new point is asked for.
+    expect(queries.length).toBeGreaterThan(0)
+    for (const u of queries) {
+      expect(u).toContain('enc_harbour')
+      expect(inside(mid, envelopeOf(u)!)).toBe(true)
+    }
+    // Nothing lost, nothing doubled.
+    expect(more.depthAreas.filter((d) => d.minDepthM === 0)).toHaveLength(1)
+    expect(more.depthAreas.filter((d) => d.minDepthM === 12)).toHaveLength(3)
+    expect(more.regions.some((r) => r.bands.includes('harbour') && inside(mid, r.bounds))).toBe(true)
+    expect(more.regions.some((r) => r.bands.includes('harbour') && inside(START, r.bounds))).toBe(true)
+  })
+})
+
+describe('corridorPoints', () => {
+  it('samples a route every 1.5 detail boxes, ends included', () => {
+    const pts = corridorPoints([START, END])
+    expect(pts[0]).toEqual(START)
+    expect(pts[pts.length - 1]).toEqual(END)
+    for (let i = 1; i < pts.length; i++) {
+      const d = haversineNM(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon)
+      expect(d).toBeLessThanOrEqual(1.5 * DETAIL_HALF_NM + 0.01)
+    }
+  })
+
+  it('never exceeds the box cap on a very long passage', () => {
+    const pts = corridorPoints([{ lat: 25, lon: -80 }, { lat: 35, lon: -75 }])
+    expect(pts.length).toBeLessThanOrEqual(MAX_CORRIDOR_BOXES)
+    expect(pts[pts.length - 1]).toEqual({ lat: 35, lon: -75 })
+  })
+
+  it('ignores positions that are not positions', () => {
+    expect(corridorPoints([])).toEqual([])
+    expect(corridorPoints([{ lat: NaN, lon: 0 }, START])).toEqual([START, START])
   })
 })

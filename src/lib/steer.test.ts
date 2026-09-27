@@ -10,6 +10,7 @@ import {
   navBearing,
   pastMark,
   ROUTE_ARRIVAL_FT_CHOICES,
+  routeArrivalFt,
   shouldAdvance,
   type SteerablePlan,
   turnToward,
@@ -280,5 +281,17 @@ describe('navBearing', () => {
     expect(formatNavBearing({ deg: 7.4, ref: 'T' })).toBe('007°T')
     expect(formatNavBearing({ deg: 359.6, ref: 'M' })).toBe('000°M')
     expect(formatNavBearing({ deg: Number.NaN, ref: 'T' })).toBe('—')
+  })
+})
+
+describe('routeArrivalFt — the arrival distance a route is steered with', () => {
+  it('holds the shared setting to the route choices, 100–200 ft (the Search tab’s 50 counts as 100)', () => {
+    expect(routeArrivalFt(50)).toBe(100)
+    expect(routeArrivalFt(100)).toBe(100)
+    expect(routeArrivalFt(150)).toBe(150)
+    expect(routeArrivalFt(200)).toBe(200)
+    expect(routeArrivalFt(400)).toBe(200)
+    expect(routeArrivalFt(null)).toBe(150)
+    expect(routeArrivalFt(Number.NaN)).toBe(150)
   })
 })

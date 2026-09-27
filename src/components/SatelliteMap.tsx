@@ -35,7 +35,13 @@ import { useCoordFormat } from '@/store/useCoordFormat'
 import { useMapAction } from '@/store/useMapAction'
 import { useWaypointView } from '@/store/useWaypointView'
 import { toast } from '@/store/useToast'
-import { segmentStyle, type RouteMark, type RouteSegment } from '@/lib/navView'
+import {
+  declutterMarks,
+  isFlagged,
+  segmentStyle,
+  type RouteMark,
+  type RouteSegment,
+} from '@/lib/navView'
 
 const MIN_ZOOM = 3
 const MAX_ZOOM = 19
@@ -82,6 +88,7 @@ export function SatelliteMap({
   route = [],
   routeUnverified = false,
   navRoute = null,
+  frame = null,
   labels = false,
   base = 'satellite',
   seamarks = false,
@@ -147,6 +154,13 @@ export function SatelliteMap({
     view: 'fit' | 'follow'
     fitKey?: string | number | null
   } | null
+  /**
+   * Positions to frame once per `key` when there is no route to fit — a plan
+   * that found no route: the boat (or start) and the destination that failed,
+   * so the crew can see the point they picked. Framing only; nothing is drawn
+   * that could look like a route.
+   */
+  frame?: { key: string | number; points: { lat: number; lon: number }[] } | null
   /** Draw place names and boundaries over the imagery. */
   labels?: boolean
   /** Which base layer to draw: aerial imagery, or the NOAA chart. */
@@ -876,9 +890,15 @@ export function SatelliteMap({
 
   const navPoints = useMemo(() => navRoute?.marks ?? [], [navRoute])
 
+  const framePoints = useMemo(() => frame?.points ?? [], [frame])
+
   const fitTrack = () => {
     if (navPoints.length > 1) {
       fitPoints(navPoints)
+      return
+    }
+    if (framePoints.length > 0 && trail.length <= 1 && route.length <= 1) {
+      fitPoints(framePoints)
       return
     }
     fitPoints([...trail, ...route])
@@ -902,6 +922,17 @@ export function SatelliteMap({
     if (navView === 'follow') setView((v) => ({ ...v, manual: false }))
     else if (navPoints.length > 1) fitPoints(navPoints)
   }, [navView, navFitKey, navPoints, w, fitPoints])
+
+  // No route, but somewhere to look: frame it once per key. A pan after
+  // that is left alone, and "Centre" still goes back to following.
+  const frameKey = frame?.key ?? null
+  const appliedFrame = useRef<string | number | null>(null)
+  useEffect(() => {
+    if (w === 0 || frameKey == null || framePoints.length === 0) return
+    if (appliedFrame.current === frameKey) return
+    appliedFrame.current = frameKey
+    fitPoints(framePoints)
+  }, [frameKey, framePoints, w, fitPoints])
 
   /**
    * Pull the tiles around here into the cache while there is still a signal.
@@ -1019,7 +1050,9 @@ export function SatelliteMap({
         {/* On the map, not only on a card below it. Whoever is looking at this
             line is looking here. */}
         {placed && routeUnverified && (route.length > 0 || navPoints.length > 0) ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-red-950/80 px-3 py-1.5 text-center text-xs font-semibold text-red-100">
+          // Above the map's own buttons (bottom-2, 32 px tall), not under
+          // them: they cut the warning in half.
+          <div className="pointer-events-none absolute inset-x-0 bottom-12 z-10 bg-red-950/80 px-3 py-1.5 text-center text-xs font-semibold text-red-100">
             Not a safe course — the safest route found. Some legs break your
             depth or stand-off; read the flagged legs before you steer it.
           </div>
@@ -1329,7 +1362,7 @@ export function SatelliteMap({
           )}
 
           {navRoute &&
-            navRoute.marks.map((m) => {
+            declutterMarks(navRoute.marks, (m) => project(m.lat, m.lon)).map(({ mark: m, hidden }) => {
               const p = project(m.lat, m.lon)
               if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) return null
               const upright = rot === 0 ? undefined : `rotate(${rot} ${p.x} ${p.y})`
@@ -1383,9 +1416,73 @@ export function SatelliteMap({
                   >
                     {m.label}
                   </text>
+                  {hidden.length > 0 ? (
+                    // The turn points drawn under this one at this zoom.
+                    <text
+                      x={p.x + r + 3}
+                      y={p.y - r}
+                      transform={upright}
+                      className="text-[10px] font-bold"
+                      fill="#e2e8f0"
+                      stroke="#06131f"
+                      strokeWidth="3"
+                      paintOrder="stroke"
+                    >
+                      {`${m.label}–${hidden[hidden.length - 1]}`}
+                    </text>
+                  ) : null}
                 </g>
               )
             })}
+
+          {/* Flagged legs once more, OVER the turn points: a best-effort
+              route's worst stretch is often a string of short hops, and the
+              marker circles covered every pixel of red. A leg too short to
+              see at this zoom gets a red ring round it instead. */}
+          {navRoute &&
+            (() => {
+              // One ring per cluster of short flagged legs, not a pile.
+              const rings: { x: number; y: number }[] = []
+              return navRoute.segments
+                .filter((seg) => seg.state !== 'behind' && isFlagged(seg.caution))
+                .map((seg) => {
+                  const a = project(seg.from.lat, seg.from.lon)
+                  const b = project(seg.to.lat, seg.to.lon)
+                  const st = segmentStyle(seg)
+                  const d = `M${a.x.toFixed(1)},${a.y.toFixed(1)} L${b.x.toFixed(1)},${b.y.toFixed(1)}`
+                  const mx = (a.x + b.x) / 2
+                  const my = (a.y + b.y) / 2
+                  const short =
+                    Math.hypot(b.x - a.x, b.y - a.y) < 24 &&
+                    !rings.some((r) => Math.hypot(r.x - mx, r.y - my) < 24)
+                  if (short) rings.push({ x: mx, y: my })
+                  return (
+                    <g key={`flag-${seg.idx}`} pointerEvents="none">
+                      <path
+                        d={d}
+                        fill="none"
+                        stroke="#06131f"
+                        strokeOpacity="0.75"
+                        strokeWidth={st.width + 4}
+                        strokeLinecap="round"
+                      />
+                      <path
+                        d={d}
+                        fill="none"
+                        stroke={st.color}
+                        strokeWidth={st.width}
+                        strokeLinecap="round"
+                      />
+                      {short ? (
+                        <>
+                          <circle cx={mx} cy={my} r={16} fill="none" stroke="#06131f" strokeWidth={5} />
+                          <circle cx={mx} cy={my} r={16} fill="none" stroke={st.color} strokeWidth={3} />
+                        </>
+                      ) : null}
+                    </g>
+                  )
+                })
+            })()}
 
           {here && fix && (
             <g>
@@ -1658,7 +1755,7 @@ export function SatelliteMap({
             'absolute right-2 bottom-2 z-20 flex gap-1 ' + (placed ? '' : 'hidden')
           }
         >
-          {(trail.length > 1 || route.length > 1 || navPoints.length > 1) && (
+          {(trail.length > 1 || route.length > 1 || navPoints.length > 1 || framePoints.length > 0) && (
             <MapButton
               label={
                 navPoints.length > 1
@@ -1670,7 +1767,13 @@ export function SatelliteMap({
               onClick={fitTrack}
               wide
             >
-              {navPoints.length > 1 ? 'Fit route' : route.length > 1 ? 'Fit pattern' : 'Fit track'}
+              {navPoints.length > 1
+                ? 'Fit route'
+                : route.length > 1
+                  ? 'Fit pattern'
+                  : trail.length > 1
+                    ? 'Fit track'
+                    : 'Fit'}
             </MapButton>
           )}
           <MapButton
