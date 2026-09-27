@@ -409,4 +409,12 @@ export interface Fix {
    * Absent on fixes made before this existed; `timestamp` is used then.
    */
   receivedAt?: number
+  /**
+   * Set by the track filter on the first few fixes after it has adopted a
+   * jump in position (the receiver re-acquired somewhere else, and the
+   * filter believed it only once several fixes agreed). The position is new
+   * and not yet borne out: navigation shows it, but does not switch
+   * waypoints or declare arrival on it. Absent otherwise.
+   */
+  settling?: boolean
 }

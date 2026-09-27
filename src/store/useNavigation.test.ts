@@ -46,6 +46,9 @@ vi.mock('@/lib/routing', async (importOriginal) => {
     ...real,
     planningBounds: vi.fn(() => BOX),
     planRoute: vi.fn(),
+    // The real chart check by default; the "round first" tests below set the
+    // chart's verdict on the line directly.
+    liveShortcut: vi.fn(real.liveShortcut),
   }
 })
 
@@ -117,11 +120,12 @@ vi.mock('@/store/useTeams', async () => {
   return { useTeams: create(() => ({ activeTeamId: null as string | null })) }
 })
 
-import { planningBounds, planRoute } from '@/lib/routing'
+import { liveShortcut, planningBounds, planRoute } from '@/lib/routing'
 import { useChartData } from '@/store/useChartData'
 import { useVessels } from '@/store/useVessels'
 import { useTracker } from '@/store/useTracker'
 import {
+  CLEAR_FIXES,
   LIVE_CHART_TIMEOUT_MS,
   NAV_STORAGE_KEY,
   OFF_COURSE_HOLD_MS,
@@ -1230,5 +1234,181 @@ describe('storage (regress R7)', () => {
     useNavigation.getState().onFix(fixAt(go(B, 180, m(10))))
     expect(spy.mock.calls.filter((c) => c[0] === NAV_STORAGE_KEY).length).toBe(1)
     spy.mockRestore()
+  })
+})
+
+describe('the simulated-voyage re-check (F1, F5, F7, F8)', () => {
+  it('accepts a held re-route from where the boat is NOW, never back to its start (F5)', async () => {
+    await navigating()
+    const P0 = go(go(A, 0, 0.5), 90, m(300))
+    const X = go(P0, 0, 0.5)
+    planRouteMock.mockImplementationOnce(() =>
+      mkPlan([P0, X, C], { source: 'best-effort', needsConfirm: true }),
+    )
+    useNavigation.getState().onFix(fixAt(P0))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(P0))
+    await settle()
+    expect(useNavigation.getState().pendingPlan).not.toBeNull()
+    // The crew reads it for a while; the boat runs on 120 m east, across
+    // the new first leg rather than along it — too far off it to "join" it.
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS + 8_000)
+    useTracker.setState({ fix: fixAt(go(P0, 90, m(120)), { heading: 90 }) })
+    useNavigation.getState().acceptPendingPlan()
+    const s = useNavigation.getState()
+    // Point 0 is the re-route's start, 120 m back along a line nobody checked.
+    expect(s.targetIdx).toBe(1)
+    expect(s.resume).toBe(false)
+  })
+
+  it('does not arrive on one fix only just inside the circle — two in a row, or inside by the fix’s error (F8)', async () => {
+    await navigating()
+    vi.setSystemTime(T0 + 60_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(20))))
+    expect(useNavigation.getState().targetIdx).toBe(2)
+    // 140 ft out on a ±15 m (49 ft) fix: inside the 150 ft circle, not by
+    // its own error — the boat may be 190 ft out.
+    vi.setSystemTime(T0 + 200_000)
+    useNavigation.getState().onFix(fixAt(go(C, 270, m(140 * 0.3048)), { accuracy: 15 }))
+    expect(useNavigation.getState().status).toBe('navigating')
+    // A second fix inside: arrived.
+    vi.setSystemTime(T0 + 201_000)
+    useNavigation.getState().onFix(fixAt(go(C, 270, m(130 * 0.3048)), { accuracy: 15 }))
+    expect(useNavigation.getState().status).toBe('arrived')
+  })
+
+  it('arrives at once when the fix is inside the circle by its own error (F8)', async () => {
+    await navigating()
+    vi.setSystemTime(T0 + 60_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(20))))
+    vi.setSystemTime(T0 + 200_000)
+    useNavigation.getState().onFix(fixAt(go(C, 270, m(20)), { accuracy: 5 }))
+    expect(useNavigation.getState().status).toBe('arrived')
+  })
+
+  it('neither switches nor arrives on a position the filter has only just jumped to (F1/F8)', async () => {
+    await navigating()
+    vi.setSystemTime(T0 + 60_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(20)), { settling: true }))
+    expect(useNavigation.getState().targetIdx).toBe(1)
+    vi.setSystemTime(T0 + 61_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(20))))
+    expect(useNavigation.getState().targetIdx).toBe(2)
+    vi.setSystemTime(T0 + 200_000)
+    useNavigation.getState().onFix(fixAt(C, { settling: true }))
+    vi.setSystemTime(T0 + 201_000)
+    useNavigation.getState().onFix(fixAt(C, { settling: true }))
+    expect(useNavigation.getState().status).toBe('navigating')
+    vi.setSystemTime(T0 + 202_000)
+    useNavigation.getState().onFix(fixAt(C))
+    expect(useNavigation.getState().status).toBe('arrived')
+  })
+
+  it('keeps the speed through a fix or two the filter reads as stopped (F7)', async () => {
+    await navigating()
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.1), { speed: 5 }))
+    const kn = useNavigation.getState().speedKn!
+    vi.setSystemTime(T0 + 1_000)
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.101), { speed: 0 }))
+    vi.setSystemTime(T0 + 2_000)
+    useNavigation.getState().onFix(fixAt(go(A, 0, 0.102), { speed: 0 }))
+    expect(useNavigation.getState().speedKn).toBe(kn)
+    // A boat that has really stopped shows it, after a few seconds.
+    for (let s = 3; s <= 30; s++) {
+      vi.setSystemTime(T0 + s * 1_000)
+      useNavigation.getState().onFix(fixAt(go(A, 0, 0.102), { speed: 0 }))
+    }
+    expect(useNavigation.getState().speedKn!).toBeLessThan(kn / 2)
+  })
+})
+
+describe('round first — held on several clear fixes, re-checked on every fix (F2, F6)', () => {
+  const verdict = vi.mocked(liveShortcut)
+  afterEach(() => verdict.mockReset())
+
+  /** Steering to B, switched 130 ft short of it with the line on unsafe. */
+  async function rounding(plan?: RoutePlan) {
+    if (plan?.needsConfirm) {
+      planRouteMock.mockImplementationOnce(() => plan)
+      await useNavigation.getState().setDestination(DEST, null)
+      useNavigation.getState().confirmBestEffort()
+      expect(useNavigation.getState().start()).toBe(true)
+    } else {
+      await navigating(plan)
+    }
+    verdict.mockReturnValue('unsafe')
+    vi.setSystemTime(T0 + 60_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(40)), { heading: 0 }))
+    const s = useNavigation.getState()
+    expect(s.targetIdx).toBe(2)
+    expect(s.roundIdx).toBe(1)
+  }
+
+  it(`lets "round waypoint N first" go only after ${CLEAR_FIXES} clear fixes in a row`, async () => {
+    await rounding()
+    verdict.mockReturnValue('clear')
+    for (let k = 1; k < CLEAR_FIXES; k++) {
+      vi.setSystemTime(T0 + 60_000 + k * 1000)
+      useNavigation.getState().onFix(fixAt(go(B, 180, m(40 - 2 * k)), { heading: 0 }))
+      expect(useNavigation.getState().roundIdx, `clear fix ${k}`).toBe(1)
+    }
+    // An unsafe fix starts the count again.
+    verdict.mockReturnValueOnce('unsafe')
+    vi.setSystemTime(T0 + 70_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(33)), { heading: 0 }))
+    expect(useNavigation.getState().clearRun).toBe(0)
+    for (let k = 1; k <= CLEAR_FIXES; k++) {
+      vi.setSystemTime(T0 + 70_000 + k * 1000)
+      useNavigation.getState().onFix(fixAt(go(B, 180, m(32 - k)), { heading: 0 }))
+    }
+    expect(useNavigation.getState().roundIdx).toBeNull()
+  })
+
+  it('checks the line with the 95 % circle of the fix’s error, not the 68 % one', async () => {
+    await rounding()
+    const call = verdict.mock.calls[verdict.mock.calls.length - 1]
+    expect(call[4]).toBeCloseTo(1.6 * 5, 5)
+  })
+
+  it('keeps re-checking the line after letting go, and falls back to the turn point when it is no longer safe', async () => {
+    await navigating()
+    // Switched on a clear line (a fix that jumped past the turn)…
+    verdict.mockReturnValue('clear')
+    vi.setSystemTime(T0 + 60_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(40)), { heading: 0 }))
+    expect(useNavigation.getState().roundIdx).toBeNull()
+    expect(useNavigation.getState().targetIdx).toBe(2)
+    // …then the next fix, from where the boat really is, has land on it.
+    verdict.mockReturnValue('unsafe')
+    vi.setSystemTime(T0 + 61_000)
+    useNavigation.getState().onFix(fixAt(go(B, 180, m(44)), { heading: 0 }))
+    expect(useNavigation.getState().roundIdx).toBe(1)
+  })
+
+  it('lets go once the boat is round the turn, whatever the chart says of the line (never astern)', async () => {
+    await rounding()
+    // Past B on the way out, 20 m off the new leg.
+    vi.setSystemTime(T0 + 62_000)
+    useNavigation.getState().onFix(fixAt(go(go(B, 0, m(8)), 90, m(25)), { heading: 90 }))
+    expect(useNavigation.getState().roundIdx).toBeNull()
+  })
+
+  it('never turns the boat round for a mark behind it', async () => {
+    await rounding()
+    // Swept wide past B, heading away from it: the card must not say "go back".
+    vi.setSystemTime(T0 + 62_000)
+    useNavigation.getState().onFix(fixAt(go(B, 300, m(40)), { heading: 330 }))
+    expect(useNavigation.getState().roundIdx).toBeNull()
+  })
+
+  it('holds a best-effort route to "no worse than its own leg" (F6)', async () => {
+    await rounding(mkPlan([A, B, C], { source: 'best-effort', needsConfirm: true }))
+    const call = verdict.mock.calls[verdict.mock.calls.length - 1]
+    expect(call[5]).toBe(false)
+  })
+
+  it('holds a route that meets the rules to the rules', async () => {
+    await rounding()
+    expect(verdict.mock.calls[verdict.mock.calls.length - 1][5]).toBe(true)
   })
 })

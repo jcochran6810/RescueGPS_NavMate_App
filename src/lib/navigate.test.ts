@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   arrivalRadiusFt,
   isOffCourse,
+  joinTarget,
+  LOOKAHEAD_MIN_M,
+  OFF_COURSE_FLOOR_M,
+  passedTurn,
+  steerCourse,
   fixTime,
   isStale,
   legGeometry,
@@ -179,7 +184,9 @@ describe('stepTarget — the circle', () => {
   it('holds until inside the circle, then advances one point', () => {
     expect(stepTarget(L, 1, go(B, 180, ft(200)), { arrivalFt: 150 }).targetIdx).toBe(1)
     const r = stepTarget(L, 1, go(B, 180, ft(120)), { arrivalFt: 150 })
-    expect(r).toEqual({ targetIdx: 2, arrived: false, gpsPoor: false })
+    // toMatchObject: the result now also carries the range and the circle it
+    // was judged by (for the store's arrival confirmation, F8).
+    expect(r).toMatchObject({ targetIdx: 2, arrived: false, gpsPoor: false })
   })
 
   it('advances at most ONE point per fix, even on top of a later one', () => {
@@ -216,7 +223,9 @@ describe('stepTarget — the circle', () => {
     expect(r.gpsPoor).toBe(true)
     // ±100 m, 250 ft short: held, poor.
     const far = stepTarget(L, 1, { ...go(B, 180, ft(250)), accuracy: 100 }, { arrivalFt: 150 })
-    expect(far).toEqual({ targetIdx: 1, arrived: false, gpsPoor: true })
+    // toMatchObject: the result now also carries the range and the circle it
+    // was judged by (for the store's arrival confirmation, F8).
+    expect(far).toMatchObject({ targetIdx: 1, arrived: false, gpsPoor: true })
   })
 
   it('never cuts a hairpin on a poor fix', () => {
@@ -310,7 +319,9 @@ describe('stepTarget — passing abeam', () => {
 describe('stepTarget — arrival', () => {
   it('arrives inside the destination circle, and stays on the last point', () => {
     const r = stepTarget(L, 2, go(C, 270, ft(100)), { arrivalFt: 150 })
-    expect(r).toEqual({ targetIdx: 2, arrived: true, gpsPoor: false })
+    // toMatchObject: the result now also carries the range and the circle it
+    // was judged by (for the store's arrival confirmation, F8).
+    expect(r).toMatchObject({ targetIdx: 2, arrived: true, gpsPoor: false })
   })
 
   it('has not arrived outside it', () => {
@@ -629,5 +640,109 @@ describe('speed made good along the route — the ETA (N2)', () => {
     expect(routeSpeedKn(log)).toBeCloseTo(15.32, 1)
     // With no speeds logged, the progress rate alone says the same.
     expect(routeSpeedKn(log.map(({ t, remainingNM }) => ({ t, remainingNM })))).toBeCloseTo(15.32, 1)
+  })
+})
+
+describe('the course to steer — back onto the line (F4)', () => {
+  it('is the leg’s own course on the line, and the bearing to the point', () => {
+    const on = { ...go(A, 0, 0.5), accuracy: 3 }
+    const c = steerCourse(L, 1, on)!
+    expect(c.bearingDeg).toBeCloseTo(0, 0)
+    expect(Math.abs(c.xteM!)).toBeLessThan(0.5)
+  })
+
+  it('set off the line, steers back onto it ahead — not a new line to the point', () => {
+    // 40 m east (starboard) of the northbound leg, half a mile short of B.
+    const off = { ...go(go(A, 0, 0.5), 90, m(40)), accuracy: 3 }
+    const c = steerCourse(L, 1, off)!
+    expect(c.xteM!).toBeCloseTo(40, 0)
+    const direct = navProgress(L, 1, off)!.bearingDeg
+    // Direct to B is ~2.5° left of north; back onto the line is ~45° left.
+    expect(((direct - c.bearingDeg + 540) % 360) - 180).toBeGreaterThan(30)
+    // The aim point is ON the leg, ahead of the boat.
+    const g = legGeometry(A, B, c.aim)
+    expect(g.distM).toBeLessThan(0.5)
+    expect(g.alongM).toBeGreaterThan(legGeometry(A, B, off).alongM)
+  })
+
+  it('never cuts in steeper than 45°, and aims at the point itself near it', () => {
+    const off = { ...go(go(A, 0, 0.5), 90, m(10)), accuracy: 3 }
+    const c = steerCourse(L, 1, off)!
+    expect(c.lookaheadM).toBeGreaterThanOrEqual(LOOKAHEAD_MIN_M)
+    const near = { ...go(B, 180, m(20)), accuracy: 3 }
+    expect(steerCourse(L, 1, near)!.aim).toEqual(B)
+  })
+
+  it('aims further ahead on a poor fix, so it does not chase the receiver’s wander', () => {
+    const off = go(go(A, 0, 0.3), 90, m(15))
+    const good = steerCourse(L, 1, { ...off, accuracy: 4 })!
+    const poor = steerCourse(L, 1, { ...off, accuracy: 20 })!
+    expect(poor.lookaheadM).toBeGreaterThan(good.lookaheadM * 5)
+  })
+})
+
+describe('off course, scaled with the stand-off (F4)', () => {
+  it('uses twice the stand-off, 20–60 m, when it is known', () => {
+    const fix = { ...go(A, 0, 0.5), accuracy: 3 }
+    expect(offCourseThresholdM(L, 1, fix, { marginM: 5 })).toBe(OFF_COURSE_FLOOR_M)
+    expect(offCourseThresholdM(L, 1, fix, { marginM: 15 })).toBe(30)
+    expect(offCourseThresholdM(L, 1, fix, { marginM: 45 })).toBe(60)
+    // A boat 35 m off a line planned 5 m clear of the bank is off course.
+    const off = { ...go(go(A, 0, 0.5), 90, m(35)), accuracy: 3 }
+    expect(isOffCourse(L, 1, off, { marginM: 5 })).toBe(true)
+    expect(isOffCourse(L, 1, off)).toBe(false)
+  })
+
+  it('stays accuracy-aware: a poor fix alone does not re-route', () => {
+    const fix = { ...go(A, 0, 0.5), accuracy: 20 }
+    expect(offCourseThresholdM(L, 1, fix, { marginM: 5 })).toBe(50)
+  })
+})
+
+describe('rounding a turn — abeam and past it (F6)', () => {
+  it('is round only when past the turn point on the inbound leg AND on the way out', () => {
+    expect(passedTurn(L, 1, go(B, 180, m(30)))).toBe(false)
+    expect(passedTurn(L, 1, go(go(B, 0, m(10)), 90, m(20)))).toBe(true)
+    // Round a hairpin, a boat still short of the mark is "behind" the
+    // outbound leg: not round.
+    const hairpin: NavPlan = { points: [A, B, go(A, 90, m(40))] }
+    expect(passedTurn(hairpin, 1, go(go(A, 0, 0.5), 90, m(20)))).toBe(false)
+  })
+})
+
+describe('joining an accepted re-route (F5)', () => {
+  it('never returns the start: the far end of the nearest leg not yet run', () => {
+    expect(joinTarget(L, go(A, 90, m(150)))).toBe(1)
+    expect(joinTarget(L, { ...go(go(B, 90, 0.5), 0, m(150)), heading: 90 })).toBe(2)
+  })
+})
+
+describe('ETA speed made good is robust (F7)', () => {
+  function run(kn: number, glitch: (s: number, rem: number) => { rem: number; sog: number }) {
+    let log: ProgressSample[] = []
+    let rem = 3
+    for (let s = 0; s <= 90; s++) {
+      if (s > 0) rem -= kn / 3600
+      const g = glitch(s, rem)
+      log = logProgress(log, { t: s * 1000, remainingNM: g.rem, sogKn: g.sog })
+    }
+    return routeSpeedKn(log)!
+  }
+
+  it('shrugs off a fix that wandered, and a corner switched early', () => {
+    // Two fixes 90 m out, then back.
+    const spike = run(12, (s, rem) => ({ rem: s === 80 || s === 81 ? rem + 0.05 : rem, sog: 12 }))
+    expect(spike).toBeGreaterThan(11.5)
+    expect(spike).toBeLessThan(12.5)
+    // The distance to go drops 20 m at a switch that cut the corner.
+    const cut = run(12, (s, rem) => ({ rem: s >= 70 ? rem - 20 / 1852 : rem, sog: 12 }))
+    expect(cut).toBeGreaterThan(11)
+    expect(cut).toBeLessThan(13.5)
+  })
+
+  it('ignores the filter’s zero-speed dropouts', () => {
+    const v = run(12, (s, rem) => ({ rem, sog: s % 5 === 0 ? 0 : 12 }))
+    expect(v).toBeGreaterThan(11)
+    expect(v).toBeLessThan(13)
   })
 })

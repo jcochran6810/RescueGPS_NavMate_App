@@ -43,11 +43,30 @@ export function NavCard() {
   }
 
   const grey = v.stale ? 'opacity-45' : ''
+  // The course to steer differs from the bearing to the point only when the
+  // boat is off the line into it: then both are shown — the point's bearing
+  // and distance (what the crew is heading for), and the course back onto
+  // the line (what to steer).
+  const splitCourse = !!v.pointBearing && !!v.bearing && v.pointBearing !== v.bearing
   return (
     <section
       aria-label="Steering"
-      className="rounded-2xl border border-sky-400/40 bg-navy-900/90 p-4 shadow-lg shadow-black/30"
+      className={
+        'rounded-2xl border p-4 shadow-lg shadow-black/30 ' +
+        (v.slowDown ? 'border-red-400 bg-red-950/95 ring-2 ring-red-500/70' : 'border-sky-400/40 bg-navy-900/90')
+      }
     >
+      {/* GPS too poor for the boat's margins, with shallows or land that
+          close to the line ahead: the loudest thing on the card. On screen
+          only — the crew asked for no sound. */}
+      {v.slowDown && (
+        <p
+          role="alert"
+          className="mb-2 rounded-lg bg-red-600 px-3 py-2 text-center text-lg font-bold tracking-wide text-white"
+        >
+          Slow down — GPS not accurate enough here
+        </p>
+      )}
       {/* The circle note goes under the title when the two do not fit side
           by side, rather than squeezing "To waypoint 1 of 12" into three
           lines on a 320 px phone. */}
@@ -72,11 +91,25 @@ export function NavCard() {
       >
         <span className="tnum text-5xl leading-none font-bold text-slate-50 max-[359px]:text-[2.5rem]">
           {v.atMark ? 'Here' : (v.bearing ?? '—')}
+          {splitCourse && (
+            <span className="ml-1 align-middle text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              steer
+            </span>
+          )}
         </span>
         <span className="tnum ml-auto text-3xl leading-none font-semibold whitespace-nowrap text-slate-100 max-[359px]:text-2xl">
           {v.distance}
         </span>
       </div>
+
+      {splitCourse && (
+        <p className={'tnum mt-1 text-sm text-slate-300 ' + grey}>
+          {v.title.replace(/^To /, '').replace(/ — don’t cut the corner$/, '')}: {v.pointBearing} · {v.distance}
+        </p>
+      )}
+      {v.backOnLine && (
+        <p className={'mt-1 text-sm font-semibold text-amber-200 ' + grey}>{v.backOnLine}</p>
+      )}
 
       {v.turn && (
         <div className={'mt-2 flex items-center gap-2 ' + grey}>
@@ -247,6 +280,7 @@ const NOTICE_TONE: Record<NavNotice['kind'], string> = {
   'shallow-here': 'border-red-400/60 bg-red-500/20 text-red-50',
   'round-first': 'border-amber-400/60 bg-amber-500/15 text-amber-100',
   'gps-margin': 'border-amber-400/40 bg-amber-500/10 text-amber-100',
+  'gps-slow': 'border-red-400/70 bg-red-500/25 text-red-50',
 }
 
 function Notice({ notice }: { notice: NavNotice }) {
@@ -261,6 +295,7 @@ function Notice({ notice }: { notice: NavNotice }) {
     <p
       role={
         notice.kind === 'shallow-here' ||
+        notice.kind === 'gps-slow' ||
         notice.kind === 'reroute-confirm' ||
         notice.kind === 'round-first'
           ? 'alert'

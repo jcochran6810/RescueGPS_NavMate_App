@@ -28,6 +28,8 @@ import {
   fixTime,
   isStale,
   navProgress,
+  steerCourse,
+  XTE_CUE_M,
   STALE_FIX_S,
   type NavFix,
 } from './navigate'
@@ -417,6 +419,12 @@ export interface NavCardInput {
    * error than this is said so on the card. Null/absent: not known.
    */
   safetyMarginM?: number | null
+  /**
+   * The fix claims more error than the safety margin AND the chart shows
+   * shallows, land or a hazard within that error of the line ahead
+   * (`useNavigation.gpsSlow`): the card goes red — slow down.
+   */
+  gpsSlow?: boolean
   /** How depths are written on this card (default feet first). */
   formatDepth?: (m: number) => string
   destLabel?: string | null
@@ -440,6 +448,7 @@ export interface NavNotice {
     | 'shallow-here'
     | 'round-first'
     | 'gps-margin'
+    | 'gps-slow'
   text: string
   /** How loud: red for a rule broken, amber for "check this". */
   tone?: 'alert' | 'caution'
@@ -450,8 +459,30 @@ export interface NavCardView {
   targetIdx: number
   /** "Waypoint 3 of 5", "Destination", "Start of the route". */
   title: string
-  /** "047°T" — null with no fix, or inside the arrival circle. */
+  /**
+   * The course to steer, "047°T" — the big number. On the line it is the
+   * bearing to the point; set off it, the course that brings the boat back
+   * onto the line into the point (`steerCourse`). Null with no fix, or
+   * inside the arrival circle.
+   */
   bearing: string | null
+  /**
+   * Bearing to the point itself, "051°T" — rule 4, always shown with the
+   * distance. Null with no fix, or inside the arrival circle.
+   */
+  pointBearing: string | null
+  /**
+   * Off the line into the point: "Steer 12° right to get back on the line ·
+   * 45 ft off track". Null on the line (within `XTE_CUE_M`), or with no fix.
+   */
+  backOnLine: string | null
+  /** Distance off the line into the point, feet, + = right of it; null without one. */
+  xteFt: number | null
+  /**
+   * "Slow down — GPS not accurate enough here": the whole card goes red.
+   * See `NavCardInput.gpsSlow`.
+   */
+  slowDown: boolean
   /** Inside the arrival circle of the target. */
   atMark: boolean
   /** "850 ft" / "1.24 NM" / "—". */
@@ -542,12 +573,39 @@ export function navCardView(input: NavCardInput): NavCardView {
   // Rounding, the bearing to the turn point is the whole point of the card:
   // it is shown however close the boat is to it.
   const atMark = !rounding && distFt != null && distFt <= radiusFt
-  const bearing =
+  const pointBearing =
     prog && !atMark ? bearingText(prog.bearingDeg, input.bearingPref, input.declination) : null
+  // The course to steer: back onto the line into the point, not a new
+  // straight line to it (a cross-current set a card-following helm onto the
+  // bank that way). On the line it is the bearing to the point.
+  const course = prog && !atMark ? steerCourse(plan, idx, fix) : null
+  const courseDeg = course?.bearingDeg ?? prog?.bearingDeg ?? null
+  const bearing =
+    courseDeg != null && !atMark ? bearingText(courseDeg, input.bearingPref, input.declination) : null
+  const xteM = course?.xteM ?? null
+  let backOnLine: string | null = null
+  // Not while still coming round the turn onto the leg: "off track" is then
+  // the distance from a line the boat has not reached yet.
+  if (
+    course &&
+    prog &&
+    xteM != null &&
+    Math.abs(xteM) >= XTE_CUE_M &&
+    (course.alongM ?? 0) >= 0 &&
+    !stale
+  ) {
+    const d = ((course.bearingDeg - prog.bearingDeg + 540) % 360) - 180
+    const deg = Math.round(Math.abs(d))
+    const off = `${Math.round(Math.abs(xteM) * M_TO_FEET)} ft off track`
+    backOnLine =
+      deg >= 1
+        ? `Steer ${deg}° ${d > 0 ? 'right' : 'left'} to get back on the line · ${off}`
+        : `Back on the line ahead · ${off}`
+  }
 
   let turn: TurnCue | null = null
-  if (prog && !atMark && !stale) {
-    const t = turnToward(prog.bearingDeg, fix?.heading)
+  if (courseDeg != null && !atMark && !stale) {
+    const t = turnToward(courseDeg, fix?.heading)
     if (t != null) {
       const deg = Math.round(Math.abs(t))
       turn =
@@ -598,6 +656,7 @@ export function navCardView(input: NavCardInput): NavCardView {
           }`
       : null
 
+  const slowDown = input.status === 'navigating' && !!input.gpsSlow && !stale && !!fix
   const notices: NavNotice[] = []
   if (!fix) {
     notices.push({ kind: 'waiting', text: 'Waiting for a GPS fix…' })
@@ -640,7 +699,16 @@ export function navCardView(input: NavCardInput): NavCardView {
     }
     const margin = input.safetyMarginM
     const acc = fix?.accuracy
-    if (
+    if (slowDown) {
+      notices.push({
+        kind: 'gps-slow',
+        tone: 'alert',
+        text:
+          `Slow down — GPS not accurate enough here. Your position is good to ` +
+          `${acc != null && Number.isFinite(acc) ? accuracyText(acc) : 'only a guess'}, and the chart shows ` +
+          'shallows or land that close to your line ahead. Keep a sharp lookout.',
+      })
+    } else if (
       !stale &&
       margin != null &&
       Number.isFinite(margin) &&
@@ -716,6 +784,10 @@ export function navCardView(input: NavCardInput): NavCardView {
     targetIdx: idx,
     title,
     bearing,
+    pointBearing,
+    backOnLine,
+    xteFt: xteM != null ? Math.round(xteM * M_TO_FEET) : null,
+    slowDown,
     atMark,
     distance: prog ? formatNavDistance(prog.distanceNM, fmt) : '—',
     turn,
@@ -800,11 +872,13 @@ export function navBannerView(v: NavCardView): NavBannerView {
     .join(' · ')
   const pending = v.notices.some((x) => x.kind === 'reroute-confirm')
   const shallowNotice = v.notices.find((x) => x.kind === 'shallow-here')
-  const shallow = !!shallowNotice
+  const shallow = !!shallowNotice || v.slowDown
   const flaggedLeg = isFlagged(v.legCaution)
   const prefix = pending
     ? 'Re-route needs your OK'
-    : shallow
+    : v.slowDown && !(shallowNotice && shallowNotice.tone !== 'caution')
+      ? 'Slow down — GPS poor here'
+      : shallow
       ? shallowNotice?.tone === 'caution'
         ? /land/.test(shallowNotice.text)
           ? 'Land may be close'

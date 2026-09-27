@@ -94,6 +94,7 @@ vi.mock('@/store/useTeams', async () => {
 import { chartStateAt, planningBounds } from '@/lib/routing'
 import { loadGalveston } from '@/lib/__fixtures__/galveston'
 import { bearingDeg, haversineNM } from '@/lib/geo'
+import { steerCourse } from '@/lib/navigate'
 import { navCardView, bearingText, navBannerView } from '@/lib/navView'
 import { useChartData } from '@/store/useChartData'
 import { useTracker } from '@/store/useTracker'
@@ -251,6 +252,30 @@ describe('navigation store with the real router', () => {
     // Back over deep water, it goes away.
     useNavigation.getState().onFix(fixAt(at(0, 20)))
     expect(useNavigation.getState().shallowHere).toBeNull()
+  })
+
+  it('says "slow down" when the fix is poorer than the margin AND the shallows are that close to the line ahead (F3)', async () => {
+    // A 1 m shoal 25 m east of the line, 100–500 m ahead of the boat.
+    chart.features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 1, rings: [rect(25, -1100, 200, -700)] },
+      ],
+    })
+    await useNavigation.getState().setDestination(DEST, null)
+    expect(useNavigation.getState().plan?.source).toBe('charted')
+    expect(useNavigation.getState().start()).toBe(true)
+    const here = at(0, -1200)
+    // ±4 m: good enough for the boat's margins — no alarm.
+    useNavigation.getState().onFix({ ...fixAt(here), accuracy: 4 })
+    expect(useNavigation.getState().gpsSlow).toBe(false)
+    // ±20 m: poorer than the margin, and the shoal is within 1.6 × 20 m of
+    // the line ahead — slow down.
+    useNavigation.getState().onFix({ ...fixAt(here), accuracy: 20, timestamp: Date.now() + 1 })
+    expect(useNavigation.getState().gpsSlow).toBe(true)
+    // Past the shoal, open water ahead: it goes away.
+    useNavigation.getState().onFix({ ...fixAt(at(0, 0)), accuracy: 20, timestamp: Date.now() + 2 })
+    expect(useNavigation.getState().gpsSlow).toBe(false)
   })
 
   it('says the boat MAY be in the shallows when they lie within its GPS error (M1, drift 109)', async () => {
@@ -416,7 +441,11 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
       let v = card(f0)
       expect(v.title).toBe('Round waypoint 10 first — don’t cut the corner')
       expect(v.rounding).toBe(true)
-      expect(v.bearing).toBe(bearingText(bearingDeg(f0.lat, f0.lon, WP10.lat, WP10.lon), 'true', null))
+      // Behaviour change (F4): the big number is now the course to steer —
+      // back onto the leg into WP10, not a fresh straight line to it — and
+      // the bearing to the point itself (rule 4) is `pointBearing`.
+      expect(v.pointBearing).toBe(bearingText(bearingDeg(f0.lat, f0.lon, WP10.lat, WP10.lon), 'true', null))
+      expect(v.bearing).toBe(bearingText(steerCourse(plan, 10, f0)!.bearingDeg, 'true', null))
       expect(v.notices.some((n) => n.kind === 'round-first')).toBe(true)
       expect(navBannerView(v).primary.startsWith('Round WP 10 first')).toBe(true)
       // The distance to go still counts via the turn point.
@@ -445,15 +474,17 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
         expect(s.targetIdx).toBe(11)
         v = card(f)
         if (s.roundIdx === 10) {
-          // Still the turn point's bearing, however close to it.
-          expect(v.bearing).toBe(bearingText(bearingDeg(f.lat, f.lon, WP10.lat, WP10.lon), 'true', null))
+          // Still the turn point's bearing, however close to it (F4: shown as
+          // the point's bearing; the course steers along the leg into it).
+          expect(v.pointBearing).toBe(bearingText(bearingDeg(f.lat, f.lon, WP10.lat, WP10.lon), 'true', null))
+          expect(v.targetIdx).toBe(10)
         } else {
           expect(s.roundIdx).toBeNull()
           cleared = p
           // The line it now steers is clear of land and deep enough.
           expect(shoalestAlong(f, WP11)).toBeGreaterThanOrEqual(SAFE_M)
           expect(v.title).toBe('To waypoint 11 of 12')
-          expect(v.bearing).toBe(bearingText(bearingDeg(f.lat, f.lon, WP11.lat, WP11.lon), 'true', null))
+          expect(v.pointBearing).toBe(bearingText(bearingDeg(f.lat, f.lon, WP11.lat, WP11.lon), 'true', null))
         }
       }
       expect(cleared).not.toBeNull()
@@ -469,6 +500,100 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
         expect(useNavigation.getState().roundIdx).toBeNull()
         expect(useNavigation.getState().targetIdx).toBe(11)
       }
+    } finally {
+      vessels.setState({ boat: BOAT })
+    }
+  }, 30_000)
+
+  it('a GPS jump past the turn cannot leave the boat steering over land: every fix re-checks the line (F1/F2)', async () => {
+    const { useVessels } = await import('@/store/useVessels')
+    const vessels = useVessels as unknown as { setState: (p: object) => void }
+    vessels.setState({
+      boat: { ...BOAT, draft_m: 0.3, under_keel_margin_m: 0.3, clearance_m: 5, cruise_speed_kn: 12 },
+    })
+    try {
+      chart.features = galveston
+      useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
+      await useNavigation.getState().setDestination(TO, null)
+      const plan = useNavigation.getState().plan!
+      expect(useNavigation.getState().start()).toBe(true)
+      useNavigation.setState({ targetIdx: 10, resume: false, roundIdx: null })
+      const WP10 = plan.points[10]
+      const WP11 = plan.points[11]
+      // The re-check's spike: a fix 30 m past WP10 on the leg out (319°).
+      const th = (319 * Math.PI) / 180
+      const spike = { lat: WP10.lat + (30 * Math.cos(th)) / 110860, lon: WP10.lon + (30 * Math.sin(th)) / 96990 }
+      let t = Date.now()
+      useNavigation.getState().onFix(fix(spike, t, 319))
+      let s = useNavigation.getState()
+      // On the leg out, the line on is clear: switched, nothing to round.
+      expect(s.targetIdx).toBe(11)
+      expect(s.roundIdx).toBeNull()
+      // The next fix is the truth: 164 ft short of WP10, 20 m off the leg
+      // in. The line from there to WP11 crosses land — so the card goes back
+      // to the turn point, rather than steering on over the land.
+      t += 1000
+      const f1 = fix(C1_FIX, t, 273)
+      expect(shoalestAlong(f1, WP11)).toBe(-1)
+      useNavigation.getState().onFix(f1)
+      s = useNavigation.getState()
+      expect(s.targetIdx).toBe(11)
+      expect(s.roundIdx).toBe(10)
+      expect(card(f1).title).toBe('Round waypoint 10 first — don’t cut the corner')
+    } finally {
+      vessels.setState({ boat: BOAT })
+    }
+  }, 30_000)
+
+  it('seed 5 (F2): a ±20 m fix 50 ft short of the turn is not "at" it — the boat must get round it', async () => {
+    const { useVessels } = await import('@/store/useVessels')
+    const vessels = useVessels as unknown as { setState: (p: object) => void }
+    vessels.setState({
+      boat: { ...BOAT, draft_m: 0.3, under_keel_margin_m: 0.3, clearance_m: 30, cruise_speed_kn: 7.35 },
+    })
+    try {
+      chart.features = galveston
+      const S5_FROM = { lat: 29.36348, lon: -94.827029 }
+      const S5_TO = { lat: 29.387957, lon: -94.830768, label: 'seed 5' }
+      useTracker.setState({ fix: fixAt(S5_FROM), arrivalFt: 200 })
+      await useNavigation.getState().setDestination(S5_TO, null)
+      const plan = useNavigation.getState().plan!
+      expect(plan.source).toBe('charted')
+      expect(useNavigation.getState().start()).toBe(true)
+      // The turn the re-check grounded at: WP3 → WP4, 75° to port.
+      const W2 = plan.points[2]
+      const W3 = plan.points[3]
+      const W4 = plan.points[4]
+      expect(haversineNM(W3.lat, W3.lon, 29.3634, -94.8091) * 1852).toBeLessThan(30)
+      useNavigation.setState({ targetIdx: 3, resume: false, roundIdx: null })
+      const d = haversineNM(W2.lat, W2.lon, W3.lat, W3.lon) * 6076.12
+      const at = (ftShort: number) => {
+        const k = (d - ftShort) / d
+        return { lat: W2.lat + (W3.lat - W2.lat) * k, lon: W2.lon + (W3.lon - W2.lon) * k }
+      }
+      const hdg = bearingDeg(W2.lat, W2.lon, W3.lat, W3.lon)
+      const poor = (p: LatLon, t: number): Fix => ({ ...fix(p, t, hdg), accuracy: 20, speed: 3.8 })
+      let t = Date.now()
+      useNavigation.getState().onFix(poor(at(190), t))
+      let s = useNavigation.getState()
+      expect(s.targetIdx).toBe(4)
+      // The line from 190 ft short of WP3 to WP4, with 1.6 × 20 m added to
+      // the 30 m stand-off, is not clear: round WP3 first.
+      expect(s.roundIdx).toBe(3)
+      // 50 ft short: once "at the turn" for a ±20 m fix (its error widened
+      // the 30 ft to 60 ft). Now it must get round the turn itself.
+      t += 1000
+      useNavigation.getState().onFix(poor(at(50), t))
+      s = useNavigation.getState()
+      expect(s.roundIdx).toBe(3)
+      // Past WP3 on the way out: round, whatever the line check says.
+      t += 1000
+      const past = {
+        lat: W3.lat + (W4.lat - W3.lat) * 0.02,
+        lon: W3.lon + (W4.lon - W3.lon) * 0.02,
+      }
+      useNavigation.getState().onFix({ ...poor(past, t), heading: bearingDeg(W3.lat, W3.lon, W4.lat, W4.lon) })
+      expect(useNavigation.getState().roundIdx).toBeNull()
     } finally {
       vessels.setState({ boat: BOAT })
     }

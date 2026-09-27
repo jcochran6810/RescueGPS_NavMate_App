@@ -259,8 +259,10 @@ describe('outliers', () => {
     expect(f.push(at(400, 0, 21_000, 5)).accepted).toBe(false)
     expect(f.push(at(405, 0, 22_000, 5)).accepted).toBe(false)
     expect(f.push(at(410, 0, 23_000, 5)).accepted).toBe(false)
-    // The third refusal restarts the filter there, so the next fix is taken
-    // at face value rather than fought over forever.
+    // Four fixes over three seconds that agree with each other: the filter
+    // restarts there, rather than fighting the receiver forever. (Changed
+    // with F1: the third refusal used to restart it, which also adopted a
+    // three-fix multipath jump.)
     const back = accepted(f, at(415, 0, 24_000, 5))
     expect(offsetM(back, 415, 0)).toBeLessThan(10)
   })
@@ -426,5 +428,65 @@ describe('a boat turning hard (M3)', () => {
     }
     // It did fall behind — this is not a vacuous pass.
     expect(worst).toBeGreaterThan(3)
+  })
+})
+
+describe('multipath jumps (F1)', () => {
+  /** 12 kn due north, 1 Hz, ±8 m; `east` metres of jump on fixes [from, from + len). */
+  function voyage(len: number, from = 30, n = 45, jump = 100) {
+    const rnd = mulberry32(21 + len)
+    const f = new TrackFilter({ maxAccuracyM: 25 })
+    const out: { i: number; r: ReturnType<TrackFilter['push']>; north: number }[] = []
+    for (let i = 0; i < n; i++) {
+      const north = 6.17 * i
+      const east = i >= from && i < from + len ? jump : 0
+      const r = f.push(at(east + gaussian(rnd) * 2, north + gaussian(rnd) * 2, 1000 + i * 1000, 8))
+      out.push({ i, r, north })
+    }
+    return out
+  }
+
+  for (const len of [1, 2, 3]) {
+    it(`refuses a ${len}-fix 100 m jump, and keeps the true track and its speed`, () => {
+      const out = voyage(len)
+      for (const { i, r, north } of out) {
+        if (i < 5) continue
+        if (i >= 30 && i < 30 + len) {
+          expect(r.accepted).toBe(false)
+          continue
+        }
+        expect(r.accepted).toBe(true)
+        if (!r.accepted) continue
+        expect(offsetM(r.fix, 0, north)).toBeLessThan(20)
+        expect(r.settling).toBe(false)
+        // No collapse of speed or course after the jump.
+        expect(r.fix.speed! * 1.943844).toBeGreaterThan(9)
+        const h = r.fix.heading!
+        expect(Math.min(h, 360 - h)).toBeLessThan(30)
+      }
+    })
+  }
+
+  it('believes a jump only once four fixes over three seconds agree, and marks it settling', () => {
+    const out = voyage(20)
+    for (const { i, r } of out.slice(30, 33)) expect(r.accepted, `fix ${i}`).toBe(false)
+    const adopted = out[33].r
+    expect(adopted.accepted).toBe(true)
+    if (!adopted.accepted) return
+    expect(adopted.settling).toBe(true)
+    expect(adopted.fix.settling).toBe(true)
+    expect(offsetM(adopted.fix, 100, out[33].north)).toBeLessThan(20)
+    // Its speed is the run's, not zero.
+    expect(adopted.fix.speed! * 1.943844).toBeGreaterThan(9)
+    const later = out[37].r
+    expect(later.accepted && later.settling).toBe(false)
+  })
+
+  it('never follows a smaller jump that snaps back, even when the gate lets it in', () => {
+    const out = voyage(2, 30, 45, 40)
+    for (const { i, r, north } of out) {
+      if (i < 5 || !r.accepted) continue
+      expect(offsetM(r.fix, 0, north), `fix ${i}`).toBeLessThan(25)
+    }
   })
 })

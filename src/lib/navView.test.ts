@@ -756,3 +756,42 @@ describe('the tab the app opens on (UI-5)', () => {
     expect(initialTab('idle')).toBe('home')
   })
 })
+
+describe('the card off the line, and on a poor fix (F3, F4)', () => {
+  it('leads with the course back onto the line, and still shows the point’s bearing and distance', () => {
+    // 45 ft (14 m) south — right — of the eastbound leg B→C, half-way along.
+    const fix = { ...go(go(B, 90, 0.5), 180, 14 / 1852), timestamp: NOW - 1000, accuracy: 3, heading: 90 }
+    const v = navCardView(input({ fix }))
+    expect(v.pointBearing).toMatch(/^0(8|9)\d°T$/)
+    expect(v.bearing).not.toBe(v.pointBearing)
+    // Back onto the line means steering left of the point (north of east).
+    expect(Number(v.bearing!.slice(0, 3))).toBeLessThan(Number(v.pointBearing!.slice(0, 3)))
+    expect(v.xteFt).toBeCloseTo(46, -1)
+    expect(v.backOnLine).toMatch(/^Steer \d+° left to get back on the line · 4\d ft off track$/)
+    // The turn cue answers the course to steer, not the bearing to the point.
+    expect(v.turn?.kind === 'turn' && v.turn.side).toBe('left')
+  })
+
+  it('says nothing about the line when the boat is on it', () => {
+    const v = navCardView(input())
+    expect(v.backOnLine).toBeNull()
+    expect(v.bearing).toBe(v.pointBearing)
+  })
+
+  it('goes red — "Slow down" — when the store says the GPS is too poor for what lies ahead', () => {
+    const fix = { ...go(B, 90, 0.5), timestamp: NOW - 1000, accuracy: 18, heading: 90 }
+    const v = navCardView(input({ fix, gpsSlow: true, safetyMarginM: 5 }))
+    expect(v.slowDown).toBe(true)
+    const n = v.notices.find((x) => x.kind === 'gps-slow')!
+    expect(n.tone).toBe('alert')
+    expect(n.text).toMatch(/^Slow down — GPS not accurate enough here/)
+    // It replaces the amber margin notice rather than repeating it.
+    expect(v.notices.some((x) => x.kind === 'gps-margin')).toBe(false)
+    const b = navBannerView(v)
+    expect(b.tone).toBe('alert')
+    expect(b.primary.startsWith('Slow down')).toBe(true)
+    // Not on a stale fix, and not without the store's say-so.
+    expect(navCardView(input({ fix, gpsSlow: false, safetyMarginM: 5 })).slowDown).toBe(false)
+    expect(navCardView(input({ fix: { ...fix, timestamp: NOW - 60_000 }, gpsSlow: true })).slowDown).toBe(false)
+  })
+})

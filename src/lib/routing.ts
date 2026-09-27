@@ -3336,11 +3336,17 @@ export type ShortcutVerdict = 'clear' | 'unsafe'
  * with the fix's claimed error added to the stand-off and to the depth
  * margin, since the boat may be that far from where the fix puts it.
  *
- * `clear` when it passes; also when the planned leg `turn` → `target` cannot
- * itself pass with that error added and the line is no worse than it, rule
- * by rule (the shortcut is never held to more than the route it cuts).
- * `unsafe` otherwise. Null when there is no chart in memory for the line —
- * the caller decides what to do without one.
+ * `clear` when it passes; also — unless `strict` — when the planned leg
+ * `turn` → `target` cannot itself pass with that error added and the line
+ * is no worse than it, rule by rule (the shortcut is never held to more than
+ * the route it cuts: a best-effort route's own legs fail the rules, and its
+ * turns must still be let go). `unsafe` otherwise. Null when there is no
+ * chart in memory for the line — the caller decides what to do without one.
+ *
+ * `strict` is for a route that DOES meet the rules: where the fix's error is
+ * wider than the room the leg has, "no worse than the leg" was a corner cut
+ * at the leg's own clearance with the boat anywhere within that error of it,
+ * and the way on is round the turn point, along the checked legs.
  */
 export function liveShortcut(
   req: LiveChartRequest,
@@ -3348,6 +3354,7 @@ export function liveShortcut(
   turn: LatLon,
   target: LatLon,
   accuracyM?: number | null,
+  strict = false,
 ): ShortcutVerdict | null {
   const ctx = liveCtx(req)
   if (!ctx) return null
@@ -3366,9 +3373,59 @@ export function liveShortcut(
   }
   const line = checkSegment(ix, p.x, p.y, g.x, g.y, opts)
   if (line.ok) return 'clear'
+  if (strict) return 'unsafe'
   const leg = checkSegment(ix, t.x, t.y, g.x, g.y, opts)
   if (leg.ok) return 'unsafe'
   return noWorseThanLeg(line, leg) ? 'clear' : 'unsafe'
+}
+
+/** What lies close to the line ahead — see `liveAhead`. */
+export interface ChartAhead {
+  /** Land, a structure or a hazard footprint within the radius of the line. */
+  land: boolean
+  /** Water charted shallower than the boat needs within the radius of the line. */
+  shallow: boolean
+}
+
+/**
+ * Is there land, a hazard, or water charted too shallow for the boat within
+ * `radiusM` of the line ahead — the polyline `pts`, starting at the fix?
+ *
+ * Asked with the fix's claimed error as the radius: the boat may be
+ * anywhere in that circle, so anything that close to the line it is
+ * steering is somewhere it may actually be about to go. Outside the
+ * approach zones round the route's own ends (the dock stretches, drawn
+ * dotted already). Marked channels are NOT excused here: a dredged cut is
+ * shallow bank either side, which is exactly where a poor fix is dangerous.
+ *
+ * Null when no chart covers the line.
+ */
+export function liveAhead(
+  req: LiveChartRequest,
+  pts: readonly LatLon[],
+  radiusM: number,
+): ChartAhead | null {
+  if (pts.length < 2 || !(radiusM > 0)) return null
+  const ctx = liveCtx(req)
+  if (!ctx) return null
+  const { ix } = ctx
+  const xy = pts.map((p) => toXY(ix.proj, p))
+  if (!xy.every((p) => insideIndex(ix, p))) return null
+  let land = false
+  let shallow = false
+  for (let i = 0; i + 1 < xy.length; i++) {
+    const a = xy[i]
+    const b = xy[i + 1]
+    const r = checkSegment(ix, a.x, a.y, b.x, b.y, {
+      safeDepthM: ctx.safeDepthM,
+      clearanceM: radiusM,
+      zones: ctx.zones,
+      depthMarginM: radiusM,
+    })
+    if (r.crossesLand || r.entersHazard || !r.clearanceOk) land = true
+    if (r.shallow || r.nearShoal) shallow = true
+  }
+  return { land, shallow }
 }
 
 /** What the chart shows at and round a fix — see `liveChartNear`. */

@@ -6,6 +6,7 @@ import {
   type StorageValue,
 } from 'zustand/middleware'
 import {
+  liveAhead,
   liveChartNear,
   liveShortcut,
   planningBounds,
@@ -27,20 +28,27 @@ import {
   type ChartBounds,
 } from '@/lib/chart'
 import {
+  arrivalRadiusFt,
   isOffCourse,
   isStale,
+  joinTarget,
+  legGeometry,
   logProgress,
+  MIN_SOG_KN,
   navProgress,
+  passedTurn,
   recoverTarget,
   shortcutClear,
   smoothSpeedKn,
   startTarget,
+  steerCourse,
   stepTarget,
   type ArrivalOptions,
   type ProgressSample,
 } from '@/lib/navigate'
-import { haversineNM, MPS_TO_KNOTS, NM_TO_METERS } from '@/lib/geo'
-import { routeArrivalFt } from '@/lib/steer'
+import { safetyMarginM } from '@/lib/navView'
+import { bearingDeg, haversineNM, MPS_TO_KNOTS, NM_TO_METERS } from '@/lib/geo'
+import { MAX_ARRIVAL_FT, routeArrivalFt } from '@/lib/steer'
 import type { LatLon } from '@/lib/search'
 import type { Fix } from '@/lib/types'
 import { safeDepthM, M_TO_FEET, type Vessel } from '@/lib/vessel'
@@ -136,6 +144,30 @@ export const LIVE_CHART_TIMEOUT_MS = 25_000
 export const PLAN_CHART_TIMEOUT_MS = 90_000
 /** The approach stretch round each end the planner uses, metres. */
 const APPROACH_M = 120
+
+/**
+ * How much of the fix's claimed error is added to the stand-off and the
+ * depth margin when the line the boat is about to steer is checked against
+ * the chart, as a multiple of that figure. A receiver's "±20 m" is the 68 %
+ * circle; 1.6 times it is the 95 % circle — the boat is inside that nineteen
+ * times in twenty, where inside the 68 % one it is outside it one fix in
+ * three, and that was the margin "round first" used to be let go on.
+ */
+export const LINE_BUFFER_ACC = 1.6
+
+/**
+ * Fixes in a row the line to the next point must be clear on before "round
+ * waypoint N first" is let go. One clear fix — a lucky one, in noise — used
+ * to be enough, and the boat turned for a line that was clear only on paper.
+ */
+export const CLEAR_FIXES = 3
+
+/**
+ * A speed over the ground of exactly 0 from the filter is ignored for the
+ * ETA until it has lasted this long, ms: the filter says 0 when it cannot
+ * tell the speed from its own noise, for a fix or two, on a boat making way.
+ */
+const STILL_HOLD_MS = 5_000
 
 export const NAV_STORAGE_KEY = 'navmate.nav.v1'
 
@@ -240,8 +272,26 @@ export interface NavigationState {
    * Always `targetIdx − 1` when set; null otherwise. Not persisted.
    */
   roundIdx: number | null
-  /** Distance to go over the last half-minute, for the ETA. Not persisted. */
+  /** Distance to go over the last minute, for the ETA. Not persisted. */
   progressLog: ProgressSample[]
+  /**
+   * While rounding: fixes in a row the line on to the next point has been
+   * clear on (see `CLEAR_FIXES`). Not persisted.
+   */
+  clearRun: number
+  /**
+   * The last fix was inside the destination's circle (but not by its own
+   * error, so not yet enough to call it arrived). Not persisted.
+   */
+  arriveSeen: boolean
+  /**
+   * The fix claims more error than the boat's safety margin, and the chart
+   * shows shallows, land or a hazard within that error of the line ahead:
+   * the card goes red — "Slow down — GPS not accurate enough here".
+   */
+  gpsSlow: boolean
+  /** Since when the filter has read the boat as stopped (ms), or null. Not persisted. */
+  stillSince: number | null
 
   /**
    * Plan to `place`, immediately. `origin` undefined keeps the current
@@ -415,6 +465,10 @@ const INITIAL = {
   resume: false,
   roundIdx: null,
   progressLog: [] as ProgressSample[],
+  clearRun: 0,
+  arriveSeen: false,
+  gpsSlow: false,
+  stillSince: null,
 } satisfies Partial<NavigationState>
 
 /** What survives a reload: the passage, not the moment-to-moment readings. */
@@ -534,22 +588,121 @@ function liveRequest(plan: RoutePlan, was: PlannedFor): LiveChartRequest {
 }
 
 /**
- * The chart's verdict on steering straight from the fix to point `next`,
- * having switched away from `turn` — null with no chart (or no boat) to
- * judge it by. See `liveShortcut`.
+ * The chart's verdict on steering on for point `idx` from the fix, with
+ * `bufferM` added to the stand-off and the depth margin. Two lines must be
+ * clear:
+ *
+ *   - the straight line from the fix to the point itself — the crew's rule:
+ *     "round waypoint N first" holds until the direct line to the next point
+ *     is safe;
+ *   - the line the card actually has the boat steer — from the fix to the
+ *     aim point on the leg (`steerCourse`), which differs from the first
+ *     when the boat is off the line.
+ *
+ * Each is judged against the stretch of the planned leg it stands in for.
+ * A route that meets the rules is held to them; a best-effort one to "no
+ * worse than its own leg" (its own legs fail the rules, and its turns must
+ * still be let go). Null with no chart (or no boat) to judge by.
  */
-function shortcutVerdict(
+function steerVerdict(
   plan: RoutePlan,
-  turn: number,
-  next: number,
+  idx: number,
   fix: Fix,
   was: PlannedFor | null,
+  bufferM: number,
 ): ShortcutVerdict | null {
-  if (!was) return null
+  if (!was || idx < 1 || idx >= plan.points.length) return null
+  const course = steerCourse(plan, idx, fix)
+  if (!course) return null
+  const a = plan.points[idx - 1]
+  const b = plan.points[idx]
+  const g = legGeometry(a, b, fix)
+  const f = g.lengthM > 0 ? Math.min(1, Math.max(0, g.alongM / g.lengthM)) : 0
+  const from = { lat: a.lat + f * (b.lat - a.lat), lon: a.lon + f * (b.lon - a.lon) }
+  const strict = !needsConfirm(plan)
   try {
-    return liveShortcut(liveRequest(plan, was), fix, plan.points[turn], plan.points[next], fix.accuracy)
+    const req = liveRequest(plan, was)
+    const direct = liveShortcut(req, fix, a, b, bufferM, strict)
+    if (direct === 'unsafe') return 'unsafe'
+    const steered =
+      course.lookaheadM > 0 ? liveShortcut(req, fix, from, course.aim, bufferM, strict) : direct
+    if (steered === 'unsafe') return 'unsafe'
+    return direct ?? steered
   } catch {
     return null
+  }
+}
+
+/**
+ * Is turn point `turn` still one the boat is coming up to — within twice
+ * its circle (400 ft at most), and not behind it (more than 100° off its
+ * course over the ground, when that is known)? "Round waypoint N first"
+ * only ever sends the boat to a mark it is about to reach; a mark behind it
+ * is the off-course re-route's business, never a U-turn on the card.
+ */
+function turnAhead(plan: RoutePlan, turn: number, fix: Fix, opts: ArrivalOptions): boolean {
+  const p = plan.points[turn]
+  if (!p) return false
+  const { safeFt } = arrivalRadiusFt(plan, turn, null, opts)
+  const rangeFt = metres(fix, p) * M_TO_FEET
+  if (rangeFt > Math.min(2 * safeFt, 2 * MAX_ARRIVAL_FT)) return false
+  const cog = fix.heading
+  if (cog == null || !Number.isFinite(cog) || rangeFt < 1) return true
+  const brg = bearingDeg(fix.lat, fix.lon, p.lat, p.lon)
+  return Math.abs(((brg - cog + 540) % 360) - 180) <= 100
+}
+
+/**
+ * "Slow down — GPS not accurate enough here": the fix claims more error than
+ * the boat's safety margin, AND the chart shows land, a hazard or water too
+ * shallow for the boat within that error (its 95 % circle) of the line ahead — the next
+ * half-minute's run (60–300 m) along the course the card gives and on round
+ * the route's next turn. Away from the dock stretches at each end.
+ */
+function slowAhead(
+  plan: RoutePlan,
+  shown: number,
+  fix: Fix,
+  was: PlannedFor | null,
+  speedKn: number | null,
+): boolean {
+  if (!was) return false
+  const acc = fix.accuracy
+  const margin = safetyMarginM(was.clearanceM)
+  if (acc == null || !Number.isFinite(acc) || margin == null || !(acc > margin)) return false
+  const first = plan.points[0]
+  const last = plan.points[plan.points.length - 1]
+  if (metres(fix, first) <= APPROACH_M || metres(fix, last) <= APPROACH_M) return false
+  const course = steerCourse(plan, shown, fix)
+  if (!course) return false
+  const mps = speedKn != null && Number.isFinite(speedKn) ? speedKn / MPS_TO_KNOTS : 0
+  const want = Math.min(300, Math.max(60, 30 * mps))
+  // Along the course, then the route on from the point steered for — round
+  // its turn — until the run is covered.
+  const route = plan.points.slice(Math.min(Math.max(shown, 0), plan.points.length - 1))
+  const pts: LatLon[] = [fix]
+  let run = 0
+  for (const next of [course.aim, ...route]) {
+    const prev = pts[pts.length - 1]
+    const d = metres(prev, next)
+    if (d < 1) continue
+    if (run + d >= want) {
+      const f = (want - run) / d
+      pts.push({ lat: prev.lat + f * (next.lat - prev.lat), lon: prev.lon + f * (next.lon - prev.lon) })
+      run = want
+      break
+    }
+    pts.push(next)
+    run += d
+  }
+  if (pts.length < 2) return false
+  try {
+    // The 95 % circle, as for the line checks: the boat is outside the
+    // 68 % one a third of the time.
+    const ahead = liveAhead(liveRequest(plan, was), pts, LINE_BUFFER_ACC * acc)
+    return !!ahead && (ahead.land || ahead.shallow)
+  } catch {
+    return false
   }
 }
 
@@ -945,6 +1098,8 @@ export const useNavigation = create<NavigationState>()(
               origin: null,
               targetIdx: startTarget(plan, fixNow, arrivalOpts()),
               roundIdx: null,
+              clearRun: 0,
+              arriveSeen: false,
               progressLog: [],
               pendingPlan: null,
               rerouting: false,
@@ -1077,6 +1232,10 @@ export const useNavigation = create<NavigationState>()(
             reroutes: 0,
             lastRerouteAt: null,
             roundIdx: null,
+            clearRun: 0,
+            arriveSeen: false,
+            gpsSlow: false,
+            stillSince: null,
             progressLog: [],
           })
           if (!tracker.watching) tracker.start()
@@ -1095,14 +1254,25 @@ export const useNavigation = create<NavigationState>()(
           if (!pending || s.status !== 'navigating') return
           const boat = activeVessel()
           seq++
+          // As Start does: from where the boat is NOW. The crew took a few
+          // seconds to read the route, and its start — the fix the re-route
+          // was planned from — is behind the boat by then. Steering to it
+          // pointed the boat back along a line nobody had checked; the far
+          // end of the leg the boat is on (or nearest) is where it goes on.
+          const fix = useTracker.getState().fix
+          const live = fix && !isStale(fix) ? fix : null
+          const begin = startTarget(pending, live, arrivalOpts())
           set({
             plan: pending,
             pendingPlan: null,
             confirmed: true,
             origin: null,
             plannedFor: boat ? plannedForBoat(boat) : s.plannedFor,
-            targetIdx: startTarget(pending, useTracker.getState().fix, arrivalOpts()),
+            targetIdx: begin === 0 ? joinTarget(pending, live) : begin,
+            resume: false,
             roundIdx: null,
+            clearRun: 0,
+            arriveSeen: false,
             progressLog: [],
             offCourseSince: null,
             rerouteError: null,
@@ -1170,6 +1340,9 @@ export const useNavigation = create<NavigationState>()(
             error: null,
             rerouteError: null,
             roundIdx: null,
+            clearRun: 0,
+            arriveSeen: false,
+            gpsSlow: false,
             progressLog: [],
           })
         },
@@ -1207,23 +1380,60 @@ export const useNavigation = create<NavigationState>()(
           if (s.lastFixAt != null && fix.timestamp < s.lastFixAt) return
 
           const dtS = s.lastFixAt != null ? (fix.timestamp - s.lastFixAt) / 1000 : 1
-          const speedKn = smoothSpeedKn(s.speedKn, fix, dtS)
+          // The filter reads a boat making way as stopped when it cannot
+          // tell the speed from its own noise, for a fix or two: that 0 is
+          // left out of the smoothed speed until it has lasted.
+          const still = fix.speed === 0
+          const stillSince = still ? (s.stillSince ?? now) : null
+          const dropout =
+            still &&
+            s.speedKn != null &&
+            s.speedKn >= MIN_SOG_KN &&
+            now - (stillSince as number) < STILL_HOLD_MS
+          const speedKn = dropout ? s.speedKn : smoothSpeedKn(s.speedKn, fix, dtS)
           const opts = arrivalOpts()
+          // A position the filter has only just jumped to (it believed the
+          // receiver after refusing a run of fixes) is shown, but nothing is
+          // switched, recovered or arrived on it until it is borne out.
+          const settling = fix.settling === true
 
           const resuming = s.resume || s.targetIdx == null
           const from = resuming ? startTarget(plan, fix, opts) : (s.targetIdx as number)
           // A turn point switched away from but not yet rounded — see below.
           const rounding = resuming ? null : s.roundIdx
           const step = stepTarget(plan, from, fix, opts)
-          const base = { speedKn, gpsPoor: step.gpsPoor, lastFixAt: fix.timestamp, resume: false }
+          const base = {
+            speedKn,
+            stillSince,
+            gpsPoor: step.gpsPoor,
+            lastFixAt: fix.timestamp,
+            resume: false,
+          }
 
-          if (step.arrived) {
+          // Arrived: inside the destination's circle by at least the fix's
+          // own claimed error — or inside it on two fixes running. One fix
+          // just inside a 200 ft circle, on a receiver claiming ±60 ft, was
+          // a boat anywhere up to 300 ft out being told it was there.
+          const accFt =
+            fix.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0
+              ? fix.accuracy * M_TO_FEET
+              : 0
+          const insideDest = step.arrived && !settling
+          const sure =
+            insideDest &&
+            step.rangeFt != null &&
+            step.radiusFt != null &&
+            step.rangeFt + accFt <= step.radiusFt
+          if (insideDest && (sure || s.arriveSeen)) {
             seq++ // a re-route in flight is moot now
             set({
               ...base,
               status: 'arrived',
               targetIdx: step.targetIdx,
               roundIdx: null,
+              clearRun: 0,
+              arriveSeen: false,
+              gpsSlow: false,
               progressLog: [],
               offCourseSince: null,
               rerouting: false,
@@ -1240,7 +1450,7 @@ export const useNavigation = create<NavigationState>()(
           // (a short leg), not a recovery onto a later leg.
           let idx = from
           let switched = false
-          if (rounding == null) {
+          if (rounding == null && !settling) {
             idx = step.targetIdx
             switched = idx !== from
             // A missed mark picked up from a later leg the boat is already
@@ -1249,33 +1459,70 @@ export const useNavigation = create<NavigationState>()(
             if (!switched) idx = recoverTarget(plan, idx, fix, opts)
           }
 
-          // Switching is not permission to cut the corner. After every
-          // switch, and on every fix until it is clear, the straight line
-          // from the boat to the new point is checked against the chart
-          // (with the fix's error added); while it is not clear the card
-          // steers to the turn point just switched away from — "Round
-          // waypoint N first". The switch itself still happens at the crew's
-          // 100–200 ft, and the distance to go counts via the turn point.
+          // Switching is not permission to cut the corner. The line the card
+          // would have the boat steer for the next point is checked against
+          // the chart — with the fix's error (its 95 % circle) added to every
+          // margin — at the switch, and then on EVERY fix until the boat has
+          // got round the turn point, not only after a switch: a fix that
+          // jumped past the turn, then came back, used to leave the boat
+          // steering a line nobody re-checked. While it is not clear the card
+          // steers to the turn point — "Round waypoint N first". It is let
+          // go when the line has been clear for `CLEAR_FIXES` fixes running,
+          // when the boat is at the turn point, or when it has got round it
+          // (abeam and past it on the way out: steering back would be
+          // steering astern).
           let roundIdx: number | null = null
-          if ((switched || rounding != null) && idx >= 1) {
+          let clearRun = 0
+          if (idx >= 1) {
             const turn = idx - 1
-            const verdict = shortcutVerdict(plan, turn, idx, fix, s.plannedFor)
-            if (!shortcutClear(plan, turn, fix, verdict)) roundIdx = turn
+            const buffer = LINE_BUFFER_ACC * (accFt / M_TO_FEET)
+            const got = passedTurn(plan, turn, fix)
+            if (switched || rounding != null) {
+              const verdict = steerVerdict(plan, idx, fix, s.plannedFor, buffer)
+              // At the turn point (or, with no chart, by the route's own
+              // geometry) — whatever the line check says.
+              // Or when the turn point is behind the boat: sending it back
+              // would be steering astern (the boat has gone past it, wide).
+              // "At" it means within `ROUNDED_FT` of it by the fix itself —
+              // not widened by a poor fix's error, which let a ±20 m fix go
+              // 60 ft short of the turn and swing a boat really 25 m further
+              // in across the corner; a poor fix is let go abeam (`got`).
+              const atTurn =
+                got ||
+                !turnAhead(plan, turn, fix, opts) ||
+                shortcutClear(plan, turn, { ...fix, accuracy: null }, verdict === null ? null : 'unsafe')
+              if (rounding != null) {
+                clearRun = verdict === 'clear' ? s.clearRun + 1 : 0
+                if (!atTurn && clearRun < CLEAR_FIXES) roundIdx = turn
+              } else if (!atTurn && verdict !== 'clear') {
+                roundIdx = turn
+              }
+            } else if (!got && turnAhead(plan, turn, fix, opts)) {
+              const verdict = steerVerdict(plan, idx, fix, s.plannedFor, buffer)
+              if (verdict === 'unsafe' && !shortcutClear(plan, turn, fix, 'unsafe')) roundIdx = turn
+            }
+            if (roundIdx == null) clearRun = 0
           }
           const shown = roundIdx ?? idx
 
           // Off the leg being run — including, now, steering to the first
           // point: a start chosen by hand that the boat is not at is not a
           // line anyone checked, so after the usual 10 s the route is
-          // re-planned from where the boat is.
-          const off = isOffCourse(plan, shown, fix, opts)
+          // re-planned from where the boat is. How far off counts scales
+          // with the boat's stand-off: 60 m off a line planned 5 m clear of
+          // the bank is 55 m into it.
+          const off = isOffCourse(plan, shown, fix, {
+            ...opts,
+            marginM: s.plannedFor?.clearanceM ?? null,
+          })
           const offCourseSince = off ? (s.offCourseSince ?? now) : null
 
           // The chart under the boat — and within the fix's error of it —
           // whatever the off-course rule says: a boat 20 m off the line can
-          // be in water too shallow for it, and the off-course threshold is
-          // 60 m or more.
+          // be in water too shallow for it.
           const shallowHere = shallowAt(plan, fix, s.plannedFor)
+          // And ahead of it, when the fix is too poor for the boat's margins.
+          const gpsSlow = slowAhead(plan, shown, fix, s.plannedFor, speedKn)
 
           // Distance to go, logged for the speed made good along the route.
           const prog = navProgress(plan, shown, fix)
@@ -1291,6 +1538,9 @@ export const useNavigation = create<NavigationState>()(
             ...base,
             targetIdx: idx,
             roundIdx,
+            clearRun,
+            arriveSeen: insideDest,
+            ...(gpsSlow !== s.gpsSlow ? { gpsSlow } : {}),
             progressLog,
             offCourseSince,
             // Back on the route: an old "could not re-route" is no longer

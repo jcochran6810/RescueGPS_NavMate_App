@@ -403,6 +403,10 @@ export interface StepResult {
    * are still shown, but a "you are there" from this fix would be a guess.
    */
   gpsPoor: boolean
+  /** From the fix to the point it was judged against, feet (absent with no fix). */
+  rangeFt?: number
+  /** The circle it was judged by, feet (absent with no fix). */
+  radiusFt?: number
 }
 
 /**
@@ -443,8 +447,9 @@ export function stepTarget(
       range <= passLimit && pastMark({ courseDeg: courseOf(plan, idx - 1) }, target, fix)
   }
 
-  if (idx === n - 1) return { targetIdx: idx, arrived: reached, gpsPoor }
-  return { targetIdx: reached ? idx + 1 : idx, arrived: false, gpsPoor }
+  const measured = { rangeFt: range, radiusFt }
+  if (idx === n - 1) return { targetIdx: idx, arrived: reached, gpsPoor, ...measured }
+  return { targetIdx: reached ? idx + 1 : idx, arrived: false, gpsPoor, ...measured }
 }
 
 /**
@@ -614,16 +619,167 @@ export function shortcutClear(
   return false
 }
 
+/**
+ * Has the boat got round turn point `turnIdx` — abeam of it or past it along
+ * the leg into it, AND past it along the leg out of it? Then steering back to
+ * it would be steering astern: whatever the chart says about the line to the
+ * next point, the way on is along the leg out of it (`steerCourse`), not
+ * back to the mark. Both tests are needed: round a hairpin the leg out runs
+ * back past a boat still short of the mark.
+ *
+ * For the start (`turnIdx` 0), past it along the first leg.
+ */
+export function passedTurn(plan: NavPlan, turnIdx: number, fix: LatLon): boolean {
+  const n = plan.points.length
+  if (turnIdx < 0 || turnIdx + 1 >= n) return true
+  const turn = plan.points[turnIdx]
+  const out = legGeometry(turn, plan.points[turnIdx + 1], fix)
+  if (turnIdx === 0) return out.alongM >= 0
+  const inbound = legGeometry(plan.points[turnIdx - 1], turn, fix)
+  return inbound.alongM >= inbound.lengthM && out.alongM >= 0
+}
+
+/* -------------------------------------------------------------------------
+ * The course to steer — back onto the line, not just at the point
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The least distance ahead along the leg the course is aimed at, metres.
+ * Short enough that a boat set off the line by a cross-current is steered
+ * back to it firmly (the steady offset a current leaves is this times the
+ * tangent of the angle the current sets the boat by — 10 m for a one-knot
+ * set at six knots), long enough that a few metres of GPS noise do not swing
+ * the number on the card by more than a few degrees.
+ */
+export const LOOKAHEAD_MIN_M = 30
+
+/**
+ * A poor fix wanders tens of metres over half a minute; aimed close, the
+ * course chases that wander and the boat with it — off a line it was
+ * actually on. So the aim moves further ahead as the fix gets worse: the
+ * least lookahead up to a fix of this accuracy (metres), growing with the
+ * square of the accuracy beyond it (±10 m → 120 m, ±20 m → 400 m, the cap).
+ * Swept on the simulated voyages: a linear 6 × accuracy left 5/20 poor-GPS
+ * runs inside the stand-off, the square 2/20. With a poor fix the course
+ * answers only a sustained offset (a set), and "slow down" says the rest.
+ */
+export const LOOKAHEAD_GOOD_ACC_M = 5
+/** The most the aim is put ahead for a poor fix, metres. */
+export const LOOKAHEAD_MAX_ACC_M = 400
+
+/** Off the line by at least this, the card says so and how to get back, metres. */
+export const XTE_CUE_M = 10
+
+export interface SteerCourse {
+  /** The point steered for: on the leg ahead of the boat, or the target itself. */
+  aim: LatLon
+  /** From the boat to `aim`, degrees TRUE — the course to steer. */
+  bearingDeg: number
+  /** Signed distance from the leg's line, metres, + = right of it; null for the first point. */
+  xteM: number | null
+  /** How far ahead along the leg the aim was put, metres (0 when aiming at the target). */
+  lookaheadM: number
+  /**
+   * How far along the leg the boat's foot lies, metres — negative while it is
+   * still short of the leg's start (coming round the turn onto it). Null for
+   * the first point.
+   */
+  alongM: number | null
+}
+
+/**
+ * The course to steer for point `targetIdx`: not straight at the point, but
+ * at a point on the leg into it a little ahead of the boat (`LOOKAHEAD_MIN_M`,
+ * or the boat's distance off the line, or more for a poor fix
+ * (`LOOKAHEAD_GOOD_ACC_M`) — whichever is most, so the intercept is never steeper than
+ * 45°).
+ * On the line it is the leg's own course; set off it — a cross-current, a
+ * helm that wandered — it brings the boat back onto the line the planner
+ * checked, instead of along a new straight line to the point that nobody
+ * did. Within that distance of the point, it is the point.
+ *
+ * The bearing and distance to the point itself are still what the card
+ * leads with (rule 4); this is the steering cue beside them.
+ */
+export function steerCourse(
+  plan: NavPlan,
+  targetIdx: number,
+  fix: SteerFix | null | undefined,
+): SteerCourse | null {
+  const n = plan.points.length
+  if (!fix || n === 0) return null
+  const idx = clampIdx(plan, targetIdx)
+  const target = plan.points[idx]
+  const direct = (xteM: number | null): SteerCourse => ({
+    aim: target,
+    bearingDeg: bearingDeg(fix.lat, fix.lon, target.lat, target.lon),
+    xteM,
+    lookaheadM: 0,
+    alongM,
+  })
+  let alongM: number | null = null
+  if (idx === 0) return direct(null)
+  const a = plan.points[idx - 1]
+  const g = legGeometry(a, target, fix)
+  alongM = g.alongM
+  if (g.lengthM < 1) return direct(g.crossM)
+  const acc =
+    fix.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0 ? fix.accuracy : 0
+  const noisy = Math.min(LOOKAHEAD_MAX_ACC_M, LOOKAHEAD_MIN_M * (acc / LOOKAHEAD_GOOD_ACC_M) ** 2)
+  const lookaheadM = Math.max(LOOKAHEAD_MIN_M, Math.abs(g.crossM), noisy)
+  const s = Math.min(g.lengthM, Math.max(0, g.alongM)) + lookaheadM
+  if (s >= g.lengthM) return direct(g.crossM)
+  const f = s / g.lengthM
+  const aim = { lat: a.lat + f * (target.lat - a.lat), lon: a.lon + f * (target.lon - a.lon) }
+  return {
+    aim,
+    bearingDeg: bearingDeg(fix.lat, fix.lon, aim.lat, aim.lon),
+    xteM: g.crossM,
+    lookaheadM,
+    alongM,
+  }
+}
+
+/** Legs closer together than this are told apart by the boat's heading, metres. */
+const JOIN_TIE_M = 30
+
+/**
+ * Where to pick up a route the boat is not on and not at the start of —
+ * the point at the far end of the nearest leg it has not yet run the length
+ * of (between legs within `JOIN_TIE_M` of each other, one going the boat's
+ * way), never the start. Used when a re-route the crew had to read first is
+ * accepted: the boat has moved on meanwhile, and its start is behind it.
+ */
+export function joinTarget(plan: NavPlan, fix: SteerFix | null | undefined): number {
+  const n = plan.points.length
+  if (n <= 1) return 0
+  if (!fix) return 1
+  const heading = hasHeading(fix) ? fix.heading : null
+  const legs: { j: number; d: number; sameWay: boolean }[] = []
+  for (let j = 0; j < n - 1; j++) {
+    const g = legGeometry(plan.points[j], plan.points[j + 1], fix)
+    if (g.alongM > g.lengthM && j < n - 2) continue
+    const sameWay = heading == null || angleBetween(heading, courseOf(plan, j)) < SAME_WAY_DEG
+    legs.push({ j, d: g.distM, sameWay })
+  }
+  if (legs.length === 0) return n - 1
+  legs.sort((x, y) => x.d - y.d)
+  const best = legs.find((l) => l.sameWay && l.d <= legs[0].d + JOIN_TIE_M) ?? legs[0]
+  return best.j + 1
+}
+
 /* -------------------------------------------------------------------------
  * Speed made good along the route — for the ETA
  * ---------------------------------------------------------------------- */
 
 /** How far back the route's progress is measured for the ETA, seconds. */
-export const PROGRESS_WINDOW_S = 30
+export const PROGRESS_WINDOW_S = 60
 /** Least span of progress to measure a speed from, seconds. */
-export const PROGRESS_MIN_S = 10
-/** The speed over the ground "now" is the mean of this last stretch, seconds. */
+export const PROGRESS_MIN_S = 20
+/** The speed over the ground "now" is the median of this last stretch, seconds. */
 export const RECENT_SOG_S = 10
+/** Pairs of samples closer together than this say nothing about a rate, seconds. */
+const PAIR_MIN_S = 5
 
 /** Distance to go at one moment: ms since the epoch, NM; and the speed over the ground then, knots. */
 export interface ProgressSample {
@@ -652,60 +808,99 @@ export function logProgress(
   return out.slice(k)
 }
 
+function median(xs: number[]): number | null {
+  if (xs.length === 0) return null
+  const s = [...xs].sort((a, b) => a - b)
+  const m = s.length >> 1
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+
+/**
+ * The rate `y` changes at over time, robustly: the median of the slopes
+ * between every pair of samples at least `PAIR_MIN_S` apart (Theil–Sen). A
+ * jump — a waypoint switched early, a fix that wandered — moves a handful of
+ * the pairs, never the median. Units of `y` per hour.
+ */
+function robustRatePerH(t: readonly number[], y: readonly number[]): number | null {
+  const slopes: number[] = []
+  for (let i = 0; i < t.length; i++) {
+    for (let j = i + 1; j < t.length; j++) {
+      const dtS = (t[j] - t[i]) / 1000
+      if (dtS < PAIR_MIN_S) continue
+      slopes.push(((y[j] - y[i]) / dtS) * 3600)
+    }
+  }
+  return median(slopes)
+}
+
 /**
  * Speed made good along the route, knots — what the ETA is worked at.
  *
- * The ETA was the distance to go over the speed over the ground smoothed with
- * a 15 s time constant: it lagged every change of speed by that much, and
- * knew nothing of the route — a boat weaving, rounding a turn or making way
- * across the line is not closing the destination at its speed over the
- * ground. Near the end of one simulated passage it was 32 % out.
+ * The ETA was once the distance to go over the speed over the ground
+ * smoothed with a 15 s time constant: it lagged every change of speed by
+ * that much, and knew nothing of the route — a boat weaving, rounding a turn
+ * or making way across the line is not closing the destination at its speed
+ * over the ground. It was then worked from the last half-minute's progress,
+ * capped at the speed over the ground: every glitch in the distance to go
+ * (a waypoint switched early, a fix that wandered) and every fix the filter
+ * read as a standstill went straight into it, and it came out twice as far
+ * wrong as the smoothed speed it replaced.
  *
- * So two things are measured over the last `PROGRESS_WINDOW_S` seconds:
- * how fast the distance to go actually came down, and how far the boat ran
- * over the ground meanwhile. Their ratio is how much of the boat's way is
- * going into the route (it changes slowly); times the speed over the ground
- * of the last `RECENT_SOG_S` seconds (which does not lag) it is the speed the
- * crew will actually close the destination at. Without speeds in the log,
- * the progress rate alone.
+ * Now, over the last `PROGRESS_WINDOW_S` seconds:
+ *
+ *   - how fast the distance to go came down, and how fast the boat ran over
+ *     the ground, each as a robust rate (`robustRatePerH`, the median of
+ *     many pairs — one bad sample moves neither);
+ *   - their ratio is how much of the boat's way is going into the route
+ *     (it changes slowly), and times the median speed over the ground of the
+ *     last `RECENT_SOG_S` seconds (which does not lag) it is the speed the
+ *     crew will actually close the destination at.
+ *
+ * A speed over the ground of exactly 0 is the filter saying "cannot tell",
+ * not the boat stopping, and is left out; a boat that really stops shows it
+ * in the distance to go. Without speeds in the log, the progress rate alone.
  *
  * Null until there is `PROGRESS_MIN_S` of log, or when the boat is not
- * closing at a knot — the caller falls back to the speed over the ground,
- * then the cruise speed.
+ * closing at a knot — the caller falls back to the smoothed speed over the
+ * ground, then the cruise speed.
  */
 export function routeSpeedKn(log: readonly ProgressSample[] | null | undefined): number | null {
   if (!log || log.length < 2) return null
   const a = log[0]
   const b = log[log.length - 1]
-  const spanH = (b.t - a.t) / 3_600_000
-  if (!(spanH * 3600 >= PROGRESS_MIN_S)) return null
-  const progressNM = a.remainingNM - b.remainingNM
+  if (!((b.t - a.t) / 1000 >= PROGRESS_MIN_S)) return null
+  const t = log.map((x) => x.t)
+  const progress = robustRatePerH(
+    t,
+    log.map((x) => -x.remainingNM),
+  )
+  if (progress == null) return null
+
   const sog = (x: ProgressSample) =>
-    x.sogKn != null && Number.isFinite(x.sogKn) && x.sogKn >= 0 ? x.sogKn : null
-  let groundNM = 0
-  let recentSum = 0
-  let recentN = 0
-  let haveSog = true
-  for (let k = 0; k < log.length; k++) {
-    const v = sog(log[k])
-    if (v == null) {
-      haveSog = false
-      break
+    x.sogKn != null && Number.isFinite(x.sogKn) && x.sogKn > 0 ? x.sogKn : null
+  const withSog = log.filter((x) => sog(x) != null)
+  let kn = progress
+  if (withSog.length >= log.length / 2) {
+    // Distance run over the ground, from the speeds (a missing one carries
+    // the last known), as a series its own robust rate can be read from.
+    const ground: number[] = []
+    let run = 0
+    let v = sog(withSog[0]) as number
+    for (let k = 0; k < log.length; k++) {
+      if (k > 0) {
+        const next = sog(log[k]) ?? v
+        run += ((v + next) / 2) * ((log[k].t - log[k - 1].t) / 3_600_000)
+        v = next
+      }
+      ground.push(run)
     }
-    if (k > 0) groundNM += ((sog(log[k - 1]) as number) + v) / 2 * ((log[k].t - log[k - 1].t) / 3_600_000)
-    if (log[k].t >= b.t - RECENT_SOG_S * 1000) {
-      recentSum += v
-      recentN++
+    const overGround = robustRatePerH(t, ground)
+    const recent = median(
+      withSog.filter((x) => x.t >= b.t - RECENT_SOG_S * 1000).map((x) => sog(x) as number),
+    )
+    if (overGround != null && overGround > 0 && recent != null) {
+      kn = (progress / overGround) * recent
     }
-  }
-  let kn: number
-  if (haveSog && groundNM > 0 && recentN > 0) {
-    // Never more than the way the boat has on: a corner cut by the switch
-    // can make the distance to go drop faster than the boat moves, for a fix.
-    const share = Math.min(1, progressNM / groundNM)
-    kn = share * (recentSum / recentN)
-  } else {
-    kn = progressNM / spanH
   }
   return Number.isFinite(kn) && kn >= MIN_SOG_KN ? kn : null
 }
@@ -714,23 +909,54 @@ export function routeSpeedKn(log: readonly ProgressSample[] | null | undefined):
  * Off course, stale, speed
  * ---------------------------------------------------------------------- */
 
+/** The least off-course threshold for a boat with small safety margins, metres. */
+export const OFF_COURSE_FLOOR_M = 20
+
 /**
- * How far from the leg counts as off it, metres: 60 m at least, two arrival
- * circles, or one and a half times the fix's claimed error — whichever is
- * largest, so a poor fix cannot trigger a re-route by itself.
+ * With the margin known, never less than this many times the fix's claimed
+ * error: 2.5 × the 68 % radius is beyond the 99 % one, so a receiver's own
+ * wander is not taken for the boat leaving the route (and re-planning from
+ * a position the fix does not actually know).
+ */
+export const OFF_COURSE_PER_ACC = 2.5
+
+/** Options for the off-course test: the arrival setting, and the boat's margin. */
+export interface OffCourseOptions extends ArrivalOptions {
+  /**
+   * The boat's stand-off from land and hazards, metres — the margin the
+   * route was planned with. When given, the threshold scales with it.
+   */
+  marginM?: number | null
+}
+
+/**
+ * How far from the leg counts as off it, metres.
+ *
+ * With the boat's stand-off known (`marginM`): twice the stand-off, never
+ * less than 20 m nor more than 60 m — a boat with a 5 m stand-off is well
+ * into trouble 60 m off a line planned to clear the bank by 5 m, and used to
+ * be allowed 60–122 m before anything re-planned — and never less than
+ * `OFF_COURSE_PER_ACC` times the fix's claimed error. Without it: 60 m at
+ * least, two arrival circles, or one and a half times the fix's error. A
+ * poor fix cannot trigger a re-route by itself either way.
  */
 export function offCourseThresholdM(
   plan: NavPlan,
   targetIdx: number,
   fix: SteerFix | null | undefined,
-  opts: ArrivalOptions = {},
+  opts: OffCourseOptions = {},
 ): number {
-  const idx = plan.points.length ? clampIdx(plan, targetIdx) : 0
-  const { baseFt } = arrivalRadiusFt(plan, idx, null, opts)
   const acc =
     fix?.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0
       ? fix.accuracy
       : 0
+  const margin = positive(opts.marginM)
+  if (margin != null) {
+    const base = Math.min(OFF_COURSE_MIN_M, Math.max(OFF_COURSE_FLOOR_M, 2 * margin))
+    return Math.max(base, OFF_COURSE_PER_ACC * acc)
+  }
+  const idx = plan.points.length ? clampIdx(plan, targetIdx) : 0
+  const { baseFt } = arrivalRadiusFt(plan, idx, null, opts)
   return Math.max(OFF_COURSE_MIN_M, 2 * baseFt * FEET_TO_M, 1.5 * acc)
 }
 
@@ -749,7 +975,7 @@ export function isOffCourse(
   plan: NavPlan,
   targetIdx: number,
   fix: SteerFix | null | undefined,
-  opts: ArrivalOptions & { thresholdM?: number } = {},
+  opts: OffCourseOptions & { thresholdM?: number } = {},
 ): boolean {
   const n = plan.points.length
   if (!fix || n === 0) return false

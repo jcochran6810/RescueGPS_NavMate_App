@@ -35,6 +35,7 @@ export function useNavCard(): NavCardView | null {
   const pendingReroute = useNavigation((s) => s.pendingPlan != null)
   const shallowHere = useNavigation((s) => s.shallowHere)
   const roundIdx = useNavigation((s) => s.roundIdx)
+  const gpsSlow = useNavigation((s) => s.gpsSlow)
   const progressLog = useNavigation((s) => s.progressLog)
   const clearanceM = useNavigation((s) => s.plannedFor?.clearanceM ?? null)
   const dest = useNavigation((s) => s.dest)
@@ -76,6 +77,7 @@ export function useNavCard(): NavCardView | null {
     roundIdx,
     routeSpeedKn: routeSpeedKn(progressLog),
     safetyMarginM: safetyMarginM(clearanceM),
+    gpsSlow,
     destLabel: dest?.label ?? null,
     formatLength: fmt.length,
     formatDepth: (m) => fmt.depth(m),
