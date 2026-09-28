@@ -48,6 +48,16 @@ interface VesselState {
   cache: Vessel[]
   pending: PendingOp[]
   failed: FailedOp[]
+  /**
+   * Each boat's "keep ___ from shallows" (`shallow_margin_m`) as set on this
+   * device, by vessel id — so the setting holds whether or not the server's
+   * `vessels` table has the column yet (migration
+   * `20260928000000_navmate_vessel_shallow_margin`, not applied by the app).
+   * A value the server holds wins; this fills in where it holds none.
+   */
+  shallowMargins: Record<string, number>
+  /** The server's rows carry `shallow_margin_m`: it is safe to send. */
+  serverHasShallowMargin: boolean
   loading: boolean
   syncing: boolean
   ownerId: string | null
@@ -110,6 +120,7 @@ let memo: {
   cache: Vessel[]
   failed: FailedOp[]
   pending: PendingOp[]
+  margins: Record<string, number>
   result: Vessel[]
 } | null = null
 
@@ -134,35 +145,61 @@ function merge(
   cache: Vessel[],
   failed: FailedOp[],
   pending: PendingOp[],
+  margins: Record<string, number> = {},
 ): Vessel[] {
   if (
     memo &&
     memo.cache === cache &&
     memo.failed === failed &&
-    memo.pending === pending
+    memo.pending === pending &&
+    memo.margins === margins
   ) {
     return memo.result
   }
   // Failed ops layer ahead of pending ones: a refused boat is still the crew's
   // data and must not disappear from the list they are choosing from.
-  const result = applyOps(cache, [...failed.map((f) => f.op), ...pending])
-  memo = { cache, failed, pending, result }
+  const merged = applyOps(cache, [...failed.map((f) => f.op), ...pending])
+  // The device's own "keep ___ from shallows" where the row carries none.
+  const result = merged.map((v) =>
+    v.shallow_margin_m == null && Number.isFinite(margins[v.id]) ? { ...v, shallow_margin_m: margins[v.id] } : v,
+  )
+  memo = { cache, failed, pending, margins, result }
   return result
+}
+
+/**
+ * The fields the server may be sent: `shallow_margin_m` only once its rows
+ * have shown the column exists — PostgREST refuses a write naming a column
+ * it does not have, and the boat's other settings must still sync.
+ */
+function withoutUnknown<T extends Partial<Vessel>>(row: T, serverHas: boolean): T {
+  if (serverHas || !('shallow_margin_m' in row)) return row
+  const rest = { ...row }
+  delete rest.shallow_margin_m
+  return rest
+}
+
+/** Record a boat's "keep ___ from shallows" on this device. */
+function noteMargin(margins: Record<string, number>, id: string, v: Partial<Vessel>): Record<string, number> {
+  const m = v.shallow_margin_m
+  if (m == null || !Number.isFinite(m)) return margins
+  return { ...margins, [id]: m }
 }
 
 let flushSeq = 0
 
 /** The row columns sent to the server (never updated_at — a trigger owns it). */
-function toRow(v: Vessel) {
+function toRow(v: Vessel, serverHasShallowMargin = false) {
   const {
     id, client_id, team_id, name, callsign, draft_m, air_draft_m, beam_m,
     length_m, cruise_speed_kn, max_speed_kn, fuel_burn_gph,
-    under_keel_margin_m, clearance_m, created_by,
+    under_keel_margin_m, clearance_m, created_by, shallow_margin_m,
   } = { ...v, created_by: v.user_id }
   return {
     id, client_id, team_id, name, callsign, draft_m, air_draft_m, beam_m,
     length_m, cruise_speed_kn, max_speed_kn, fuel_burn_gph,
     under_keel_margin_m, clearance_m, created_by,
+    ...(serverHasShallowMargin && shallow_margin_m != null ? { shallow_margin_m } : {}),
   }
 }
 
@@ -180,12 +217,14 @@ export const useVessels = create<VesselState>()(
       cache: [],
       pending: [],
       failed: [],
+      shallowMargins: {},
+      serverHasShallowMargin: false,
       loading: false,
       syncing: false,
       ownerId: null,
       activeId: readActive(),
 
-      visible: () => merge(get().cache, get().failed, get().pending),
+      visible: () => merge(get().cache, get().failed, get().pending, get().shallowMargins),
 
       inScope: (teamId) =>
         get()
@@ -230,8 +269,10 @@ export const useVessels = create<VesselState>()(
               .is('deleted_at', null)
               .order('name', { ascending: true })
             if (error) throw error
+            const rows = (data ?? []) as Record<string, unknown>[]
             set({
-              cache: (data ?? []).map((r) => fromRow(r as Record<string, unknown>)),
+              cache: rows.map((r) => fromRow(r)),
+              ...(rows.length > 0 ? { serverHasShallowMargin: 'shallow_margin_m' in rows[0] } : {}),
             })
             if (flushSeq === seqBefore) break
           }
@@ -268,14 +309,16 @@ export const useVessels = create<VesselState>()(
               if (op.kind === 'create') {
                 const { error } = await supabase
                   .from('vessels')
-                  .upsert(toRow(op.vessel), { onConflict: 'id' })
+                  .upsert(toRow(op.vessel, get().serverHasShallowMargin), { onConflict: 'id' })
                 if (error) throw error
               } else if (op.kind === 'update') {
-                const { error } = await supabase
-                  .from('vessels')
-                  .update(op.patch)
-                  .eq('id', op.id)
-                if (error) throw error
+                const patch = withoutUnknown(op.patch, get().serverHasShallowMargin)
+                // Nothing the server can hold (only the shallows margin, on a
+                // database without the column): kept on this device alone.
+                if (Object.keys(patch).length > 0) {
+                  const { error } = await supabase.from('vessels').update(patch).eq('id', op.id)
+                  if (error) throw error
+                }
               } else {
                 // Soft delete (N10): a boat registered as a unit is named on
                 // the command side's map, and its row has to outlive it here.
@@ -345,6 +388,7 @@ export const useVessels = create<VesselState>()(
         set({
           ownerId: uid,
           pending: [...get().pending, { kind: 'create', vessel }],
+          shallowMargins: noteMargin(get().shallowMargins, id, vessel),
         })
         // A crew that just set their boat up should be planning with it, not
         // picking it out of a list first.
@@ -354,7 +398,10 @@ export const useVessels = create<VesselState>()(
       },
 
       updateVessel: async (id, patch) => {
-        set({ pending: [...get().pending, { kind: 'update', id, patch }] })
+        set({
+          pending: [...get().pending, { kind: 'update', id, patch }],
+          shallowMargins: noteMargin(get().shallowMargins, id, patch),
+        })
         await get().flush()
       },
 
@@ -395,6 +442,8 @@ export const useVessels = create<VesselState>()(
           cache: [],
           pending: [],
           failed: [],
+          shallowMargins: {},
+          serverHasShallowMargin: false,
           ownerId: null,
           activeId: null,
         })
@@ -407,6 +456,8 @@ export const useVessels = create<VesselState>()(
         cache: s.cache,
         pending: s.pending,
         failed: s.failed,
+        shallowMargins: s.shallowMargins,
+        serverHasShallowMargin: s.serverHasShallowMargin,
         ownerId: s.ownerId,
       }),
     },

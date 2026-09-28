@@ -36,8 +36,17 @@
  *   exactly on the drawn line: a phone fix is good to 5–10 m and a helm
  *   wanders as much again. So outside a marked channel (and outside the
  *   approach zones) no water charted shallower than the boat needs may lie
- *   within `depthMarginM` (10–15 m, see `depthMarginFor`) of a leg. Inside a
- *   dredged area or fairway the zero-margin rule above still holds.
+ *   within `depthMarginM` (10–15 m, see `depthMarginFor`) of a leg — the
+ *   least any leg keeps. Inside a dredged area or fairway, a smaller margin
+ *   from its edges (`channelMarginFor`).
+ * - **The corridor: shortest route inside "keep ___ from shallows".** The
+ *   crew's own margin (`RouteRequest.shallowMarginM`, 100 ft by default):
+ *   outside channels the route keeps it wherever the water allows, inside a
+ *   marked channel it keeps to the centreline (`centreLegs`), and every turn
+ *   has room for the boat to make it at its cruise speed (`turnRoom`). The
+ *   shortest route is the shortest inside that corridor; where no route keeps
+ *   it, the route keeps as much as there is and the leg says so (`narrow`,
+ *   "keep a lookout"). Shorter ways outside it are offered as alternatives.
  * - **The approach exception.** Within `approachM` (default 120 m) of the
  *   start and the destination — the dock, the ramp, the marina — the route may
  *   use water charted in a band that starts shallower than the boat needs,
@@ -69,7 +78,9 @@ import {
   LAND,
   chartIndexFor,
   checkSegment,
+  edgeDistance,
   peekChartIndex,
+  shoalGap,
   distanceTransform,
   forEachHazardIn,
   forEachPieceIn,
@@ -150,6 +161,8 @@ export interface PointHazard {
 export interface ChannelPolygon {
   kind: 'dredged' | 'fairway'
   rings: Ring[]
+  /** The chart's name for it (OBJNAM), when it has one — "Five Mile Cut Channel". */
+  name?: string
 }
 
 /**
@@ -189,6 +202,14 @@ export interface ChartFeatures {
    * have been, and the crew is told so. Absent or empty means nothing failed.
    */
   failedBands?: string[]
+  /**
+   * Bands that answered, but with part of their depths missing — a piece of
+   * the area whose query failed twice, or hit the service's transfer limit.
+   * Where the finer chart's depths are missing the coarser one speaks, and a
+   * coastal chart draws a whole bay as 0 m: the planner then goes the long
+   * way round. The crew is told, and the chart store asks again next time.
+   */
+  incompleteBands?: string[]
 }
 
 export const EMPTY_FEATURES: ChartFeatures = {
@@ -271,11 +292,52 @@ export interface RouteRequest {
    * max(3 m, 10 % of the stand-off); 0 plans on the stand-off itself.
    */
   planBufferM?: number
+  /**
+   * The crew's "keep ___ from shallows", metres — the planner's corridor.
+   * Outside marked channels (and the approach zones) every leg keeps at
+   * least this from water charted shallower than the boat needs; inside a
+   * marked channel it keeps to the middle — half the channel's usable width,
+   * less a little (`CENTRE_FRACTION`), up to this. The shortest route is
+   * the shortest INSIDE that corridor. Where no route keeps it (a gut or a
+   * cut narrower than twice the margin) the route keeps as much as the water
+   * allows — never less than the depth margin (`depthMarginFor`) — and the
+   * leg is flagged `narrow`: "keep a lookout". Default
+   * `DEFAULT_SHALLOW_MARGIN_M` (100 ft); 0 turns the corridor off.
+   */
+  shallowMarginM?: number
 }
 
 /** Least and most lateral depth margin, metres. */
 export const MIN_DEPTH_MARGIN_M = 10
 export const MAX_DEPTH_MARGIN_M = 15
+
+/**
+ * "Keep 100 ft from shallows" — the corridor a route is planned inside by
+ * default, metres (`RouteRequest.shallowMarginM`). The depth margin above is
+ * the least a leg may ever keep; this is what it keeps wherever the water
+ * allows. A route planned only on the 10–15 m margin ran its legs 19 m off
+ * a drying bank, and a boat's ordinary overshoot after the first turn put
+ * it aground there (rc8 F1); the margin to shallow water of the shortest
+ * routes had fallen to a median of 32 m, from 47 m.
+ */
+export const DEFAULT_SHALLOW_MARGIN_M = 100 * 0.3048
+/** The corridor setting's range, metres (0 = off). */
+export const MAX_SHALLOW_MARGIN_M = 300
+
+/**
+ * Inside a marked channel the corridor is its middle: a leg keeps this share
+ * of the channel's usable width from its edges (up to the corridor itself) —
+ * 0.4 puts it within a tenth of the width of the centreline. A route laid
+ * 9–12 m off the south edge of the ~36 m Five Mile Cut had boats with an
+ * ordinary 12–15 m tracking error aground on it (rc8 F3).
+ */
+export const CENTRE_FRACTION = 0.4
+
+/** The corridor a request asks for, metres (0 = off). */
+export function shallowMarginFor(m: number | null | undefined): number {
+  if (m == null || !Number.isFinite(m)) return DEFAULT_SHALLOW_MARGIN_M
+  return Math.min(MAX_SHALLOW_MARGIN_M, Math.max(0, m))
+}
 
 /**
  * How far beside a leg (outside a channel) water too shallow for the boat
@@ -323,6 +385,24 @@ export function channelMarginFor(depthMarginM: number, channelMarginM?: number |
     minM: Math.min(want, CHANNEL_MARGIN_MIN_M),
     fraction: CHANNEL_MARGIN_FRACTION,
   }
+}
+
+/**
+ * Outside marked channels, the least a leg keeps from shallow water in a
+ * natural gut too narrow for the full depth margin, metres — and the share of
+ * the gut's width it keeps otherwise (the middle half). The full margin
+ * (`depthMarginFor`, 10–15 m) closed every gut narrower than 20–30 m, however
+ * deep: a boat has to be able to use a narrow channel that is deep enough,
+ * kept to its middle and told so ("keep to the middle"), instead of being
+ * sent the long way round. 5 m rather than the 3 m of a dredged cut: an
+ * unmarked gut is not maintained or buoyed.
+ */
+export const NARROW_MARGIN_MIN_M = 5
+
+/** The keep-to-the-middle rule outside channels for a depth margin; null when the margin is off. */
+export function narrowMarginFor(depthMarginM: number): ChannelMargin | null {
+  if (!(depthMarginM > NARROW_MARGIN_MIN_M)) return null
+  return { minM: NARROW_MARGIN_MIN_M, maxM: depthMarginM, fraction: CHANNEL_MARGIN_FRACTION }
 }
 
 /**
@@ -396,6 +476,22 @@ export interface RouteLeg extends PatternLeg {
   nearShoalDepthM?: number | null
   nearShoalDistM?: number | null
   /**
+   * Keeps the depth margin only by keeping to the middle: the leg runs through
+   * a marked channel or a natural gut too narrow for the full margin, never
+   * closer than `NARROW_MARGIN_MIN_M` (a gut) or `CHANNEL_MARGIN_MIN_M` (a
+   * dredged cut) to its edges. Sound — the crew is told "keep to the middle".
+   */
+  narrow?: boolean
+  /**
+   * Closer than the crew's "keep ___ from shallows" (`RouteRequest.shallowMarginM`)
+   * to water charted shallower than the boat needs — beside the leg, where
+   * no route keeps the corridor (a leg that could keep it, does): how close,
+   * metres, and that water's depth. The leg is `narrow` and flagged "keep a
+   * lookout". Absent when the leg keeps the corridor.
+   */
+  corridorGapM?: number
+  corridorDepthM?: number
+  /**
    * Not checked for the boat now being steered: the boat was made deeper or
    * its stand-off wider, and neither a new plan nor a re-check against the
    * chart could be made (no chart in memory). Drawn and flagged as unsafe
@@ -449,6 +545,14 @@ export interface RoutePlan {
    * other warnings are listed below it. Null (or absent) otherwise.
    */
   confirmReason?: string | null
+  /**
+   * Turn points (indexes into `points`) where the chart leaves no room for
+   * the boat to turn at its cruise speed — the water beyond the turn is
+   * narrower than the turn swings it — and no gentler turn or better-placed
+   * point could be found. The crew is told to slow down for them. Absent
+   * when there are none.
+   */
+  slowTurns?: number[]
 }
 
 /* -------------------------------------------------------------------------
@@ -527,11 +631,16 @@ const REPAIR_WINDOW_M = 500
 
 /**
  * How much shorter the optimistic read's route must be before it replaces the
- * conservative one. Both passed the same check against the chart; this only
- * stops a few metres' difference from swapping a route that rides a channel
- * for one that does not.
+ * conservative one, and how close to the straight line a route must be before
+ * the optimistic read is not tried at all. Both routes passed the same check
+ * against the chart, so the shorter one wins; the 1 % only stops a swap over
+ * rounding. (It was 5 %, so that a route riding a channel was not swapped for
+ * a shorter one that did not — the channel preference is gone: the crew's
+ * rule is the shortest route that keeps the rules.)
  */
-const OPTIMISTIC_GAIN = 0.05
+const OPTIMISTIC_GAIN = 0.01
+/** A route within this of the straight line is not searched again optimistically. */
+const NEAR_DIRECT = 0.05
 
 /** Legs shorter than this, and turns smaller than this, are merged away. */
 const STRAIGHT_TURN_DEG = 3
@@ -547,7 +656,9 @@ const PLAN_BUFFER_MIN_M = 3
 const PLAN_BUFFER_FRACTION = 0.1
 /**
  * The route with the buffer is taken unless it is longer than the route on
- * the stand-off itself by more than this factor and distance together.
+ * the stand-off itself by more than this factor and distance together. The
+ * buffer is room, not a rule: it may cost a boat 1 % (and 20 m), never the
+ * long way round (it was 3 % and 50 m).
  */
 const BUFFER_DETOUR_FACTOR = 1.03
 const BUFFER_DETOUR_M = 50
@@ -568,75 +679,84 @@ const LADDER_FRACTIONS = [0.75, 0.5, 0.25]
 const CLEARANCE_FLOOR_M = 3
 
 /**
- * Cost multiplier right against the stand-off, fading to none by EDGE_FADE×.
+ * The shortest route that keeps the rules, and nothing else — the crew's
+ * rule (2026-09-28: "always create the shortest route possible"). Safety is
+ * the hard constraints and margins (depth, stand-off, depth-edge margin,
+ * vector check); the cost of a cell is its length. What is left below are
+ * TIE-BREAKERS: among routes of (nearly) equal length, prefer the one off the
+ * bank and in marked water. Together they add at most `EDGE_WEIGHT +
+ * OUTSIDE_THIN_WEIGHT` = 1 % to a cell, so they can never make the route more
+ * than about 1 % longer than the shortest one.
  *
- * This is about the *edge of navigable water* — shaving a bank — and has
- * nothing to do with a charted channel, which is a separate preference below.
- * It used to be called CHANNEL_WEIGHT, which made the two impossible to tell
- * apart once marked channels arrived.
+ * History: these were 0.6 (bank edge) and 0.25/1.5 (outside a channel) — a
+ * preference strong enough to accept a detour of 2.5× to stay in a channel.
+ * That is how a Galveston Bay passage came to be planned 17.7 NM round the
+ * South Boat Cut when the chart it had in memory also allowed less.
+ *
+ * `EDGE_WEIGHT` is about the *edge of navigable water* — shaving a bank — and
+ * has nothing to do with a charted channel, which is the separate tie-breaker
+ * below. OUTSIDE_THIN_WEIGHT > EDGE_WEIGHT still holds, so between two
+ * equally long ways the one inside a narrow channel wins over the one beside
+ * it.
  */
-const EDGE_WEIGHT = 0.6
+const EDGE_WEIGHT = 0.004
 const EDGE_FADE_MULTIPLE = 3
+/**
+ * The same, planning inside the corridor: room off the bank is worth a few
+ * per cent of distance there, so the search proposes the middle of the water
+ * where it is cheap — the any-angle shortening (`tighten`) then gives room
+ * up only where it buys distance (`ROOM_PRICE`). At most 2 % on a cell.
+ */
+const CORRIDOR_EDGE_WEIGHT = 0.02
+
+/**
+ * The corridor in the grid (`RouteRequest.shallowMarginM`): a cell outside
+ * a marked channel closer than the corridor to water too shallow for the boat
+ * costs `CORRIDOR_BASE` extra, plus up to `CORRIDOR_SLOPE` more the closer it
+ * is — rule-bending cost, which the string-pull may not increase. In open
+ * water keeping the corridor costs a boat a few metres of sideways offset,
+ * so the route keeps it; a narrow gut on the way is used, down its widest
+ * part, rather than a way round more than two to three times its length
+ * longer (the Five Mile Cut approaches: 0.7 NM of them, against 7 NM round
+ * by the South Boat Cut). Inside a marked channel, a cell off the channel's
+ * middle (`CENTRE_FRACTION`) costs up to `CENTRE_WEIGHT`. The alternatives
+ * (`Mode.corridor` false) plan without it.
+ */
+const CORRIDOR_BASE = 0.5
+const CORRIDOR_SLOPE = 3
+const CENTRE_WEIGHT = 1
+/** The least off-centre distance, in cells, the grid prices at all (see `cellCost`). */
+const CENTRE_MIN_CELLS = 1.5
+
+/**
+ * Room beyond the corridor, where it is cheap. The any-angle shortening
+ * (`tighten`) takes a shortcut that passes closer to shallow water or land
+ * than the legs it replaces only when it saves `ROOM_PRICE` metres of route
+ * for every metre of room given up — room measured out to `ROOM_FACTOR`
+ * times the corridor. A route squeezed onto its margins everywhere left
+ * nothing for a boat's overshoot after a turn (rc8).
+ */
+const ROOM_PRICE = 4
+const ROOM_FACTOR = 2
 
 /**
  * How much deeper than the boat needs before open water counts as
- * "confidently deep enough", and the course may leave marked water for it.
- *
- * Two metres, and the number comes from how depth areas actually arrive: ENC
- * bands them (0–2, 2–5, 5–10, 10–20 m), so two metres means "a whole band
- * clear of what this boat needs" rather than a value sitting inside the band's
- * own rounding. Absolute rather than a fraction of the draft because what it
- * covers is absolute — the trough of a short steep chop in a bay entrance, and
- * a survey that may be decades old. `safeDepthM` already carries the
- * coxswain's under-keel margin; this is the margin on top of it that buys
- * leaving the channel.
+ * "confidently deep enough" for the (tie-breaking) channel preference: a
+ * whole ENC depth band (0–2, 2–5, 5–10 m) clear of what the boat needs.
  */
 const AMPLE_MARGIN_M = 2
 
 /**
- * Cost added to a cell outside a marked channel — cheap where the water is
- * amply deep, dear where it only just clears the boat.
- *
- * The ordering that matters is OUTSIDE_THIN_WEIGHT > EDGE_WEIGHT. It makes the
- * *worst* cell inside a channel (1.6, hard against the stand-off) cheaper than
- * the *best* cell outside one in water that merely clears the draft (2.5).
- * Without it the router would slide out of a narrow channel purely to stop
- * shaving its bank, which is the opposite of seamanship.
- *
- * What they buy, as a detour a course will accept to stay in the channel:
- * 2.5× where the open water merely clears the draft, 1.25× where it is amply
- * deep. In the narrowest channel, where every cell carries the full bank-edge
- * cost, those become 1.56× and 0.78× — and that second figure losing is the
- * requirement's own escape clause working.
+ * Tie-breaking cost added to a cell outside a marked channel — smaller where
+ * the water is amply deep. See `EDGE_WEIGHT` for why they are this small.
  */
-const OUTSIDE_AMPLE_WEIGHT = 0.25
-const OUTSIDE_THIN_WEIGHT = 1.5
+const OUTSIDE_AMPLE_WEIGHT = 0.003
+const OUTSIDE_THIN_WEIGHT = 0.006
 
-/**
- * Distance over which leaving a channel ramps up to its full cost, metres.
- *
- * Not a claim that closer is safer. Its job is to keep a short gap between a
- * dredged cut and the fairway continuing it costing in proportion to its
- * length rather than standing up like a wall, and to saturate, which is what
- * stops the penalty swamping the heuristic.
- */
+/** Distance over which leaving a channel ramps up to its full (tie-breaking) cost, metres. */
 const CHANNEL_FADE_M = 200
 
-/**
- * The share of the penalty charged the instant a cell is outside the channel,
- * before the distance ramp adds the rest.
- *
- * Found by driving the built app rather than by reasoning. With a pure ramp
- * from zero, a cell one cell outside a cut cost about 8 % of the full penalty
- * — near enough to free that the course rounded the bar's tip *just* outside
- * the dredged area for its whole length, hugging the boundary without ever
- * crossing it. That is the letter of the cost function and the opposite of
- * what a coxswain would do.
- *
- * The decision a crew actually makes is binary: in the channel, or not. So
- * the step carries most of the weight and the ramp only says how much worse
- * it gets from there.
- */
+/** The share of the tie-breaker charged the instant a cell is outside a channel. */
 const OUTSIDE_STEP = 0.55
 
 /**
@@ -668,6 +788,15 @@ const APPROACH_WEIGHT = 4
 const REDUCED_WEIGHT = 3
 
 /**
+ * Extra cost of a cell inside a marked channel but off its middle — closer to
+ * the cut's edge than the keep-to-the-middle rule allows (`channelMarginFor`).
+ * Rule-bending cost, so the string-pull may not straighten a leg across more
+ * of it than the path it replaces; the check against the chart has the last
+ * word.
+ */
+const MIDDLE_WEIGHT = 2
+
+/**
  * Extra cost, on the last rung of the ladder, of water shallower than the
  * boat needs: a flat price for being there at all, plus a price that grows
  * with the deficit as a fraction of what the boat needs. So the route crosses
@@ -676,6 +805,16 @@ const REDUCED_WEIGHT = 3
  */
 const SHALLOW_BASE = 10
 const SHALLOW_PER_DEFICIT = 40
+
+/**
+ * The same prices for an alternative route (`planAlternatives`) — the
+ * Google-Maps "faster, but…" line: short enough to be worth showing, still
+ * preferring the deeper water and the wider berth among ways of about the
+ * same length.
+ */
+const RELAXED_SHALLOW_BASE = 0.05
+const RELAXED_SHALLOW_PER_DEFICIT = 1
+const RELAXED_REDUCED_WEIGHT = 0.2
 
 const UNKNOWN = 0
 const OPEN = 1
@@ -1436,6 +1575,8 @@ export interface Passability {
   wantCells: number
   /** Beyond this many cells of clearance there is no bank-edge cost. */
   edgeFadeCells: number
+  /** The bank-edge tie-breaker's full weight (`EDGE_WEIGHT`, `CORRIDOR_EDGE_WEIGHT`). */
+  edgeWeight: number
   /** Depth at which water outside a channel is confidently deep enough, m. */
   ampleDepthM: number
   /** Cells over which leaving a channel ramps up to its full cost. */
@@ -1458,6 +1599,31 @@ export interface Passability {
    * Not applied on the last rung, where shallow water itself is allowed.
    */
   marginCells: number
+  /**
+   * The keep-to-the-middle rules, in cells — inside a marked channel
+   * (`channelMargin`) and, for a natural gut too narrow for the full margin,
+   * outside one (`narrowMargin`): a cell must keep `min(max, max(min,
+   * fraction × width))` from shallow water, where the width is judged from
+   * `wide` (see `wideField`). Null: that rule is off (outside, the flat
+   * `marginCells` then applies).
+   */
+  chanRule: CellRule | null
+  outRule: CellRule | null
+  /** Twice the largest distance to shallow water nearby — the local width, cells. */
+  wide: Float32Array | null
+  /** See `PassabilityOptions.relaxed`. */
+  relaxed: boolean
+  /** The corridor outside channels, cells (0 = off). See `CORRIDOR_BASE`. */
+  corridorCells: number
+  /** The corridor inside a marked channel — its middle — in cells; null = off. */
+  centreRule: CellRule | null
+}
+
+/** A keep-to-the-middle rule in cells. */
+interface CellRule {
+  minCells: number
+  maxCells: number
+  fraction: number
 }
 
 export interface PassabilityOptions {
@@ -1468,6 +1634,66 @@ export interface PassabilityOptions {
   wantClearanceM?: number
   /** Lateral depth margin outside channels, metres. Default 0 (off). */
   depthMarginM?: number
+  /** The margin inside marked channels (see `channelMarginFor`). Default none. */
+  channelMargin?: ChannelMargin | null
+  /** The keep-to-the-middle rule for natural guts (see `narrowMarginFor`). Default none. */
+  narrowMargin?: ChannelMargin | null
+  /** Cheap rule-bending, for an alternative route (see `Mode.relaxed`). */
+  relaxed?: boolean
+  /** The corridor outside channels, metres (`RouteRequest.shallowMarginM`). Default 0 (off). */
+  corridorM?: number
+  /** The corridor inside channels — keep to the middle (`CENTRE_FRACTION`). Default none. */
+  centre?: ChannelMargin | null
+}
+
+/**
+ * The local width of deep-enough water round every cell, in cells: twice the
+ * largest distance to shallow water within `r` cells — at the middle of a
+ * channel of width W that distance is W/2. `r` reaches the middle of any
+ * channel narrow enough for the width to matter. Cached per grid and view.
+ */
+const wideCache = new WeakMap<RouteGrid, Map<string, Float32Array>>()
+function wideField(g: RouteGrid, optimistic: boolean, r: number): Float32Array | null {
+  const src = optimistic ? g.cShallow : g.shallowRect
+  if (!src) return null
+  let byKey = wideCache.get(g)
+  if (!byKey) {
+    byKey = new Map()
+    wideCache.set(g, byKey)
+  }
+  const key = `${optimistic ? 'c' : 'r'}${r}`
+  const hit = byKey.get(key)
+  if (hit) return hit
+  const { cols, rows } = g
+  const tmp = new Float32Array(cols * rows)
+  const out = new Float32Array(cols * rows)
+  // Separable square max filter: rows, then columns.
+  for (let row = 0; row < rows; row++) {
+    const base = row * cols
+    for (let col = 0; col < cols; col++) {
+      let m = -Infinity
+      const c0 = Math.max(0, col - r)
+      const c1 = Math.min(cols - 1, col + r)
+      for (let c = c0; c <= c1; c++) if (src[base + c] > m) m = src[base + c]
+      tmp[base + col] = m
+    }
+  }
+  for (let col = 0; col < cols; col++) {
+    for (let row = 0; row < rows; row++) {
+      let m = -Infinity
+      const r0 = Math.max(0, row - r)
+      const r1 = Math.min(rows - 1, row + r)
+      for (let k = r0; k <= r1; k++) if (tmp[k * cols + col] > m) m = tmp[k * cols + col]
+      out[row * cols + col] = 2 * m
+    }
+  }
+  byKey.set(key, out)
+  return out
+}
+
+function cellRule(m: ChannelMargin | null | undefined, cellM: number): CellRule | null {
+  if (!m || !(m.maxM > 0)) return null
+  return { minCells: m.minM / cellM, maxCells: m.maxM / cellM, fraction: m.fraction }
 }
 
 export function passability(
@@ -1479,10 +1705,17 @@ export function passability(
   const dilateCells = Math.max(0, clearanceM / g.cellM)
   const wantCells = Math.max(dilateCells, (opts.wantClearanceM ?? clearanceM) / g.cellM)
   if (opts.optimistic && !centreReady.has(g)) centreClearance(g)
+  const chanRule = cellRule(opts.channelMargin, g.cellM)
+  const outRule = (opts.depthMarginM ?? 0) > 0 ? cellRule(opts.narrowMargin, g.cellM) : null
+  const centreRule = cellRule(opts.centre, g.cellM)
+  const corridorCells = Math.max(0, (opts.corridorM ?? 0) / g.cellM)
   return {
     dilateCells,
     wantCells,
-    edgeFadeCells: dilateCells * EDGE_FADE_MULTIPLE + 1,
+    // With the corridor on, the preference for room reaches out as far as
+    // the room the route is measured for (`ROOM_FACTOR`).
+    edgeFadeCells: Math.max(dilateCells * EDGE_FADE_MULTIPLE + 1, (ROOM_FACTOR * (opts.corridorM ?? 0)) / g.cellM),
+    edgeWeight: (opts.corridorM ?? 0) > 0 ? CORRIDOR_EDGE_WEIGHT : EDGE_WEIGHT,
     ampleDepthM: safeDepthM + AMPLE_MARGIN_M,
     // In metres, not cells: a cell is 8 m in a harbour and 250 m on a coastal
     // passage, so a fade measured in cells would mean a different thing on
@@ -1494,6 +1727,19 @@ export function passability(
     optimistic: opts.optimistic ?? false,
     zone: opts.zone ?? null,
     marginCells: Math.max(0, (opts.depthMarginM ?? 0) / g.cellM),
+    chanRule,
+    outRule,
+    relaxed: opts.relaxed ?? false,
+    corridorCells,
+    centreRule,
+    wide:
+      chanRule || outRule || centreRule
+        ? wideField(
+            g,
+            opts.optimistic ?? false,
+            Math.ceil(2 * Math.max(chanRule?.maxCells ?? 0, outRule?.maxCells ?? 0, centreRule?.maxCells ?? 0)),
+          )
+        : null,
   }
 }
 
@@ -1529,9 +1775,10 @@ export function channelPenalty(
  * the price of bending a rule, which the string-pull may not increase.
  * `base` is Infinity where the cell may not be used at all.
  */
-function cellCost(g: RouteGrid, i: number, p: Passability, out: { base: number; extra: number }): void {
+function cellCost(g: RouteGrid, i: number, p: Passability, out: { base: number; extra: number; room?: number }): void {
   out.base = Infinity
   out.extra = 0
+  out.room = 0
   const opt = p.optimistic
   if ((opt ? g.cHard[i] : g.hard[i]) !== 0) return
   const clear = opt ? g.cClear[i] : g.clearCells[i]
@@ -1541,7 +1788,7 @@ function cellCost(g: RouteGrid, i: number, p: Passability, out: { base: number; 
     if (!zone) return
     extra += APPROACH_WEIGHT
   } else if (clear < p.wantCells) {
-    extra += REDUCED_WEIGHT * (1 - clear / p.wantCells)
+    extra += (p.relaxed ? RELAXED_REDUCED_WEIGHT : REDUCED_WEIGHT) * (1 - clear / p.wantCells)
   }
   const d = opt ? g.cDepth[i] : g.depth[i]
   const unknown = Number.isNaN(d) || (!opt && g.unknown[i] === 1)
@@ -1553,19 +1800,60 @@ function cellCost(g: RouteGrid, i: number, p: Passability, out: { base: number; 
       // often a marsh or an inland field as it is water, and a best-effort
       // route is still never a line across land.
       const deficit = Math.min(2, (p.safeDepthM - d) / Math.max(0.1, p.safeDepthM))
-      extra += SHALLOW_BASE + SHALLOW_PER_DEFICIT * deficit
+      extra += p.relaxed
+        ? RELAXED_SHALLOW_BASE + RELAXED_SHALLOW_PER_DEFICIT * deficit
+        : SHALLOW_BASE + SHALLOW_PER_DEFICIT * deficit
     } else {
       return
     }
-  } else if (p.marginCells > 0 && !zone && !p.allowShallow && g.channel[i] !== 1) {
+  } else if (
+    !zone &&
+    !p.allowShallow &&
+    (p.marginCells > 0 || p.chanRule || p.corridorCells > 0 || p.centreRule)
+  ) {
     // Deep enough itself, but shallow water too close beside it for a boat
     // that is never exactly on the line. The conservative view measures
     // rectangle to rectangle; the optimistic one from the centre, less half
     // a cell — the legs it proposes are checked against the chart anyway.
-    const near = opt
-      ? g.cShallow !== undefined && g.cShallow[i] - 0.5 < p.marginCells
-      : g.shallowRect !== undefined && g.shallowRect[i] < p.marginCells
-    if (near) return
+    const d = opt
+      ? g.cShallow !== undefined ? g.cShallow[i] - 0.5 : Infinity
+      : g.shallowRect !== undefined ? g.shallowRect[i] : Infinity
+    const inChannel = g.channel[i] === 1
+    const rule = inChannel ? p.chanRule : p.outRule
+    // Outside a channel the full margin, unless the water is a gut too narrow
+    // for it — then its middle (the same rule the vector check applies).
+    let need = inChannel ? 0 : p.marginCells
+    if (rule && d < rule.maxCells) {
+      const w = p.wide ? p.wide[i] : Infinity
+      need = Math.min(rule.maxCells, Math.max(rule.minCells, rule.fraction * w))
+    }
+    if (inChannel) {
+      // Inside a marked channel the grid only estimates the rule (the width
+      // is judged cell by cell), and the vector check is the authority — so
+      // a cell off the middle of a narrow cut is dear rather than closed.
+      // Closed, the turn points a repair must start and end on were no
+      // longer on usable cells, and the joins it drew were never checked.
+      if (d < need) extra += MIDDLE_WEIGHT
+      // The corridor in a channel is its middle: the further off it, the dearer.
+      // Only where the grid resolves the channel's width — in a cut a cell
+      // or two wide it cannot tell the middle from the edge, and the price
+      // would only send the route the long way round; the centring
+      // (`centreLegs`) finds the middle on the chart itself.
+      const c = p.centreRule
+      if (c && d < c.maxCells) {
+        const w = p.wide ? p.wide[i] : Infinity
+        const want = Math.min(c.maxCells, Math.max(c.minCells, c.fraction * w))
+        if (want >= CENTRE_MIN_CELLS && d < want) {
+          extra += (p.relaxed ? 0.1 : 1) * CENTRE_WEIGHT * (1 - Math.max(0, d) / want)
+        }
+      }
+    } else if (d < need) {
+      return
+    } else if (d < p.corridorCells) {
+      // Inside the corridor: usable, at a price that grows towards its edge.
+      const f = 1 - Math.max(0, d) / p.corridorCells
+      extra += p.relaxed ? 0.05 + 0.2 * f : CORRIDOR_BASE + CORRIDOR_SLOPE * f
+    }
   }
   // Shaving a bank: the nearer land, a hazard or the edge of shallow water,
   // the dearer — never a wall, only a preference for the middle. Measured
@@ -1573,28 +1861,38 @@ function cellCost(g: RouteGrid, i: number, p: Passability, out: { base: number; 
   // fade was tuned on; the stand-off above is the rectangle distance itself.
   const margin = Math.min((opt ? clear : clear + 1) - p.dilateCells, g.shoalCells[i])
   const edge =
-    margin >= p.edgeFadeCells ? 0 : EDGE_WEIGHT * (1 - Math.max(0, margin) / p.edgeFadeCells)
+    margin >= p.edgeFadeCells ? 0 : p.edgeWeight * (1 - Math.max(0, margin) / p.edgeFadeCells)
   out.base = 1 + edge + channelPenalty(g, i, p)
   out.extra = extra
+  out.room = Math.min(p.edgeFadeCells, Math.max(0, margin))
 }
 
 /** Per-cell cost (Infinity = not usable) and rule-bending extra, for one mode. */
 interface CostField {
   cost: Float32Array
   extra: Float32Array
+  /**
+   * Planning inside the corridor: each cell's room from the bank, in cells,
+   * up to the fade of the bank-edge preference — the string-pull keeps as
+   * much of it as the path it straightens had. Null otherwise.
+   */
+  room: Float32Array | null
 }
 
 function costField(g: RouteGrid, p: Passability): CostField {
   const n = g.cols * g.rows
   const cost = new Float32Array(n)
   const extra = new Float32Array(n)
-  const out = { base: 0, extra: 0 }
+  const keepRoom = p.corridorCells > 0 && !p.allowShallow
+  const room = keepRoom ? new Float32Array(n) : null
+  const out = { base: 0, extra: 0, room: 0 }
   for (let i = 0; i < n; i++) {
     cellCost(g, i, p, out)
     cost[i] = out.base === Infinity ? Infinity : out.base + out.extra
     extra[i] = out.extra
+    if (room) room[i] = out.room
   }
-  return { cost, extra }
+  return { cost, extra, room }
 }
 
 export function passable(g: RouteGrid, i: number, p: Passability): boolean {
@@ -1635,12 +1933,27 @@ function chordWalk(
   const y1 = Math.floor(b.row)
   if (x0 < 0 || y0 < 0 || x0 >= g.cols || y0 >= g.rows) return null
   if (x1 < 0 || y1 < 0 || x1 >= g.cols || y1 >= g.rows) return null
+  // The worst rule-bending cell the line so much as clips (the start cell
+  // aside — it belongs to the leg before): a line that grazes the corner of
+  // a 0.4 m cell must not stand in for a path that only ever crossed 1.2 m.
+  let worst = 0
+  let tight = Infinity
+  const start = y0 * g.cols + x0
+  const room = f.room
   const clear = traverseCells(
     x0 + 0.5, y0 + 0.5, x1 + 0.5, y1 + 0.5,
     g.cols, g.rows,
-    (c, r) => f.cost[r * g.cols + c] !== Infinity,
+    (c, r) => {
+      const i = r * g.cols + c
+      if (f.cost[i] === Infinity) return false
+      if (i !== start && f.extra[i] > worst) worst = f.extra[i]
+      if (room && room[i] < tight) tight = room[i]
+      return true
+    },
   )
   if (!clear) return null
+  if (extraOut && extraOut.length > 1) extraOut[1] = worst
+  if (extraOut && extraOut.length > 2) extraOut[2] = tight
   const dx = Math.abs(x1 - x0)
   const dy = Math.abs(y1 - y0)
   const sx = x0 < x1 ? 1 : -1
@@ -2016,33 +2329,24 @@ export function astar(
  * comes out as three or four legs, which is what goes on a chart and what fits
  * on a phone.
  *
- * The smoother is bound by two budgets: **a chord may not spend more
- * distance outside a channel, nor more rule-bending cost (approach, reduced
- * stand-off, shallow water), than the piece of path it replaces.** Without
- * the first, the string-pull would cheerfully straighten a channel transit
- * into a chord over the bank — the shortest line between two points in a
- * channel is very often not in the channel — and every bit of seamanship A*
- * just paid for would be undone in the last pass. Without the second, a
+ * The smoother is bound by one budget, in two parts: **a chord may not
+ * spend more rule-bending cost (approach, reduced stand-off, shallow water)
+ * than the piece of path it replaces, nor clip any cell that bends a rule
+ * harder than the worst cell of that piece.** Without the first a
  * best-effort route that A* had carefully routed round the worst of a shoal
- * would be straightened across the middle of it.
+ * would be straightened across the middle of it; without the second, a chord
+ * out of a 1.2 m notch could shave the 0.4 m corner beside it — a total is
+ * counted one cell per step, and a corner the line only clips is not.
  *
- * Note the budget is compared against the replaced sub-path rather than
- * against the endpoints' own channel membership. A channel that dog-legs is
- * usually entered and left mid-path, so a rule keyed on the endpoints would be
- * inert in exactly the case that matters.
+ * There used to be a second budget — a chord could not run further outside a
+ * marked channel than the path it replaced — which kept every dog-leg of a
+ * channel even where the chord across it kept every rule. It went with the
+ * channel preference (2026-09-28): the route is the shortest that keeps the
+ * rules, and the chord is shorter.
  *
- * Both are inert where they have nothing to say: with `channel` all zero,
- * every arriving cell contributes its own step length, so the budget is the
- * sub-path's octile length and the chord's is the octile distance between the
- * same endpoints — which is never longer.
- *
- * That is true in arithmetic and false in floating point, which cost a
- * straight diagonal 49 legs instead of 3 before it was caught. Both sides sum
- * the same irrational √2 a different number of times in a different order, so
- * two mathematically equal lengths differ by about 1e-13 and a strict `>`
- * fires on half the chords. Hence the tolerance: it is pure arithmetic slack,
- * far below any distance the grid can express — a millionth of a cell is
- * microns — and it is what actually makes the no-channel case inert.
+ * The comparison carries a tolerance: two mathematically equal sums of √2 in
+ * a different order differ by about 1e-13, and a strict `>` would fire on
+ * half the chords (that once cost a straight diagonal 49 legs instead of 3).
  */
 function pullPath(
   g: RouteGrid,
@@ -2051,31 +2355,70 @@ function pullPath(
 ): { col: number; row: number }[] {
   if (path.length <= 2) return path.slice()
 
-  // Running totals of how much of the path so far ran outside a channel, and
-  // how much rule-bending it paid for.
-  const outAt = new Float64Array(path.length)
+  // Running total of how much rule-bending the path so far paid for, and a
+  // sparse table of the worst single cell over any stretch of it.
   const extraAt = new Float64Array(path.length)
+  const cellExtra = new Float64Array(path.length)
   for (let i = 1; i < path.length; i++) {
     const c = path[i]
     const diagonal = c.col !== path[i - 1].col && c.row !== path[i - 1].row
     const step = diagonal ? DIAG : 1
     const idx = c.row * g.cols + c.col
-    outAt[i] = outAt[i - 1] + (g.channel[idx] === 1 ? 0 : step)
     extraAt[i] = extraAt[i - 1] + f.extra[idx] * step
+    cellExtra[i] = f.extra[idx]
+  }
+  const table: Float64Array[] = [cellExtra]
+  for (let k = 1; 1 << k <= path.length; k++) {
+    const prev = table[k - 1]
+    const half = 1 << (k - 1)
+    const row = new Float64Array(path.length)
+    for (let i = 0; i + (1 << k) <= path.length; i++) row[i] = Math.max(prev[i], prev[i + half])
+    table.push(row)
+  }
+  // Worst cell over path[lo..hi], inclusive.
+  const worstOn = (lo: number, hi: number): number => {
+    const k = Math.floor(Math.log2(hi - lo + 1))
+    return Math.max(table[k][lo], table[k][hi - (1 << k) + 1])
+  }
+
+  // Inside the corridor, the same for room: a chord may not pass closer to
+  // the bank than the path it replaces does anywhere (less a cell) — the
+  // search chose that room where it was cheap, and the any-angle shortening
+  // (`tighten`) gives it up only where it buys distance.
+  const room = f.room
+  let roomOn: ((lo: number, hi: number) => number) | null = null
+  if (room) {
+    const cellRoom = new Float64Array(path.length)
+    for (let i = 0; i < path.length; i++) cellRoom[i] = room[path[i].row * g.cols + path[i].col]
+    const rt: Float64Array[] = [cellRoom]
+    for (let k = 1; 1 << k <= path.length; k++) {
+      const prev = rt[k - 1]
+      const half = 1 << (k - 1)
+      const row = new Float64Array(path.length)
+      for (let i = 0; i + (1 << k) <= path.length; i++) row[i] = Math.min(prev[i], prev[i + half])
+      rt.push(row)
+    }
+    roomOn = (lo, hi) => {
+      const k = Math.floor(Math.log2(hi - lo + 1))
+      return Math.min(rt[k][lo], rt[k][hi - (1 << k) + 1])
+    }
   }
 
   const within = (have: number, budget: number) => have <= budget + Math.abs(budget) * 1e-9 + 1e-9
-  const extraOut = new Float64Array(1)
+  const extraOut = new Float64Array(3)
   const out = [path[0]]
   let anchor = 0
   while (anchor < path.length - 1) {
     let best = anchor + 1
     for (let j = path.length - 1; j > anchor + 1; j--) {
       extraOut[0] = 0
+      extraOut[1] = 0
+      extraOut[2] = Infinity
       const chordOut = chordWalk(g, path[anchor], path[j], f, extraOut)
       if (chordOut === null) continue
-      if (!within(chordOut, outAt[j] - outAt[anchor])) continue
       if (!within(extraOut[0], extraAt[j] - extraAt[anchor])) continue
+      if (!within(extraOut[1], worstOn(anchor + 1, j))) continue
+      if (roomOn && extraOut[2] < roomOn(anchor, j) - 1) continue
       best = j
       break
     }
@@ -2202,6 +2545,17 @@ interface Mode {
   wantClearanceM: number
   allowShallow: boolean
   optimistic: boolean
+  /**
+   * An alternative route (`planAlternatives`): bending the rule is cheap —
+   * the shortest way the relaxed rule allows, preferring deeper water and
+   * more room only between ways of about the same length.
+   */
+  relaxed?: boolean
+  /**
+   * Plan inside the corridor (`RouteRequest.shallowMarginM`) — the default.
+   * False for the alternative that relaxes it ("passes 40 ft from shallows").
+   */
+  corridor?: boolean
 }
 
 interface Ctx {
@@ -2228,8 +2582,18 @@ interface Ctx {
   depthMarginM: number
   /** …and inside them (null = off). See `channelMarginFor`. */
   channelMargin: ChannelMargin | null
+  /** …and in a natural gut too narrow for the full margin (null = off). See `narrowMarginFor`. */
+  narrowMargin: ChannelMargin | null
   /** Is this point (index metres) inside a charted channel? */
   inChannel: (x: number, y: number) => boolean
+  /** Legs already checked, by clearance and ends (see `check`). */
+  checks: Map<string, SegmentCheck>
+  /** The corridor outside channels, metres (0 = off) — `RouteRequest.shallowMarginM`. */
+  corridorM: number
+  /** …and inside them: keep to the middle (null = off). See `CENTRE_FRACTION`. */
+  centre: ChannelMargin | null
+  /** Corridor and room answers already worked out, by kind and ends. */
+  gaps: Map<string, { distM: number; depthM: number } | null>
 }
 
 type Failure = 'start' | 'end' | 'path'
@@ -2240,22 +2604,108 @@ interface Built {
   snapEnd: boolean
   grid: RouteGrid
   mode: Mode
+  /** The context it was built (and checked) in — the planning buffer's, or the plain one. */
+  ctx: Ctx
 }
 
 function distXY(a: XY, b: XY): number {
   return Math.hypot(b.x - a.x, b.y - a.y)
 }
 
+/**
+ * One leg against the chart, remembered for the plan: `tighten`, `simplify`
+ * and the best-effort comparisons ask about the same legs many times over,
+ * and each answer costs milliseconds on a long leg.
+ */
 function check(ctx: Ctx, clearanceM: number, a: XY, b: XY): SegmentCheck {
-  return checkSegment(ctx.ix, a.x, a.y, b.x, b.y, {
+  const key = `${clearanceM}|${ctx.channelMargin ? 1 : 0}|${a.x}|${a.y}|${b.x}|${b.y}`
+  const hit = ctx.checks.get(key)
+  if (hit) return hit
+  const r = checkSegment(ctx.ix, a.x, a.y, b.x, b.y, {
     safeDepthM: ctx.safeDepthM,
     clearanceM,
     zones: ctx.zones,
     depthMarginM: ctx.depthMarginM,
     inChannel: ctx.inChannel,
     channelMargin: ctx.channelMargin,
+    narrowMargin: ctx.narrowMargin,
   })
+  if (ctx.checks.size > 20_000) ctx.checks.clear()
+  ctx.checks.set(key, r)
+  return r
 }
+
+/**
+ * Where a leg falls short of the corridor (`RouteRequest.shallowMarginM`):
+ * the least distance to water too shallow for the boat, and its depth — or
+ * null when it keeps the corridor (or there is none). Outside channels the
+ * corridor itself; inside a marked channel its middle (`CENTRE_FRACTION`).
+ */
+function corridorOf(ctx: Ctx, a: XY, b: XY): { distM: number; depthM: number } | null {
+  if (!(ctx.corridorM > 0)) return null
+  const key = `c|${a.x}|${a.y}|${b.x}|${b.y}`
+  if (ctx.gaps.has(key)) return ctx.gaps.get(key) ?? null
+  // A metre inside the corridor is the chart's own precision, not a squeeze.
+  const r = shoalGap(ctx.ix, a.x, a.y, b.x, b.y, {
+    safeDepthM: ctx.safeDepthM,
+    marginM: ctx.corridorM - CORRIDOR_SLACK_M,
+    zones: ctx.zones,
+    inChannel: ctx.inChannel,
+    channel: ctx.centre && { ...ctx.centre, maxM: ctx.centre.maxM - CORRIDOR_SLACK_M },
+  })
+  if (ctx.gaps.size > 20_000) ctx.gaps.clear()
+  ctx.gaps.set(key, r)
+  return r
+}
+
+/**
+ * How much room a leg has, metres, up to `ROOM_FACTOR` times the corridor:
+ * the least of its distance to water too shallow for the boat (outside
+ * marked channels — inside one, the corridor keeps it to the middle) and its
+ * distance to land and hazards beyond the stand-off. Infinity when the
+ * corridor is off.
+ */
+function roomOf(ctx: Ctx, a: XY, b: XY): number {
+  const cap = ROOM_FACTOR * ctx.corridorM
+  if (!(cap > 0)) return Infinity
+  const key = `r|${a.x}|${a.y}|${b.x}|${b.y}`
+  let shoal: number
+  if (ctx.gaps.has(key)) {
+    shoal = ctx.gaps.get(key)?.distM ?? cap
+  } else {
+    const r = shoalGap(ctx.ix, a.x, a.y, b.x, b.y, {
+      safeDepthM: ctx.safeDepthM,
+      marginM: cap,
+      zones: ctx.zones,
+      inChannel: ctx.inChannel,
+      channel: null,
+    })
+    ctx.gaps.set(key, r)
+    shoal = r?.distM ?? cap
+  }
+  const land = check(ctx, ctx.clearanceM, a, b).clearanceOutsideM - ctx.clearanceM
+  return Math.min(cap, shoal, Number.isFinite(land) ? Math.max(0, land) : cap)
+}
+
+/**
+ * Is segment a–b no worse against the corridor than the run of legs
+ * `parts` it stands in for? It keeps the corridor, or they did not either
+ * and it passes shallow water no closer than the closest of them does.
+ */
+function corridorNoWorse(ctx: Ctx, mode: Mode, a: XY, b: XY, parts: [XY, XY][], slackM = 0.25): boolean {
+  if (!(ctx.corridorM > 0) || mode.corridor === false) return true
+  const g = corridorOf(ctx, a, b)
+  if (!g) return true
+  let worst = Infinity
+  for (const [p, q] of parts) {
+    const h = corridorOf(ctx, p, q)
+    if (h && h.distM < worst) worst = h.distM
+  }
+  return g.distM >= worst - slackM
+}
+
+/** How far inside the corridor a leg may pass before it counts as short of it, metres. */
+const CORRIDOR_SLACK_M = 1
 
 /** Does a leg meet what this mode demands? */
 function passes(ctx: Ctx, mode: Mode, a: XY, b: XY): boolean {
@@ -2277,9 +2727,9 @@ function passes(ctx: Ctx, mode: Mode, a: XY, b: XY): boolean {
  * shortcut must also be no worse than what it replaces: no shoaler water, no
  * less stand-off, and no unsurveyed water the parts did not already cross.
  */
-function noWorse(ctx: Ctx, mode: Mode, a: XY, b: XY, parts: [XY, XY][]): boolean {
+function noWorse(ctx: Ctx, mode: Mode, a: XY, b: XY, parts: [XY, XY][], corridorSlackM?: number): boolean {
   const full = check(ctx, ctx.clearanceM, a, b)
-  if (full.ok) return true
+  if (full.ok) return corridorNoWorse(ctx, mode, a, b, parts, corridorSlackM)
   const strict = !mode.allowShallow && mode.clearanceM >= ctx.clearanceM
   if (strict) return false
   if (!passes(ctx, mode, a, b)) return false
@@ -2418,6 +2868,10 @@ function route(
     zone: zoneRaster(g, ctx),
     wantClearanceM: mode.wantClearanceM,
     depthMarginM: ctx.depthMarginM,
+    channelMargin: ctx.channelMargin,
+    narrowMargin: ctx.narrowMargin,
+    relaxed: mode.relaxed,
+    ...corridorOpts(ctx, mode),
   })
   const field = costField(g, pass)
   const fromLL = fromXY(ctx.ix.proj, from.x, from.y)
@@ -2620,7 +3074,9 @@ function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: 
         distXY(a, p) < endStubM ||
         distXY(p, b) < endStubM
       if (!stub && turnDeg(a, p, b) >= STRAIGHT_TURN_DEG) continue
-      if (!noWorse(ctx, mode, a, b, [[a, p], [p, b]])) continue
+      // A stub is worth a couple of metres of the corridor: a waypoint the
+      // boat is inside the circle of before it gets there is no waypoint.
+      if (!noWorse(ctx, mode, a, b, [[a, p], [p, b]], stub ? STUB_CORRIDOR_SLACK_M : undefined)) continue
       out.splice(i, 1)
       changed = true
       break
@@ -2643,7 +3099,9 @@ function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: 
       cands.push({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 })
       const parts: [XY, XY][] = [[a, p], [p, q], [q, b]]
       const m = cands.find(
-        (c) => noWorse(ctx, mode, a, c, parts) && noWorse(ctx, mode, c, b, parts),
+        (c) =>
+          noWorse(ctx, mode, a, c, parts, STUB_CORRIDOR_SLACK_M) &&
+          noWorse(ctx, mode, c, b, parts, STUB_CORRIDOR_SLACK_M),
       )
       if (!m) continue
       out.splice(i, 2, m)
@@ -2651,6 +3109,82 @@ function simplify(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: 
       break
     }
   }
+  return out
+}
+
+/** How much closer to the shallows (metres) merging a stub leg may take a route. */
+const STUB_CORRIDOR_SLACK_M = 3
+
+/** Furthest ahead a shortcut is looked for from one point (bounded work). */
+const TIGHTEN_MAX_SKIP = 12
+
+/**
+ * Make the route as short as the chart allows — on the chart itself, not the
+ * grid.
+ *
+ * A* on an eight-neighbour grid, string-pulled, is within a few per cent of
+ * the shortest line, but the pull only ever joins the grid's own cells, and
+ * a conservative grid rounds every gap down. So, with the vector check that
+ * is the final authority anyway: from each point, the furthest later point it
+ * can reach in a straight line that keeps every rule (the same `noWorse` test
+ * the stub merging uses). A grid line check (`maybe`) first, so the long
+ * shortcuts that plainly cross land are not measured against the chart.
+ *
+ * The turn points themselves are not pulled tighter onto the bank: the
+ * shortest route already puts them as close as the rules allow, and a boat
+ * swings wide of a turn — `cornerRoom` gives them room instead.
+ *
+ * The snap legs off (or onto) a position the chart shows ashore are kept as
+ * they are. Bounded work: a dozen points ahead per shortcut.
+ */
+function tighten(
+  ctx: Ctx,
+  mode: Mode,
+  pts: XY[],
+  snapStart: boolean,
+  snapEnd: boolean,
+  maybe: (a: XY, b: XY) => boolean = () => true,
+): XY[] {
+  // Only a route that keeps every rule: on the best-effort ladder each
+  // shortcut must also be compared, part by part, with what it replaces, and
+  // those legs cross the most chart — seconds of checks on a slow phone for
+  // a few metres on a route the crew reads leg by leg anyway.
+  if (pts.length < 3 || mode.allowShallow || mode.clearanceM < ctx.clearanceM) return pts
+  // Room is kept where it is cheap: a shortcut that gives up room the legs
+  // it replaces had must pay for it in distance saved (`ROOM_PRICE`).
+  const roomy = (a: XY, b: XY, parts: [XY, XY][]): boolean => {
+    if (mode.corridor === false || !(ctx.corridorM > 0)) return true
+    let had = Infinity
+    let run = 0
+    for (const [p, q] of parts) {
+      had = Math.min(had, roomOf(ctx, p, q))
+      run += distXY(p, q)
+    }
+    const lost = had - roomOf(ctx, a, b)
+    return lost <= 1 || run - distXY(a, b) >= ROOM_PRICE * lost
+  }
+  const ok = (a: XY, b: XY, parts: [XY, XY][]) =>
+    maybe(a, b) && noWorse(ctx, mode, a, b, parts) && roomy(a, b, parts)
+  const last = pts.length - 1
+  const first = snapStart ? 1 : 0
+  const end = snapEnd ? last - 1 : last
+  const out: XY[] = pts.slice(0, first + 1)
+  let i = first
+  while (i < end) {
+    let best = i + 1
+    for (let j = Math.min(end, i + TIGHTEN_MAX_SKIP); j > i + 1; j--) {
+      const parts: [XY, XY][] = []
+      for (let k = i; k < j; k++) parts.push([pts[k], pts[k + 1]])
+      if (ok(pts[i], pts[j], parts)) {
+        best = j
+        break
+      }
+    }
+    out.push(pts[best])
+    i = best
+  }
+  for (let k = end + 1; k <= last; k++) out.push(pts[k])
+
   return out
 }
 
@@ -2689,7 +3223,496 @@ function attempt(ctx: Ctx, box: Bounds, mode: Mode, maxCells?: number): Built | 
   const snapEnd = ctx.toBlocked
   pts = repairPolyline(ctx, mode, pts, snapStart, snapEnd, g.cellM, 0)
   pts = simplify(ctx, mode, pts, snapStart, snapEnd)
-  return { pts, snapStart, snapEnd, grid: g, mode }
+  return { pts, snapStart, snapEnd, grid: g, mode, ctx }
+}
+
+/**
+ * Room at a turn, beyond the stand-off, as a share of the stand-off (never
+ * less than the planning buffer's floor): a boat turning at speed swings
+ * wide of the turn point, and the shortest route puts its turn points as
+ * close to the bank as the rules allow. The old bank-edge cost used to keep
+ * them well off it; with that gone, a boat at 25 kn swung 4 m inside a 15 m
+ * stand-off on the outside of a 69° turn (rc3 R4). Only turns of
+ * `CORNER_MIN_TURN_DEG` or more, only on routes that keep every rule.
+ */
+const CORNER_ROOM_FRACTION = 0.35
+const CORNER_MIN_TURN_DEG = 15
+/** How far a turn point may be moved to find that room, metres, and in how many directions. */
+const CORNER_SEARCH_M = [6, 12, 24, 36]
+const CORNER_DIRECTIONS = 12
+
+/**
+ * Give each turn point room beyond the stand-off (`CORNER_ROOM_FRACTION`)
+ * where the chart has it: a turn point closer than that to land or a hazard
+ * is moved — a few metres to a few tens — to the nearby spot with the most
+ * room from which both its legs still keep every rule, preferring the
+ * smallest detour. Where there is no such spot it stays where it is (it
+ * keeps the stand-off; the room is extra).
+ */
+function cornerRoom(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: boolean): XY[] {
+  if (pts.length < 3 || mode.allowShallow || mode.clearanceM < ctx.clearanceM || ctx.clearanceM <= 0) return pts
+  // Inside the corridor, the corridor again beyond the stand-off: a turn
+  // point wrapped tight round a headland is where a boat's overshoot goes,
+  // and where a fix that is 50 m out points the card at the land (rc8
+  // random-242: the route rounded Pelican Island's tip at 32 m; rc7's at 91).
+  const want =
+    ctx.clearanceM +
+    Math.max(
+      PLAN_BUFFER_MIN_M,
+      CORNER_ROOM_FRACTION * ctx.clearanceM,
+      corridorMode(ctx, mode) ? ctx.corridorM : 0,
+    )
+  const out = pts.slice()
+  // The stretch of the leg out of a turn a boat swings wide over: about its
+  // turning radius at the planned speed (a turn at ~20°/s), 20–60 m.
+  const kn = Number.isFinite(ctx.req.speedKn) && ctx.req.speedKn > 0 ? ctx.req.speedKn : 20
+  const run = Math.min(60, Math.max(20, (kn * 0.5144) / ((20 * Math.PI) / 180)))
+  const roomAt = (p: XY, next: XY): number => {
+    const len = distXY(p, next)
+    const t = len > 0 ? Math.min(1, run / len) : 0
+    const q = { x: p.x + (next.x - p.x) * t, y: p.y + (next.y - p.y) * t }
+    const r = check(ctx, ctx.clearanceM, p, q)
+    if (r.crossesLand || r.entersHazard) return -Infinity
+    return r.minClearanceM ?? Infinity
+  }
+  // Inside the corridor, the stretch into the turn as well: rounding a
+  // headland, the land is closest where the two legs meet.
+  const both = corridorMode(ctx, mode)
+  const roomOver = (c: XY, prev: XY, next: XY): number => Math.min(roomAt(c, next), both ? roomAt(c, prev) : Infinity)
+  const inZone = (p: XY) => ctx.zones.some((z) => (p.x - z.x) ** 2 + (p.y - z.y) ** 2 <= z.r * z.r)
+  for (let k = 1; k + 1 < out.length; k++) {
+    if (snapStart && k === 1) continue
+    if (snapEnd && k === out.length - 2) continue
+    const a = out[k - 1]
+    const p = out[k]
+    const b = out[k + 1]
+    if (turnDeg(a, p, b) < CORNER_MIN_TURN_DEG || inZone(p)) continue
+    const here = roomOver(p, a, b)
+    if (here >= want) continue
+    const base = distXY(a, p) + distXY(p, b)
+    let best: { c: XY; score: number } | null = null
+    for (const r of CORNER_SEARCH_M) {
+      for (let d = 0; d < CORNER_DIRECTIONS; d++) {
+        const th = (2 * Math.PI * d) / CORNER_DIRECTIONS
+        const c = { x: p.x + r * Math.cos(th), y: p.y + r * Math.sin(th) }
+        if (inZone(c)) continue
+        const room = roomOver(c, a, b)
+        if (!(room > here)) continue
+        const extra = distXY(a, c) + distXY(c, b) - base
+        // Short of the room wanted: every metre of room counts for far more
+        // than a metre of route.
+        const score = Math.max(0, want - room) * 100 + extra
+        if (best && score >= best.score) continue
+        if (!passes(ctx, mode, a, c) || !passes(ctx, mode, c, b)) continue
+        if (!corridorNoWorse(ctx, mode, a, c, [[a, p]]) || !corridorNoWorse(ctx, mode, c, b, [[p, b]])) continue
+        best = { c, score }
+      }
+      if (best && best.score < 100) break
+    }
+    if (best) out[k] = best.c
+  }
+  return out
+}
+
+/**
+ * The route chosen, pulled as short as the chart allows (`tighten`) — once,
+ * at the end, rather than for every candidate the search compares.
+ */
+function tightened(b: Built): Built {
+  const { ctx, mode, snapStart, snapEnd } = b
+  const pts = tighten(ctx, mode, b.pts, snapStart, snapEnd, lineMaybeClear(ctx, b.grid, mode))
+  const roomy = cornerRoom(ctx, mode, simplify(ctx, mode, pts, snapStart, snapEnd), snapStart, snapEnd)
+  const centred = centreLegs(ctx, mode, simplify(ctx, mode, roomy, snapStart, snapEnd), snapStart, snapEnd)
+  const turned = turnRoom(ctx, mode, simplify(ctx, mode, centred, snapStart, snapEnd), snapStart, snapEnd)
+  return { ...b, pts: simplify(ctx, mode, turned, snapStart, snapEnd) }
+}
+
+/* -------------------------------------------------------------------------
+ * The corridor's middle, and room to turn
+ * ---------------------------------------------------------------------- */
+
+/** How far across a leg the centring looks for the edges of the water, as a multiple of the corridor. */
+const CENTRE_REACH = 3
+
+function inZoneXY(ctx: Ctx, p: XY): boolean {
+  return ctx.zones.some((z) => (p.x - z.x) ** 2 + (p.y - z.y) ** 2 <= z.r * z.r)
+}
+
+/** Only on a route keeping every rule, planned inside the corridor. */
+function corridorMode(ctx: Ctx, mode: Mode): boolean {
+  return ctx.corridorM > 0 && mode.corridor !== false && !mode.allowShallow && mode.clearanceM >= ctx.clearanceM
+}
+
+/** The least distance to shallow water of legs a–p–…, against the corridor (Infinity: keeps it). */
+function gapOf(ctx: Ctx, pts: XY[]): number {
+  let g = Infinity
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const h = corridorOf(ctx, pts[i], pts[i + 1])
+    if (h && h.distM < g) g = h.distM
+  }
+  return g
+}
+
+/** How far a point is from water too shallow for the boat, metres, up to `capM`. */
+function pointGap(ctx: Ctx, p: XY, capM: number): number {
+  const g = shoalGap(ctx.ix, p.x, p.y, p.x, p.y, { safeDepthM: ctx.safeDepthM, marginM: capM, zones: [] })
+  return g ? g.distM : capM
+}
+
+/**
+ * Where across the track, from p along the left normal of (ux, uy), the
+ * point with the most room from the edges of the water lies — as far as the
+ * corridor wants, or the middle of water narrower than twice that. Returns
+ * the move (metres along the left normal, negative to the right), how much
+ * room that gains, and the width of the water across p.
+ */
+function centreShift(
+  ctx: Ctx, p: XY, ux: number, uy: number,
+): { off: number; short: number; nx: number; ny: number; width: number } {
+  const reach = CENTRE_REACH * ctx.corridorM
+  const nx = -uy
+  const ny = ux
+  const l = edgeDistance(ctx.ix, p.x, p.y, nx, ny, reach, ctx.safeDepthM)
+  const r = edgeDistance(ctx.ix, p.x, p.y, -nx, -ny, reach, ctx.safeDepthM)
+  const width = l + r
+  const cap = ctx.corridorM
+  const here = pointGap(ctx, p, cap)
+  if (!(here < cap - 0.25)) return { off: 0, short: 0, nx, ny, width }
+  // The room across the water, coarse then fine; ties go to the least move.
+  const at = (off: number) => pointGap(ctx, { x: p.x + off * nx, y: p.y + off * ny }, cap)
+  const lo = -Math.max(0, r - 0.5)
+  const hi = Math.max(0, l - 0.5)
+  let best = { off: 0, g: here }
+  const consider = (off: number) => {
+    if (off < lo || off > hi) return
+    const g = at(off)
+    if (g > best.g + 0.05 || (Math.abs(g - best.g) <= 0.05 && Math.abs(off) < Math.abs(best.off))) best = { off, g }
+  }
+  const coarse = 12
+  for (let k = 0; k <= coarse; k++) consider(lo + ((hi - lo) * k) / coarse)
+  let step = (hi - lo) / coarse / 2
+  while (step > 0.5) {
+    const c = best.off
+    consider(c - step)
+    consider(c + step)
+    step /= 2
+  }
+  return { off: best.off, short: best.g - here, nx, ny, width }
+}
+
+/**
+ * Keep to the middle where the corridor cannot be kept whole. A leg that
+ * passes closer than the corridor to shallow water — through a marked
+ * channel, or a natural gut narrower than twice the corridor — is moved to
+ * the middle of the water, turn points first, then the legs themselves: the
+ * worst-placed point of a leg is replaced by the middle of the water across
+ * it, and each half is looked at again. Every change must keep every rule
+ * and leave the route further from the shallows than it was. The result is
+ * the centreline, as near as straight legs can follow it; in open water the
+ * grid already kept the corridor and nothing moves.
+ */
+function centreLegs(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: boolean): XY[] {
+  if (!corridorMode(ctx, mode) || pts.length < 2) return pts
+  const last = pts.length - 1
+  const short = pts.slice(1).map((q, i) => {
+    const snapLeg = (snapStart && i === 0) || (snapEnd && i === last - 1)
+    return !snapLeg && corridorOf(ctx, pts[i], q) !== null
+  })
+  // Each run of consecutive legs short of the corridor is centred as one:
+  // the turn points inside the run move with the line.
+  const out: XY[] = [pts[0]]
+  let i = 0
+  while (i < last) {
+    if (!short[i]) {
+      out.push(pts[i + 1])
+      i++
+      continue
+    }
+    let j = i
+    while (j < last && short[j]) j++
+    out.push(...centreRun(ctx, mode, pts.slice(i, j + 1)).slice(1))
+    i = j
+  }
+  return out
+}
+
+/** Spacing of the points the centreline is first drawn through, metres, and the most of them per run. */
+const CENTRE_STEP_M = 20
+const CENTRE_MAX_SAMPLES = 120
+
+/**
+ * A run of legs moved to the middle of the water: the run is sampled every
+ * `CENTRE_STEP_M` (its turn points included), each sample moved across the
+ * track to the spot with the most room (`centreShift`), and the line through
+ * them pulled straight again — the furthest sample a straight leg reaches
+ * keeping every rule, staying on the centreline wherever the water is narrow
+ * and passing the shallows no closer than the centreline does there. Kept
+ * only when the whole is further from the shallows than the run it replaces.
+ */
+function centreRun(ctx: Ctx, mode: Mode, run: XY[]): XY[] {
+  const was = gapOf(ctx, run)
+  if (!Number.isFinite(was)) return run
+  let total = 0
+  for (let k = 1; k < run.length; k++) total += distXY(run[k - 1], run[k])
+  const step = Math.max(CENTRE_STEP_M, total / CENTRE_MAX_SAMPLES)
+  // Samples: position and the direction across which to centre.
+  const samples: { p: XY; ux: number; uy: number }[] = []
+  for (let k = 0; k + 1 < run.length; k++) {
+    const a = run[k]
+    const b = run[k + 1]
+    const len = distXY(a, b)
+    if (!(len > 0)) continue
+    const ux = (b.x - a.x) / len
+    const uy = (b.y - a.y) / len
+    if (k > 0) {
+      // The turn point itself, across the bisector of its legs.
+      const prev = run[k - 1]
+      const lp = distXY(prev, a)
+      let bx = ux + (lp > 0 ? (a.x - prev.x) / lp : 0)
+      let by = uy + (lp > 0 ? (a.y - prev.y) / lp : 0)
+      const bl = Math.hypot(bx, by)
+      if (bl > 1e-6) {
+        bx /= bl
+        by /= bl
+      } else {
+        bx = ux
+        by = uy
+      }
+      samples.push({ p: a, ux: bx, uy: by })
+    }
+    const n = Math.max(1, Math.round(len / step))
+    for (let m = 1; m < n; m++) samples.push({ p: { x: a.x + (ux * len * m) / n, y: a.y + (uy * len * m) / n }, ux, uy })
+  }
+  const line: XY[] = [run[0]]
+  // How far a pulled leg may pass from each sample: where the water is
+  // narrower than twice the corridor, a tenth of its width (2 m at least) —
+  // the leg follows the middle; elsewhere anywhere the rules allow.
+  const tol: number[] = [Infinity]
+  let moved = false
+  for (const s of samples) {
+    if (inZoneXY(ctx, s.p)) {
+      line.push(s.p)
+      tol.push(Infinity)
+      continue
+    }
+    const sh = centreShift(ctx, s.p, s.ux, s.uy)
+    tol.push(sh.width < 2 * ctx.corridorM + 2 ? Math.max(2, 0.1 * sh.width) : Infinity)
+    if (sh.short >= 0.5) {
+      line.push({ x: s.p.x + sh.off * sh.nx, y: s.p.y + sh.off * sh.ny })
+      moved = true
+    } else {
+      line.push(s.p)
+    }
+  }
+  line.push(run[run.length - 1])
+  tol.push(Infinity)
+  if (!moved) return run
+  // The centreline's own gap over each stretch — what a pulled leg must match.
+  const segGap = line.slice(1).map((q, k) => corridorOf(ctx, line[k], q)?.distM ?? Infinity)
+  const out: XY[] = [line[0]]
+  let anchor = 0
+  while (anchor < line.length - 1) {
+    let best = -1
+    for (let j = line.length - 1; j > anchor; j--) {
+      const p = line[anchor]
+      const q = line[j]
+      let want = Infinity
+      for (let k = anchor; k < j; k++) want = Math.min(want, segGap[k])
+      let near = true
+      for (let k = anchor + 1; k < j && near; k++) {
+        if (tol[k] === Infinity) continue
+        near = Math.sqrt(pointSegDist2(line[k].x, line[k].y, p.x, p.y, q.x, q.y)) <= tol[k]
+      }
+      if (!near) continue
+      if (!passes(ctx, mode, p, q)) continue
+      const g = corridorOf(ctx, p, q)?.distM ?? Infinity
+      if (g < Math.min(want, ctx.corridorM) - 0.5) continue
+      best = j
+      break
+    }
+    if (best < 0) return run
+    out.push(line[best])
+    anchor = best
+  }
+  if (!(gapOf(ctx, out) > was + 0.5)) return run
+  return out
+}
+
+/**
+ * How a boat is assumed to turn when the route is planned: a firm turn at
+ * `PLAN_TURN_DPS` (the same rate the card assumes, `TURN_ASSUMED_DPS`),
+ * begun `PLAN_TURN_REACT_S` after the turn point — the worst case the card
+ * allows, a boat that runs to the mark before it turns ("round waypoint N
+ * first", a lost fix).
+ */
+const PLAN_TURN_DPS = 12
+const PLAN_TURN_REACT_S = 1
+/** Turns gentler than this need no room checked, degrees. */
+const TURN_ROOM_MIN_DEG = 20
+
+/** Unit vectors of the legs into and out of p, the turn angle (radians) and its sense (1 = to port). */
+function turnAt(a: XY, p: XY, b: XY): { u1: XY; u2: XY; theta: number; sign: number } | null {
+  const l1 = distXY(a, p)
+  const l2 = distXY(p, b)
+  if (!(l1 > 0 && l2 > 0)) return null
+  const u1 = { x: (p.x - a.x) / l1, y: (p.y - a.y) / l1 }
+  const u2 = { x: (b.x - p.x) / l2, y: (b.y - p.y) / l2 }
+  const cross = u1.x * u2.y - u1.y * u2.x
+  const dot = Math.max(-1, Math.min(1, u1.x * u2.x + u1.y * u2.y))
+  return { u1, u2, theta: Math.acos(dot), sign: cross >= 0 ? 1 : -1 }
+}
+
+/**
+ * The water a boat at the route's cruise speed swings through turning at p
+ * from leg a→p onto p→b: on past the mark for its reaction, then round a
+ * circle of radius v/ω — the run-on beyond the turn and the outside of its
+ * arc. Every stretch of it must keep the rules a leg keeps.
+ */
+function turnFits(ctx: Ctx, mode: Mode, a: XY, p: XY, b: XY): boolean {
+  const kn = ctx.req.speedKn
+  if (!(Number.isFinite(kn) && kn > 0)) return true
+  const t = turnAt(a, p, b)
+  if (!t || t.theta < (TURN_ROOM_MIN_DEG * Math.PI) / 180) return true
+  const v = kn * 0.514444
+  const R = v / ((PLAN_TURN_DPS * Math.PI) / 180)
+  const react = v * PLAN_TURN_REACT_S
+  const path: XY[] = [p, { x: p.x + t.u1.x * react, y: p.y + t.u1.y * react }]
+  const steps = Math.max(3, Math.ceil(t.theta / ((20 * Math.PI) / 180)))
+  const h0 = Math.atan2(t.u1.y, t.u1.x)
+  const run = (R * t.theta) / steps
+  let q = path[1]
+  for (let k = 0; k < steps; k++) {
+    const h = h0 + t.sign * t.theta * ((k + 0.5) / steps)
+    q = { x: q.x + run * Math.cos(h), y: q.y + run * Math.sin(h) }
+    path.push(q)
+  }
+  for (let i = 0; i + 1 < path.length; i++) {
+    if (!passes(ctx, mode, path[i], path[i + 1])) return false
+  }
+  return true
+}
+
+/** May a cut corner pass this close to the shallows (`turnRoom`)? */
+function cornerCutOk(ctx: Ctx, a: XY, b: XY): boolean {
+  const g = corridorOf(ctx, a, b)
+  return !g || g.distM >= Math.max(ctx.depthMarginM, 0.5 * ctx.corridorM)
+}
+
+/** Directions and distances a turn point is tried at when it has no room to turn, metres. */
+const TURN_MOVE_M = [15, 30, 50, 80]
+const TURN_MOVE_DIRECTIONS = 16
+
+/**
+ * Room to turn at every turn point. Where the water beyond a turn is
+ * narrower than the boat swings at its cruise speed (`turnFits`) — an 83°
+ * turn with 42 m of water beyond it, taken at 40 kn (rc8 F2) — the turn is
+ * split into two gentler ones, cutting the corner where the chart allows
+ * it; failing that, the turn point is moved to where there is room. Where
+ * neither is possible it stays, and the plan tells the crew to slow down for
+ * it (`RoutePlan.slowTurns`).
+ */
+function turnRoom(ctx: Ctx, mode: Mode, pts: XY[], snapStart: boolean, snapEnd: boolean): XY[] {
+  if (pts.length < 3 || mode.allowShallow || mode.clearanceM < ctx.clearanceM) return pts
+  const kn = ctx.req.speedKn
+  if (!(Number.isFinite(kn) && kn > 0)) return pts
+  const v = kn * 0.514444
+  const R = v / ((PLAN_TURN_DPS * Math.PI) / 180)
+  const stub = arrivalSetting(ctx.req.arrivalFt) * FT_TO_M
+  const out = pts.slice()
+  for (let k = 1; k + 1 < out.length; k++) {
+    if (snapStart && k === 1) continue
+    if (snapEnd && k === out.length - 2) continue
+    const a = out[k - 1]
+    const p = out[k]
+    const b = out[k + 1]
+    if (inZoneXY(ctx, p)) continue
+    const t = turnAt(a, p, b)
+    if (!t || t.theta < (TURN_ROOM_MIN_DEG * Math.PI) / 180) continue
+    if (turnFits(ctx, mode, a, p, b)) continue
+    // 1: two gentler turns, the corner cut s metres either side of p — a
+    // new leg no shorter than the arrival circle, so it stays a leg.
+    const sMax = 0.45 * Math.min(distXY(a, p), distXY(p, b))
+    const sMin = Math.max(10, stub / Math.max(0.2, 2 * Math.sin(t.theta / 2)))
+    const quarter = R * Math.tan(t.theta / 4)
+    const cands = [...new Set([quarter, 1.5 * quarter, 2.5 * quarter, 30, 60, 100, 150].map((x) => Math.round(x)))]
+      .filter((x) => x >= sMin && x <= sMax)
+      .sort((x, y) => x - y)
+    let split: [XY, XY] | null = null
+    for (const sM of cands) {
+      const p1 = { x: p.x - t.u1.x * sM, y: p.y - t.u1.y * sM }
+      const p2 = { x: p.x + t.u2.x * sM, y: p.y + t.u2.y * sM }
+      if (inZoneXY(ctx, p1) || inZoneXY(ctx, p2)) continue
+      if (!passes(ctx, mode, p1, p2)) continue
+      // A boat that cannot make the turn swings onto the shoal outside it:
+      // cutting the corner may take the route up to half-way into the
+      // corridor on the inside, never closer than the depth margin.
+      if (!corridorNoWorse(ctx, mode, p1, p2, [[p1, p], [p, p2]]) && !cornerCutOk(ctx, p1, p2)) continue
+      if (!turnFits(ctx, mode, a, p1, p2) || !turnFits(ctx, mode, p1, p2, b)) continue
+      split = [p1, p2]
+      break
+    }
+    if (split) {
+      out.splice(k, 1, split[0], split[1])
+      k++
+      continue
+    }
+    // 2: the turn point moved to where the boat has room, the shortest
+    // such detour — its neighbours' turns kept as they were.
+    const prev = k >= 2 ? out[k - 2] : null
+    const next = k + 2 < out.length ? out[k + 2] : null
+    const fitsA = prev ? turnFits(ctx, mode, prev, a, p) : true
+    const fitsB = next ? turnFits(ctx, mode, p, b, next) : true
+    const base = distXY(a, p) + distXY(p, b)
+    let best: { c: XY; extra: number } | null = null
+    for (const r of TURN_MOVE_M) {
+      for (let d = 0; d < TURN_MOVE_DIRECTIONS; d++) {
+        const th = (2 * Math.PI * d) / TURN_MOVE_DIRECTIONS
+        const c = { x: p.x + r * Math.cos(th), y: p.y + r * Math.sin(th) }
+        const extra = distXY(a, c) + distXY(c, b) - base
+        if (best && extra >= best.extra) continue
+        if (inZoneXY(ctx, c)) continue
+        if (distXY(a, c) < stub || distXY(c, b) < stub) continue
+        if (!passes(ctx, mode, a, c) || !passes(ctx, mode, c, b)) continue
+        if (!corridorNoWorse(ctx, mode, a, c, [[a, p]]) || !corridorNoWorse(ctx, mode, c, b, [[p, b]])) continue
+        if (!turnFits(ctx, mode, a, c, b)) continue
+        if (fitsA && prev && !turnFits(ctx, mode, prev, a, c)) continue
+        if (fitsB && next && !turnFits(ctx, mode, c, b, next)) continue
+        best = { c, extra }
+      }
+      if (best) break
+    }
+    if (best) out[k] = best.c
+  }
+  return out
+}
+
+/**
+ * A cheap first look for `tighten`: is the straight line between two points
+ * clear on the grid's optimistic (cell-centre) view? A line that crosses a
+ * cell whose centre is ashore, too shallow or inside the stand-off will fail
+ * the check against the chart, so it is not worth making; one that is clear
+ * here is then checked properly. Lines off the grid are not tried.
+ */
+function lineMaybeClear(ctx: Ctx, g: RouteGrid, mode: Mode): (a: XY, b: XY) => boolean {
+  let field: CostField | null = null
+  return (a, b) => {
+    field ??= costField(
+      g,
+      passability(g, mode.clearanceM, ctx.safeDepthM, {
+        allowShallow: mode.allowShallow,
+        optimistic: true,
+        zone: zoneRaster(g, ctx),
+        wantClearanceM: mode.wantClearanceM,
+        depthMarginM: ctx.depthMarginM,
+        channelMargin: ctx.channelMargin,
+        narrowMargin: ctx.narrowMargin,
+        ...corridorOpts(ctx, mode),
+      }),
+    )
+    const pa = toGrid(g, fromXY(ctx.ix.proj, a.x, a.y))
+    const pb = toGrid(g, fromXY(ctx.ix.proj, b.x, b.y))
+    return chordWalk(g, pa, pb, field, null) !== null
+  }
 }
 
 /** Every leg (snap legs aside) meets what this mode demands. */
@@ -2809,8 +3832,17 @@ function chartWarnings(f: ChartFeatures): string[] {
       `The ${names} chart${failed.length > 1 ? 's' : ''} could not be loaded, so this route was ` +
         'planned on coarser charts — some detail and hazards may be missing. Check it against a chart.',
     )
+  } else if ((f.incompleteBands ?? []).length > 0) {
+    out.push(
+      `Part of the ${f.incompleteBands!.join(' and ')} chart did not load, so some depths and hazards ` +
+        'in this area are missing. The route may go the long way round, or miss a hazard — plan it ' +
+        'again with a better signal, and check it against a chart.',
+    )
   } else if (f.coverage === 'partial') {
-    out.push('The chart query hit its limit, so some hazards in this area may be missing.')
+    out.push(
+      'Part of the chart did not load (the query hit its limit), so some depths and hazards in this ' +
+        'area may be missing — the route may go the long way round. Check it against a chart.',
+    )
   }
   return out
 }
@@ -2863,6 +3895,26 @@ function channelTest(
     }
     return false
   }
+}
+
+/**
+ * The grids of the last chart planned on, kept for the next plan on it — the
+ * alternatives (`planAlternatives`) straight after a plan, a re-plan for a
+ * changed stand-off. Grids depend only on the chart and the boat's depth;
+ * one chart and depth at a time, and the big fine grids are dropped after
+ * each plan (`evictBigGrids`) — a phone has no memory to spare.
+ */
+let gridMemo: { features: ChartFeatures; safeDepthM: number; grids: Map<string, RouteGrid> } | null = null
+function gridsFor(features: ChartFeatures, safeDepthM: number): Map<string, RouteGrid> {
+  if (gridMemo && gridMemo.features === features && gridMemo.safeDepthM === safeDepthM) return gridMemo.grids
+  gridMemo = { features, safeDepthM, grids: new Map() }
+  return gridMemo.grids
+}
+function evictBigGrids(): void {
+  if (!gridMemo) return
+  for (const [k, g] of gridMemo.grids) if (g.cols * g.rows > MAX_CELLS * 1.2) gridMemo.grids.delete(k)
+  // Repair grids are small but many; keep the plan-sized ones only.
+  for (const [k, g] of gridMemo.grids) if (g.cols * g.rows < MAX_CELLS / 4) gridMemo.grids.delete(k)
 }
 
 /**
@@ -2929,13 +3981,33 @@ function makeCtx(req: RouteRequest, box?: Bounds): Ctx {
     to,
     fromBlocked: blocked(from),
     toBlocked: blocked(to),
-    grids: new Map(),
+    grids: gridsFor(features, safeDepthM),
     budget: REPAIR_BUDGET,
     lim: { x0: limSW.x, y0: limSW.y, x1: limNE.x, y1: limNE.y },
     depthMarginM,
     channelMargin: channelMarginFor(depthMarginM, req.channelMarginM),
+    narrowMargin: narrowMarginFor(depthMarginM),
     inChannel: channelTest(features.channels, ix),
+    checks: new Map(),
+    ...corridorFor(req.shallowMarginM),
+    gaps: new Map(),
   }
+}
+
+/** The corridor fields of a context, for a request's `shallowMarginM`. */
+function corridorFor(m: number | null | undefined): { corridorM: number; centre: ChannelMargin | null } {
+  const corridorM = shallowMarginFor(m)
+  return {
+    corridorM,
+    centre:
+      corridorM > 0 ? { maxM: corridorM, minM: CHANNEL_MARGIN_MIN_M, fraction: CENTRE_FRACTION } : null,
+  }
+}
+
+/** The corridor a search in this mode is costed with (`PassabilityOptions`). */
+function corridorOpts(ctx: Ctx, mode: Mode): { corridorM: number; centre: ChannelMargin | null } {
+  if (mode.corridor === false || mode.allowShallow) return { corridorM: 0, centre: null }
+  return { corridorM: ctx.corridorM, centre: ctx.centre }
 }
 
 /**
@@ -3005,11 +4077,22 @@ export function planRoute(req: RouteRequest): RoutePlan {
   // closes. When the conservative grid finds nothing, the optimistic read is
   // the second chance.
   const directM = distXY(from, to)
+  // The length of the grid's own answer, before any repair — a cheap bound
+  // on whether a full attempt could possibly win. A route that is not
+  // shorter even before its legs are repaired will not be shorter after.
+  const rawLength = (c: Ctx, box: Bounds, mode: Mode): number => {
+    const g = gridFor(c, box)
+    const found = route(c, g, mode, c.from, c.to, c.fromBlocked, c.toBlocked, SNAP_RADIUS_M)
+    return typeof found === 'string' ? Infinity : lengthOf(found.pts)
+  }
   const tryBox = (c: Ctx, box: Bounds, mode: Mode): Built | null => {
     const safe = tryMode(c, box, mode)
-    // Nothing can be 5 % shorter than a route already within 5 % of the
-    // straight line — the open-water case, which is most of them.
-    if (safe && lengthOf(safe.pts) * (1 - OPTIMISTIC_GAIN) <= directM) return safe
+    // A route already within 5 % of the straight line is not searched
+    // again — the open-water case, which is most of them.
+    if (safe && lengthOf(safe.pts) <= directM * (1 + NEAR_DIRECT)) return safe
+    if (safe && !(rawLength(c, box, { ...mode, optimistic: true }) < lengthOf(safe.pts) * (1 - OPTIMISTIC_GAIN))) {
+      return safe
+    }
     const bold = tryMode(c, box, { ...mode, optimistic: true })
     if (!safe) return bold
     if (bold && lengthOf(bold.pts) < lengthOf(safe.pts) * (1 - OPTIMISTIC_GAIN)) return bold
@@ -3036,7 +4119,13 @@ export function planRoute(req: RouteRequest): RoutePlan {
   // has no room for the buffer is still a channel. Also where the buffer
   // only fits a long way round: 3 m more room is not worth going round a
   // bridge for when the gap between its piers keeps the stand-off.
-  if (!built || lengthOf(built.pts) > directM * (1 + OPTIMISTIC_GAIN)) {
+  const tightCouldWin = (b: Built): boolean => {
+    const box = routeBounds(req.from, req.to)
+    const raw = Math.min(rawLength(ctx, box, strict), rawLength(ctx, box, { ...strict, optimistic: true }))
+    // No raw route in the ordinary box: the planning box is searched in full.
+    return !Number.isFinite(raw) || raw * BUFFER_DETOUR_FACTOR + BUFFER_DETOUR_M < lengthOf(b.pts)
+  }
+  if (!built || (lengthOf(built.pts) > directM * (1 + NEAR_DIRECT) && tightCouldWin(built))) {
     ctx.budget = REPAIR_BUDGET
     const tight = tryBox(ctx, routeBounds(req.from, req.to), strict) ?? tryBox(ctx, planBox, strict)
     if (
@@ -3155,7 +4244,334 @@ export function planRoute(req: RouteRequest): RoutePlan {
   }
   if (!built) return nonePlan(req, failureText(lastFailure, ctx), baseWarnings)
 
-  return finish(use, built, arrivalReq, baseWarnings)
+  const plan = finish(use, tightened(built), arrivalReq, baseWarnings)
+  evictBigGrids()
+  return plan
+}
+
+/* -------------------------------------------------------------------------
+ * Alternatives — "shorter, but…", Google-Maps style
+ * ---------------------------------------------------------------------- */
+
+/** Why an alternative breaks the boat's rules — machine-readable, index into its `plan.legs`. */
+export type AltReason =
+  | { kind: 'shallow'; leastDepthM: number; legIdx: number }
+  | { kind: 'close'; minClearanceM: number; legIdx: number }
+  /** Inside the crew's "keep ___ from shallows": `gapM` from water `depthM` deep. */
+  | { kind: 'corridor'; gapM: number; depthM: number; legIdx: number }
+
+export interface RouteAlternate {
+  /** A whole plan of its own — legs, points, circles, flags. `needsConfirm` when it bends a rule. */
+  plan: RoutePlan
+  reasons: AltReason[]
+  /** "Shallow 3.5 ft · close to land 15 ft" (feet by default; see `alternateLabel`). */
+  label: string
+  /** How much shorter than the main route, NM. */
+  shorterNM: number
+}
+
+export interface Alternatives {
+  /** At most `MAX_ALTERNATES`, shortest first. */
+  alternates: RouteAlternate[]
+  /**
+   * When the main route is more than `SHORTER_NOTE_FACTOR` × the shortest
+   * water path: why the shorter way was not taken, in plain words. Null
+   * otherwise.
+   */
+  shorterNote: string | null
+  /** The shortest water path found (depth and stand-off relaxed, never land, hazards or unsurveyed water), NM. */
+  shortestWaterNM: number | null
+  /**
+   * A route that keeps every rule and is shorter than the main one — the
+   * relaxed search found a way the main search missed. The caller should
+   * use it as the route (it is not an alternative: it bends nothing).
+   */
+  betterMain: RoutePlan | null
+}
+
+/** Offered only when this much shorter than the main route: a share of it, or NM — either. */
+export const ALT_MIN_GAIN = 0.05
+export const ALT_MIN_GAIN_NM = 0.2
+/** At most this many alternatives. */
+export const MAX_ALTERNATES = 2
+/** "Shorter route not taken because…" when the main route is this much longer than the shortest water path. */
+export const SHORTER_NOTE_FACTOR = 1.15
+
+/** "3.5 ft" / "12 ft". */
+function shortFeet(m: number): string {
+  const ft = m * M_TO_FT
+  return ft < 10 ? `${(Math.round(ft * 10) / 10).toFixed(1).replace(/\.0$/, '')} ft` : `${Math.round(ft)} ft`
+}
+
+/**
+ * "Shallow 3.5 ft · close to land 15 ft" — what an alternative bends, the
+ * worst of each. Depth in the crew's unit when a formatter is given.
+ */
+export function alternateLabel(
+  reasons: readonly AltReason[],
+  fmt: { depth?: (m: number) => string; length?: (m: number) => string } = {},
+): string {
+  const depth = fmt.depth ?? shortFeet
+  const length = fmt.length ?? shortFeet
+  const parts: string[] = []
+  for (const r of reasons) {
+    if (r.kind === 'shallow') parts.push(`shallow ${depth(Math.max(0, r.leastDepthM))}`)
+    else if (r.kind === 'close') parts.push(`close to land ${length(Math.max(0, r.minClearanceM))}`)
+    else parts.push(`passes ${length(Math.max(0, r.gapM))} from shallows`)
+  }
+  const text = parts.join(' · ')
+  return text ? text[0].toUpperCase() + text.slice(1) : 'Shorter'
+}
+
+/** The closest a plan's sound legs pass to the shallows inside the corridor, or null. */
+function corridorWorst(plan: RoutePlan): { gapM: number; depthM: number; legIdx: number } | null {
+  let out: { gapM: number; depthM: number; legIdx: number } | null = null
+  plan.legs.forEach((l, i) => {
+    if (l.corridorGapM == null) return
+    if (!out || l.corridorGapM < out.gapM) out = { gapM: l.corridorGapM, depthM: l.corridorDepthM ?? 0, legIdx: i }
+  })
+  return out
+}
+
+/**
+ * What a relaxed plan bends, from its own legs — the corridor only where it
+ * passes closer to the shallows than the main route itself has to.
+ */
+function reasonsOf(plan: RoutePlan, clearanceM: number, main?: RoutePlan): AltReason[] {
+  let shallow: { leastDepthM: number; legIdx: number } | null = null
+  let close: { minClearanceM: number; legIdx: number } | null = null
+  plan.legs.forEach((l, i) => {
+    if (l.caution === 'unsafe-depth') {
+      const d = l.minDepthOutsideM ?? l.minChartedDepthM ?? l.nearShoalDepthM ?? 0
+      if (!shallow || d < shallow.leastDepthM) shallow = { leastDepthM: d, legIdx: i }
+    }
+    const tooClose =
+      l.caution === 'reduced-clearance' ||
+      (l.caution === 'unsafe-depth' && l.minClearanceM != null && l.minClearanceM < clearanceM)
+    if (tooClose) {
+      const c = l.minClearanceM ?? 0
+      if (!close || c < close.minClearanceM) close = { minClearanceM: c, legIdx: i }
+    }
+  })
+  const out: AltReason[] = []
+  const sh = shallow as { leastDepthM: number; legIdx: number } | null
+  const cl = close as { minClearanceM: number; legIdx: number } | null
+  if (sh) out.push({ kind: 'shallow', ...sh })
+  if (cl) out.push({ kind: 'close', ...cl })
+  const tight = corridorWorst(plan)
+  const had = main ? corridorWorst(main) : null
+  if (!sh && tight && (!had || tight.gapM < had.gapM - 1)) out.push({ kind: 'corridor', ...tight })
+  return out
+}
+
+/**
+ * The name of a marked channel a leg runs through, if the chart names one
+ * ("Five Mile Cut Channel") — sampled every 50 m along it.
+ */
+function channelNameOn(features: ChartFeatures, a: LatLon, b: LatLon): string | null {
+  const named = features.channels.filter((c) => c.name)
+  if (named.length === 0) return null
+  const lenM = haversineNM(a.lat, a.lon, b.lat, b.lon) * NM_TO_METERS
+  const n = Math.max(1, Math.min(400, Math.ceil(lenM / 50)))
+  for (let k = 0; k <= n; k++) {
+    const lat = a.lat + ((b.lat - a.lat) * k) / n
+    const lon = a.lon + ((b.lon - a.lon) * k) / n
+    for (const c of named) {
+      let inside = false
+      for (const ring of c.rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i]
+          const [xj, yj] = ring[j]
+          if (yi > lat !== yj > lat && lon < xi + ((lat - yi) * (xj - xi)) / (yj - yi)) inside = !inside
+        }
+      }
+      if (inside) return c.name ?? null
+    }
+  }
+  return null
+}
+
+/**
+ * Shorter ways than the main route that bend a rule — Google Maps' faded
+ * "alternative route" — and, when the main route is much longer than the
+ * shortest water path, why that shorter way was not taken.
+ *
+ * Three relaxed searches over the same chart index and grids as the plan
+ * (`makeCtx` reuses them): depth down to whatever is charted (never
+ * unsurveyed water, never land or a hazard footprint), the stand-off down to
+ * `CLEARANCE_FLOOR_M`, and both. Each is a whole plan — its legs checked
+ * against the chart and flagged exactly like a best-effort route, so
+ * selecting one needs the same "I understand" as best-effort before Start.
+ *
+ * Skipped outright when the main route is already within `ALT_MIN_GAIN` of
+ * the straight line: nothing can be meaningfully shorter.
+ */
+export function planAlternatives(
+  req: RouteRequest,
+  main: RoutePlan,
+  fmt: { depth?: (m: number) => string; length?: (m: number) => string } = {},
+): Alternatives {
+  const none: Alternatives = { alternates: [], shorterNote: null, shortestWaterNM: null, betterMain: null }
+  if (main.source === 'none' || main.points.length < 2) return none
+  const { features } = req
+  if (features.coverage === 'none' || features.depthAreas.length === 0) return none
+  const directNM = haversineNM(req.from.lat, req.from.lon, req.to.lat, req.to.lon)
+  const worth = (nm: number) => main.totalNM - nm >= Math.min(ALT_MIN_GAIN * main.totalNM, ALT_MIN_GAIN_NM)
+  if (!worth(directNM)) return none
+
+  const ctx = makeCtx(req)
+  const box = planningBounds(req.from, req.to)
+  const arrivalReq = arrivalSetting(req.arrivalFt)
+  const baseWarnings = chartWarnings(features)
+  const floor = Math.min(ctx.clearanceM, CLEARANCE_FLOOR_M)
+  const modes: Mode[] = [
+    // Every rule kept, the corridor relaxed: "passes 40 ft from shallows".
+    { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false, corridor: false },
+    { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: true, optimistic: false, relaxed: true },
+    { clearanceM: floor, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false, relaxed: true },
+    { clearanceM: floor, wantClearanceM: ctx.clearanceM, allowShallow: true, optimistic: false, relaxed: true },
+  ]
+  const found: RoutePlan[] = []
+  for (const mode of modes) {
+    ctx.budget = REPAIR_BUDGET
+    let b = attempt(ctx, box, mode)
+    if (typeof b === 'string' || !accepted(ctx, b)) {
+      ctx.budget = REPAIR_BUDGET
+      b = attempt(ctx, box, { ...mode, optimistic: true })
+    }
+    if (typeof b === 'string' || !accepted(ctx, b)) continue
+    found.push(finish(ctx, mode.corridor === false ? tightened(b) : b, arrivalReq, baseWarnings))
+  }
+  evictBigGrids()
+  if (found.length === 0) return none
+
+  const shortestWaterNM = Math.min(...found.map((p) => p.totalNM))
+  const better = found
+    .filter(
+      (p) =>
+        p.source === 'charted' &&
+        p.totalNM < main.totalNM * (1 - OPTIMISTIC_GAIN) &&
+        !reasonsOf(p, ctx.clearanceM, main).some((r) => r.kind === 'corridor'),
+    )
+    .sort((a, b) => a.totalNM - b.totalNM)[0] ?? null
+
+  const alternates: RouteAlternate[] = []
+  for (const plan of found.sort((a, b) => a.totalNM - b.totalNM)) {
+    if (!worth(plan.totalNM)) continue
+    const reasons = reasonsOf(plan, ctx.clearanceM, main)
+    if (reasons.length === 0) continue
+    if (plan.source !== 'best-effort' && !reasons.some((r) => r.kind === 'corridor')) continue
+    const kinds = reasons.map((r) => r.kind).join('+')
+    const same = alternates.some(
+      (a) =>
+        a.reasons.map((r) => r.kind).join('+') === kinds ||
+        Math.abs(a.plan.totalNM - plan.totalNM) < 0.01 * plan.totalNM,
+    )
+    if (same) continue
+    alternates.push({
+      plan: asAlternate(plan, reasons, ctx),
+      reasons,
+      label: alternateLabel(reasons, fmt),
+      shorterNM: main.totalNM - plan.totalNM,
+    })
+    if (alternates.length >= MAX_ALTERNATES) break
+  }
+
+  let shorterNote: string | null = null
+  const shortest = alternates[0]
+  if (
+    shortest &&
+    (main.totalNM > SHORTER_NOTE_FACTOR * shortest.plan.totalNM || shortest.reasons.some((r) => r.kind === 'corridor'))
+  ) {
+    shorterNote = shorterRouteNote(req, ctx, main, shortest, fmt)
+  }
+  return { alternates, shorterNote, shortestWaterNM, betterMain: better }
+}
+
+/**
+ * An alternate's own shortfall lines, in words true of an alternate. The
+ * router writes "No route keeps 5 ft of water the whole way. The safest route
+ * crosses 0 ft…" for its last resort — but beside an alternate there IS a
+ * route that keeps it (Route 1), and this one was chosen for being shorter.
+ */
+function asAlternate(plan: RoutePlan, reasons: AltReason[] = [], ctx?: Ctx): RoutePlan {
+  const tight = reasons.find((r) => r.kind === 'corridor') as
+    | { kind: 'corridor'; gapM: number; depthM: number; legIdx: number }
+    | undefined
+  if (plan.source === 'charted' && tight && ctx) {
+    // Keeps every rule but the corridor: steering it still takes the crew's OK.
+    const water = tight.depthM < 0 ? chartedDepthText(tight.depthM) : `${formatDepth(tight.depthM)} water`
+    const reason =
+      `This shorter route passes ${formatLength(tight.gapM)} from ${water} near leg ${plan.legs[tight.legIdx]?.n ?? tight.legIdx + 1} — ` +
+      `closer than your ${formatLength(ctx.corridorM)} margin from shallows. Confirm before you steer it.`
+    return {
+      ...plan,
+      needsConfirm: true,
+      confirmReason: reason,
+      warnings: [reason, ...plan.warnings.filter((w) => !/margin from shallows, which no route here keeps/.test(w))],
+    }
+  }
+  const say = (w: string): string =>
+    w
+      .replace(/^No route keeps /, 'This shorter route does not keep ')
+      .replace(/ The safest route /, ' It ')
+      .replace(/ The closest pass /, ' Its closest pass ')
+      .replace(
+        /^This is the safest route found, not a safe one — /,
+        'It is shorter, not safe: another route keeps your boat’s rules — ',
+      )
+  return {
+    ...plan,
+    warnings: plan.warnings.map(say),
+    confirmReason: plan.confirmReason != null ? say(plan.confirmReason) : plan.confirmReason,
+  }
+}
+
+/**
+ * "A way 7.8 NM shorter, via Five Mile Cut Channel, needs water charted
+ * 0 ft; your boat needs 5 ft." — why the main route is so much longer than
+ * the shortest water path, in the words the crew asked for.
+ */
+function shorterRouteNote(
+  req: RouteRequest,
+  ctx: Ctx,
+  main: RoutePlan,
+  alt: RouteAlternate,
+  fmt: { depth?: (m: number) => string; length?: (m: number) => string },
+): string {
+  const depth = fmt.depth ?? shortFeet
+  const length = fmt.length ?? shortFeet
+  const saved = `${(main.totalNM - alt.plan.totalNM).toFixed(1)} NM`
+  const shallow = alt.reasons.find((r) => r.kind === 'shallow') as
+    | { kind: 'shallow'; leastDepthM: number; legIdx: number }
+    | undefined
+  const close = alt.reasons.find((r) => r.kind === 'close') as
+    | { kind: 'close'; minClearanceM: number; legIdx: number }
+    | undefined
+  const tight = alt.reasons.find((r) => r.kind === 'corridor') as
+    | { kind: 'corridor'; gapM: number; depthM: number; legIdx: number }
+    | undefined
+  const leg = alt.plan.legs[(shallow ?? close ?? tight)?.legIdx ?? 0]
+  const via = leg ? channelNameOn(req.features, leg.from, leg.to) : null
+  const way = `A way ${saved} shorter${via ? `, via ${via},` : ''}`
+  const parts: string[] = []
+  if (shallow) {
+    parts.push(
+      `crosses water charted ${depth(Math.max(0, shallow.leastDepthM))} — your boat needs ${depth(ctx.safeDepthM)}`,
+    )
+  }
+  if (close) {
+    parts.push(
+      `passes ${length(Math.max(0, close.minClearanceM))} from land or a hazard — your stand-off is ${length(ctx.clearanceM)}`,
+    )
+  }
+  if (tight) {
+    parts.push(
+      `passes within ${length(Math.max(0, tight.gapM))} of ${depth(Math.max(0, tight.depthM))} water — ` +
+        `your margin is ${length(ctx.corridorM)}`,
+    )
+  }
+  return `${way} ${parts.join(', and ')}. This route keeps your boat's rules.`
 }
 
 /**
@@ -3219,6 +4635,7 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
   const snapLeg = (i: number) => (b.snapStart && i === 0) || (b.snapEnd && i === checks.length - 1)
   const cautions = legCautions(ctx, pts, checks, snapLeg)
   const charted = isCharted(cautions)
+  const gaps = corridorGaps(ctx, pts, cautions, snapLeg)
 
   const { legs: base, totalNM } = buildLegs(points, () => true)
   const speed = Number.isFinite(req.speedKn) && req.speedKn > 0 ? req.speedKn : NaN
@@ -3241,6 +4658,8 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
       ],
       nearShoalDepthM: checks[i].nearShoal ? checks[i].nearShoalDepthM : null,
       nearShoalDistM: checks[i].nearShoal ? checks[i].nearShoalDistM : null,
+      ...(checks[i].narrow && cautions[i] === 'ok' ? { narrow: true } : {}),
+      ...corridorFields(gaps[i]),
     }
   })
   const hours = speed > 0 ? totalNM / speed : NaN
@@ -3273,6 +4692,15 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
     // hop the reason.
     confirmReason = lines.length > 1 ? lines[0] : (movedNote ?? lines[0] ?? null)
     warnings.push(...lines)
+  }
+  warnings.push(...narrowWarnings(ctx, legs))
+  const slowTurns = charted ? turnsWithoutRoom(ctx, pts, b.snapStart, b.snapEnd) : []
+  if (slowTurns.length > 0) {
+    const kn = Math.round(req.speedKn)
+    warnings.push(
+      `Slow down for the turn at ${slowTurns.length === 1 ? 'waypoint' : 'waypoints'} ` +
+        `${joinWords(slowTurns.map(String))}: at ${kn} kn there is not room there to turn at speed.`,
+    )
   }
   const approachDepth = legs
     .filter((l) => l.caution === 'shallow-approach' && l.approachReasons?.includes('depth'))
@@ -3325,7 +4753,70 @@ function finish(ctx: Ctx, b: Built, arrivalReq: number, baseWarnings: string[]):
     failure: null,
     needsConfirm: !charted,
     confirmReason,
+    ...(slowTurns.length > 0 ? { slowTurns } : {}),
   }
+}
+
+/**
+ * Each leg's shortfall against the corridor — the least distance to water
+ * too shallow for the boat, where it is closer than "keep ___ from shallows"
+ * — for the legs that are otherwise sound (a leg already flagged for its
+ * depth or its stand-off says so instead). Snap legs off or onto a position
+ * the chart shows ashore are not measured.
+ */
+function corridorGaps(
+  ctx: Ctx,
+  pts: XY[],
+  cautions: LegCaution[],
+  snapLeg: (i: number) => boolean,
+): ({ distM: number; depthM: number } | null)[] {
+  return cautions.map((c, i) =>
+    snapLeg(i) || (c !== 'ok' && c !== 'shallow-approach') ? null : corridorOf(ctx, pts[i], pts[i + 1]),
+  )
+}
+
+function corridorFields(g: { distM: number; depthM: number } | null): Partial<RouteLeg> {
+  return g ? { narrow: true, corridorGapM: g.distM, corridorDepthM: g.depthM } : {}
+}
+
+/** The plan's words for its narrow legs: how close to the shallows, and to keep a lookout. */
+function narrowWarnings(ctx: Ctx, legs: RouteLeg[]): string[] {
+  const narrow = legs.filter((l) => l.narrow)
+  if (narrow.length === 0) return []
+  const one = narrow.length === 1
+  const which = `${one ? 'Leg' : 'Legs'} ${joinWords(narrow.map((l) => String(l.n)))}`
+  const close = narrow.filter((l) => l.corridorGapM != null)
+  if (close.length === 0 || !(ctx.corridorM > 0)) {
+    return [
+      `${which} ${one ? 'runs' : 'run'} through a narrow channel with shallow water close on ` +
+        'both sides — keep to the middle.',
+    ]
+  }
+  const worst = close.reduce((w, l) => ((l.corridorGapM ?? Infinity) < (w.corridorGapM ?? Infinity) ? l : w))
+  const d = worst.corridorDepthM ?? 0
+  const water = d < 0 ? chartedDepthText(d) : `${formatDepth(d)} water`
+  return [
+    `${which} ${one ? 'passes' : 'pass as close as'} ${formatLength(worst.corridorGapM ?? 0)} from ${water} — ` +
+      `inside your ${formatLength(ctx.corridorM)} margin from shallows, which no route here keeps. ` +
+      'Keep to the middle and keep a lookout.',
+  ]
+}
+
+/**
+ * The turn points of a sound route where a boat at its cruise speed has no
+ * room to turn (`turnFits`), outside the approach zones — the crew is told
+ * to slow down for them.
+ */
+function turnsWithoutRoom(ctx: Ctx, pts: XY[], snapStart: boolean, snapEnd: boolean): number[] {
+  const mode: Mode = { clearanceM: ctx.clearanceM, wantClearanceM: ctx.clearanceM, allowShallow: false, optimistic: false }
+  const out: number[] = []
+  for (let k = 1; k + 1 < pts.length; k++) {
+    if (snapStart && k === 1) continue
+    if (snapEnd && k === pts.length - 2) continue
+    if (inZoneXY(ctx, pts[k])) continue
+    if (!turnFits(ctx, mode, pts[k - 1], pts[k], pts[k + 1])) out.push(k)
+  }
+  return out
 }
 
 /** Each leg's caution, from its check against the chart. */
@@ -3547,7 +5038,10 @@ export function recomputeArrivalRadii(
  */
 export function recheckPlan(
   plan: RoutePlan,
-  req: Pick<RouteRequest, 'safeDepthM' | 'clearanceM' | 'features' | 'approachM' | 'depthMarginM' | 'arrivalFt'>,
+  req: Pick<
+    RouteRequest,
+    'safeDepthM' | 'clearanceM' | 'features' | 'approachM' | 'depthMarginM' | 'arrivalFt' | 'shallowMarginM'
+  >,
 ): RoutePlan | null {
   if (plan.source === 'none' || plan.points.length < 2) return null
   if (req.features.coverage === 'none' || req.features.depthAreas.length === 0) return null
@@ -3561,8 +5055,16 @@ export function recheckPlan(
     (plan.movedStart != null && i === 0) || (plan.movedEnd != null && i === checks.length - 1)
   const cautions = legCautions(ctx, pts, checks, snapLeg)
   const charted = isCharted(cautions)
-  const legs: RouteLeg[] = plan.legs.map((leg, i) => ({
+  const gaps = corridorGaps(ctx, pts, cautions, snapLeg)
+  const legs: RouteLeg[] = plan.legs.map((old, i) => {
+    const leg: RouteLeg = { ...old }
+    delete leg.narrow
+    delete leg.corridorGapM
+    delete leg.corridorDepthM
+    return {
     ...leg,
+    ...(checks[i].narrow && cautions[i] === 'ok' ? { narrow: true } : {}),
+    ...corridorFields(gaps[i]),
     caution: cautions[i],
     minChartedDepthM: checks[i].minDepthM,
     minClearanceM: checks[i].minClearanceM,
@@ -3574,11 +5076,16 @@ export function recheckPlan(
     ],
     nearShoalDepthM: checks[i].nearShoal ? checks[i].nearShoalDepthM : null,
     nearShoalDistM: checks[i].nearShoal ? checks[i].nearShoalDistM : null,
-  }))
+    }
+  })
   const shortfall = charted ? [] : shortfallWarnings(ctx, legs, checks, snapLeg)
   // The old plan's own shortfall lines were about the old boat.
   const kept = plan.warnings.filter(
-    (w) => !/^No route keeps /.test(w) && !/^This is the safest route found/.test(w),
+    (w) =>
+      !/^(No route keeps |This shorter route does not keep )/.test(w) &&
+      !/^(This is the safest route found|It is shorter, not safe)/.test(w) &&
+      !/^The marked channel near leg \d+ is too narrow/.test(w) &&
+      !/^Legs? [\d, and]+ (runs? through a narrow channel|pass(es| as close as) )/.test(w),
   )
   const arrivalReq = arrivalSetting(req.arrivalFt ?? Math.max(...plan.arrivalFt, 0))
   return {
@@ -3587,7 +5094,7 @@ export function recheckPlan(
     source: charted ? 'charted' : 'best-effort',
     needsConfirm: !charted,
     confirmReason: charted ? null : (shortfall[0] ?? null),
-    warnings: [...shortfall, ...kept],
+    warnings: [...shortfall, ...narrowWarnings(ctx, legs), ...kept],
     arrivalFt: arrivalRadii(pts, arrivalReq),
   }
 }
@@ -3663,7 +5170,10 @@ function liveCtx(req: LiveChartRequest): Ctx | null {
     req.fromShallowZoneM ?? '', req.fromZoneM ?? '',
   ].join('|')
   if (liveCache && liveCache.features === f && liveCache.key === key) return liveCache.ctx
-  const ctx = makeCtx({ ...req, speedKn: 0 })
+  // The corridor is the planner's: live checks hold the boat to the rules a
+  // leg must keep (the depth margin, the channel's edge), not to the room
+  // the route was planned with.
+  const ctx = makeCtx({ ...req, speedKn: 0, shallowMarginM: 0 })
   liveCache = { features: f, key, ctx }
   return ctx
 }
@@ -3749,6 +5259,8 @@ export function liveShortcut(
     // cut it is already the room for the boat's error and wander, and a line
     // held to both refused every turn in a narrow channel.
     channelMargin: ctx.channelMargin,
+    // Nor the keep-to-the-middle rule of a narrow gut, for the same reason.
+    narrowMargin: ctx.narrowMargin && { ...ctx.narrowMargin, maxM: ctx.narrowMargin.maxM + acc },
   }
   const line = checkSegment(ix, p.x, p.y, g.x, g.y, opts)
   if (line.ok) return 'clear'
@@ -3797,6 +5309,8 @@ export function livePathShortcut(
     // cut it is already the room for the boat's error and wander, and a line
     // held to both refused every turn in a narrow channel.
     channelMargin: ctx.channelMargin,
+    // Nor the keep-to-the-middle rule of a narrow gut, for the same reason.
+    narrowMargin: ctx.narrowMargin && { ...ctx.narrowMargin, maxM: ctx.narrowMargin.maxM + acc },
   }
   const p = pts[0]
   const g = pts[pts.length - 1]
@@ -3827,6 +5341,7 @@ export function livePathShortcut(
       clearanceM: ctx.clearanceM + plainAcc,
       depthMarginM: ctx.depthMarginM + plainAcc,
       channelMargin: ctx.channelMargin,
+      narrowMargin: ctx.narrowMargin && { ...ctx.narrowMargin, maxM: ctx.narrowMargin.maxM + plainAcc },
     })
     if (plain.ok) return 'clear'
   }
@@ -3847,6 +5362,7 @@ function worstOf(a: SegmentCheck, b: SegmentCheck): SegmentCheck {
     approachDepth: a.approachDepth || b.approachDepth,
     approachClearance: a.approachClearance || b.approachClearance,
     nearShoal: a.nearShoal || b.nearShoal,
+    narrow: a.narrow || b.narrow,
     nearShoalDepthM: minN(a.nearShoalDepthM, b.nearShoalDepthM),
     nearShoalDistM: minN(a.nearShoalDistM, b.nearShoalDistM),
     shallow: a.shallow || b.shallow,

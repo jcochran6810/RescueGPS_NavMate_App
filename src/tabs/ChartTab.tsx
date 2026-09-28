@@ -15,16 +15,17 @@ import { useNavigation, type Place } from '@/store/useNavigation'
 import { useNavUi } from '@/store/useNavUi'
 import { useOnline } from '@/hooks/useOnline'
 import { toast } from '@/store/useToast'
-import { toDD, toDDM, toDMS } from '@/lib/coords'
+import { formatPlace } from '@/lib/placeText'
 import { useCoordFormat } from '@/store/useCoordFormat'
-import { CoordInput } from '@/components/CoordInput'
-import { Sheet } from '@/components/Sheet'
 import { formatDuration, formatEtaClock, haversineNM, NM_TO_METERS } from '@/lib/geo'
 import {
+  DEFAULT_SHALLOW_MARGIN_M,
   fuelForHours,
   readVesselField,
   safeDepthM,
+  shallowMarginOf,
   VESSEL_DEFAULTS,
+  VESSEL_LIMITS,
   type NewVessel,
   type Vessel,
 } from '@/lib/vessel'
@@ -47,13 +48,23 @@ import {
   planFailureView,
   routeMarks,
   routeSegments,
+  routeOptionsView,
   routeSummary,
   type FailureAction,
 } from '@/lib/navView'
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { NavCard } from '@/components/NavCard'
-import { AddWaypointButton } from '@/components/AddWaypoint'
-import { Button, Card, EmptyState, Field, Label, Segmented, Spinner } from '@/components/ui'
+import { PlanCourseSheet, PlanCoursePickBar } from '@/components/PlanCourseSheet'
+import { usePlanCourse } from '@/store/usePlanCourse'
+import { navigateTo } from '@/store/navigateTo'
+import { RouteActions, SavedRoutesSheet } from '@/components/RouteActions'
+import { openSavedRoute } from '@/store/openSavedRoute'
+import { useSavedRoutes } from '@/store/useSavedRoutes'
+import { EtaSpeedPicker } from '@/components/EtaSpeedPicker'
+import { useEtaSpeed } from '@/store/useEtaSpeed'
+import { resolveEtaSpeed } from '@/lib/etaSpeed'
+import { MPS_TO_KNOTS } from '@/lib/units'
+import { Button, Card, Field, Label, Segmented, Spinner } from '@/components/ui'
 
 /**
  * Chart plotter — pick a destination, see the route, press Start.
@@ -91,14 +102,6 @@ import { Button, Card, EmptyState, Field, Label, Segmented, Spinner } from '@/co
  */
 
 /** Which end of the route a chart tap is filling in. */
-type Picking = 'start' | 'dest' | null
-
-/** Which end a sheet is editing, and how. */
-type SheetKind =
-  | { end: 'start' | 'dest'; how: 'coords' }
-  | { end: 'dest'; how: 'waypoint' }
-  | null
-
 export function ChartTab() {
   const fmt = useFormat()
   const fix = useTracker((s) => s.fix)
@@ -140,21 +143,26 @@ export function ChartTab() {
   const navError = useNavigation((s) => s.error)
   const confirmed = useNavigation((s) => s.confirmed)
   const lastPlannedAt = useNavigation((s) => s.lastPlannedAt)
-  const setDestination = useNavigation((s) => s.setDestination)
-  const setOrigin = useNavigation((s) => s.setOrigin)
   const replan = useNavigation((s) => s.replan)
   const startNav = useNavigation((s) => s.start)
   const confirmBestEffort = useNavigation((s) => s.confirmBestEffort)
   const clearNav = useNavigation((s) => s.clear)
+  const routes = useNavigation((s) => s.routes)
+  const routeIdx = useNavigation((s) => s.routeIdx)
+  const shorterNote = useNavigation((s) => s.shorterNote)
+  const selectRoute = useNavigation((s) => s.selectRoute)
+  const etaMode = useEtaSpeed((s) => s.mode)
+  const etaCustomKn = useEtaSpeed((s) => s.customKn)
 
   const [base, setBase] = useState<MapBase>('chart')
   const [seamarks, setSeamarks] = useState(true)
-  const [picking, setPicking] = useState<Picking>(null)
-  const [sheet, setSheet] = useState<SheetKind>(null)
-  const [draft, setDraft] = useState({ lat: NaN, lon: NaN })
   const [editing, setEditing] = useState(false)
-  /** The "Change start" controls are open — planning ahead from elsewhere. */
-  const [changingStart, setChangingStart] = useState(false)
+  const [showSaved, setShowSaved] = useState(false)
+  const savedCount = useSavedRoutes((s) => s.routes.length)
+  const plan_ = usePlanCourse()
+  const planDispatch = plan_.dispatch
+  /** Pick a point on the chart for the plan being set up. */
+  const planPicking = plan_.open && plan_.method === 'map'
   const now = useNow(30_000)
   const setCardInView = useNavUi((s) => s.setCardInView)
   /** The steering card, at the very top while steering. */
@@ -252,6 +260,21 @@ export function ChartTab() {
     () => (plan ? legRows(plan.legs, { formatDepth: (m) => fmt.depth(m) }) : []),
     [plan, fmt],
   )
+  // The ETA speed the crew chose, for the route before it is started: the
+  // boat is usually tied up, so "current" says it is not moving and works
+  // the time at cruise.
+  const etaChoice = useMemo(
+    () =>
+      resolveEtaSpeed({
+        mode: etaMode,
+        sogKn: fix?.speed != null && Number.isFinite(fix.speed) ? fix.speed * MPS_TO_KNOTS : null,
+        cruiseKn: boat?.cruise_speed_kn ?? null,
+        topKn: boat?.max_speed_kn ?? null,
+        customKn: etaCustomKn,
+        unit: fmt.units.speed,
+      }),
+    [etaMode, fix?.speed, boat?.cruise_speed_kn, boat?.max_speed_kn, etaCustomKn, fmt],
+  )
   const summary = useMemo(
     () =>
       plan && routeOk
@@ -259,9 +282,25 @@ export function ChartTab() {
             cruiseKn: boat?.cruise_speed_kn ?? null,
             now: now.getTime(),
             formatLength: fmt.length,
+            eta: etaChoice,
           })
         : null,
-    [plan, routeOk, boat?.cruise_speed_kn, now, fmt],
+    [plan, routeOk, boat?.cruise_speed_kn, now, fmt, etaChoice],
+  )
+  // The routes on offer — only while they are the routes of the plan shown.
+  const offered = routes && plan && routes.some((r) => r.plan === plan) ? routes : null
+  const options = useMemo(
+    () => routeOptionsView(offered, routeIdx, { speedKn: etaChoice.speedKn, formatLength: fmt.length }),
+    [offered, routeIdx, etaChoice.speedKn, fmt],
+  )
+  const mapOptions = useMemo(
+    () =>
+      !steering && offered
+        ? options
+            .filter((o) => !o.selected)
+            .map((o) => ({ idx: o.idx, points: offered[o.idx].plan.points, chip: o.chip, flagged: o.flagged }))
+        : [],
+    [steering, offered, options],
   )
 
   /** Start steering; if the store refuses, say why. */
@@ -296,19 +335,33 @@ export function ChartTab() {
     )
   }
 
-  function chooseDest(place: Place) {
-    void setDestination(place)
+  /**
+   * Open "Plan a course" — at the step asked for, with what is set already
+   * filled in, so "Change" from the plotter changes one end and keeps the
+   * other.
+   */
+  function openPlan(step?: 'start' | 'dest') {
+    planDispatch({
+      type: 'open',
+      start: dest ? (origin ? { kind: 'place', place: origin, how: 'map' } : { kind: 'here' }) : null,
+      dest: dest ? { place: dest, how: 'map' } : null,
+    })
+    if (step) planDispatch({ type: 'change', end: step })
   }
-  function chooseStart(place: Place | null) {
-    void setOrigin(place)
+  /** "Create route": plan it; mid-passage, ask first (as "Navigate here" does). */
+  function createRoute(to: Place, from: Place | null) {
+    void navigateTo(to, undefined, from).then((ok) => {
+      if (!ok) return
+      window.scrollTo?.({ top: 0 })
+    })
   }
 
   /** What a button under "No route" does. */
   function act(a: FailureAction) {
     if (a === 'retry') void replan('retry')
     else if (a === 'edit-boat' || a === 'add-boat') setEditing(true)
-    else if (a === 'pick-dest') setPicking('dest')
-    else if (a === 'change-start') setChangingStart(true)
+    else if (a === 'pick-dest') openPlan('dest')
+    else if (a === 'change-start') openPlan('start')
   }
 
   const tide = useMemo(() => tideNow(now, tideExtremes), [now, tideExtremes])
@@ -484,6 +537,70 @@ export function ChartTab() {
             {/* The summary, Google-Maps style, and the one button that matters. */}
             <p className="tnum text-xl font-semibold text-slate-50">{summary.line}</p>
             {dest ? <p className="truncate text-xs text-slate-400">to {dest.label}</p> : null}
+            {summary.etaLabel ? (
+              <p
+                className={
+                  'tnum mt-0.5 text-xs font-semibold ' +
+                  (etaChoice.notMoving ? 'text-amber-200' : 'text-slate-300')
+                }
+              >
+                {summary.etaLabel}
+              </p>
+            ) : null}
+            <EtaSpeedPicker
+              cruiseKn={boat?.cruise_speed_kn ?? null}
+              topKn={boat?.max_speed_kn ?? null}
+              className="mt-2"
+            />
+
+            {options.length > 1 ? (
+              <div className="mt-3">
+                <span className="mb-1 block text-xs font-semibold tracking-wide text-slate-400 uppercase">
+                  Routes
+                </span>
+                <div role="radiogroup" aria-label="Routes to choose from" className="grid gap-1.5">
+                  {options.map((o) => (
+                    <button
+                      key={o.idx}
+                      type="button"
+                      role="radio"
+                      aria-checked={o.selected}
+                      onClick={() => selectRoute(o.idx)}
+                      className={
+                        'min-h-11 min-w-0 rounded-lg border px-3 py-1.5 text-left ' +
+                        (o.selected
+                          ? o.flagged
+                            ? 'border-red-400/70 bg-red-500/15'
+                            : 'border-sky-400/70 bg-sky-500/15'
+                          : 'border-white/10 opacity-70 hover:bg-white/5')
+                      }
+                    >
+                      <span className="tnum flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-semibold text-slate-100">
+                        <span>{o.name}</span>
+                        <span className="text-xs font-normal text-slate-300">{o.line}</span>
+                      </span>
+                      <span
+                        className={
+                          'block truncate text-xs ' + (o.flagged ? 'text-amber-200' : 'text-emerald-200')
+                        }
+                      >
+                        {o.chip}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Tap a faded line on the chart to compare it. A route that bends your
+                  boat’s rules needs “I understand” before Start.
+                </p>
+              </div>
+            ) : null}
+
+            {shorterNote && routeIdx === 0 ? (
+              <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                {shorterNote}
+              </p>
+            ) : null}
 
             {navError && status === 'preview' ? (
               <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
@@ -590,46 +707,71 @@ export function ChartTab() {
       {/* ---------------------------------------------------- where to */}
       {!steering && (
         <Card className="p-3">
-          {/* Called, not rendered as <EndRow/>: a component declared inside
-              another is a new type every render, so React would remount these
-              rows — and the chip you just tapped would lose focus. */}
-          {endRow({ end: 'dest', label: 'To', place: dest, onClear: clearNav })}
-          <div className="my-2 h-px bg-white/10" />
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              From
-            </span>
-            {!changingStart && !origin ? (
-              <button
-                onClick={() => setChangingStart(true)}
-                className="text-xs font-semibold text-slate-400 hover:text-slate-200"
-              >
-                Change start
-              </button>
-            ) : null}
-          </div>
-          <p className="truncate text-sm text-slate-100">
-            {fromLabel}
-            {origin ? (
-              <span className="tnum block truncate text-xs text-slate-400">
-                {formatPlace(origin, format)}
-              </span>
-            ) : null}
-          </p>
-          {origin ? (
-            <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
-              Planned from here, not from where you are — for planning ahead.
-              Steering still follows your live position.
+          <Button
+            variant={dest ? 'default' : 'primary'}
+            className="min-h-12 w-full text-base"
+            onClick={() => openPlan()}
+          >
+            Plan a course
+          </Button>
+          {dest ? (
+            <div className="mt-2 grid gap-1">
+              <div className="flex min-w-0 items-baseline justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">From </span>
+                  <span className="text-sm text-slate-100">{fromLabel}</span>
+                  {origin ? (
+                    <span className="tnum block truncate text-xs text-slate-400">{formatPlace(origin, format)}</span>
+                  ) : null}
+                </div>
+                <button
+                  onClick={() => openPlan('start')}
+                  className="min-h-9 shrink-0 text-xs font-semibold text-sky-300 hover:text-sky-200"
+                  aria-label="Change the starting point"
+                >
+                  Change
+                </button>
+              </div>
+              <div className="flex min-w-0 items-baseline justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">To </span>
+                  <span className="text-sm text-slate-100">{dest.label}</span>
+                  <span className="tnum block truncate text-xs text-slate-400">{formatPlace(dest, format)}</span>
+                </div>
+                <button
+                  onClick={() => openPlan('dest')}
+                  className="min-h-9 shrink-0 text-xs font-semibold text-sky-300 hover:text-sky-200"
+                  aria-label="Change the destination"
+                >
+                  Change
+                </button>
+              </div>
+              {origin ? (
+                <p className="mt-1 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
+                  Planned from here, not from where you are — for planning ahead.
+                  Steering still follows your live position.
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-slate-400">
+              Choose a starting point and a destination — or press and hold any map
+              and choose <strong>Navigate here</strong>.
             </p>
+          )}
+          {incident?.lkp_lat != null && incident?.lkp_lng != null ? (
+            <button
+              onClick={() =>
+                createRoute(
+                  { lat: incident.lkp_lat as number, lon: incident.lkp_lng as number, label: `LKP — ${incident.incident_name}` },
+                  null,
+                )
+              }
+              className="mt-2 min-h-9 rounded-lg border border-white/10 px-3 text-xs font-semibold text-slate-200 hover:bg-white/5"
+            >
+              Go to the LKP
+            </button>
           ) : null}
-          {changingStart || origin
-            ? endRow({
-                end: 'start',
-                label: '',
-                place: null,
-                onClear: () => chooseStart(null),
-              })
-            : null}
         </Card>
       )}
 
@@ -695,10 +837,15 @@ export function ChartTab() {
           base={base}
           seamarks={seamarks}
           navRoute={navRoute}
+          routeOptions={mapOptions}
+          onSelectRoute={status === 'preview' ? selectRoute : undefined}
           routeUnverified={routeOk && mustConfirm}
           units={units}
           incident={commandPicture}
           markers={[
+            ...(planPicking && plan_.pending
+              ? [{ id: 'pick', name: plan_.step === 'start' ? 'START?' : 'TO?', lat: plan_.pending.lat, lon: plan_.pending.lon }]
+              : []),
             ...(origin
               ? [{ id: 'start', name: 'START', lat: origin.lat, lon: origin.lon }]
               : []),
@@ -706,22 +853,13 @@ export function ChartTab() {
               ? [{ id: 'dest', name: dest.label, lat: dest.lat, lon: dest.lon }]
               : []),
           ]}
-          onPick={
-            picking
-              ? (p) => {
-                  const place = { ...p, label: 'Picked on chart' }
-                  if (picking === 'start') chooseStart(place)
-                  else chooseDest(place)
-                  setPicking(null)
-                }
-              : undefined
-          }
+          onPick={planPicking ? (p) => planDispatch({ type: 'tap', lat: p.lat, lon: p.lon }) : undefined}
           pickHint={
-            picking === 'start'
-              ? 'Tap the chart where you are starting from'
-              : picking === 'dest'
-                ? 'Tap the chart where you want to go'
-                : undefined
+            planPicking
+              ? plan_.step === 'start'
+                ? 'Tap the chart where you are starting from'
+                : 'Tap the chart where you want to go'
+              : undefined
           }
           height={steering ? 380 : 320}
           // No line to fit when no route was found: frame the boat (or the
@@ -730,11 +868,7 @@ export function ChartTab() {
           frame={failureFrame({ status, dest, origin, fix, lastPlannedAt })}
         />
 
-        {picking ? (
-          <Button variant="primary" className="mt-2 w-full" onClick={() => setPicking(null)}>
-            Cancel pick
-          </Button>
-        ) : null}
+        <PlanCoursePickBar />
       </Card>
 
       {/* ----------------------------------------------------------- route */}
@@ -800,8 +934,16 @@ export function ChartTab() {
                       (behind ? ' opacity-50' : '')
                     }
                   >
-                    <span className="tnum shrink-0 whitespace-nowrap text-slate-100">
-                      {leg.n}. {bearingText(leg.courseDeg, bearingPref, declination)}
+                    <span className="tnum min-w-0 shrink text-slate-100">
+                      <span className="whitespace-nowrap">
+                        {leg.n}. {bearingText(leg.courseDeg, bearingPref, declination)}
+                      </span>
+                      {plan.points[leg.n] ? (
+                        <span className="block text-[11px] font-normal [overflow-wrap:anywhere] text-slate-400">
+                          {leg.n === plan.legs.length ? 'Dest' : `WP ${leg.n}`}{' '}
+                          {formatPlace(plan.points[leg.n], format)}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="tnum text-right text-xs text-slate-300">
                       {fmt.length(leg.lengthNM)}
@@ -907,16 +1049,11 @@ export function ChartTab() {
               </p>
             )}
 
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <Button variant="ghost" onClick={() => void saveRoute()}>
-                Save as waypoints
+            {!steering ? (
+              <Button variant="ghost" className="mt-2 w-full" onClick={clearNav}>
+                Clear route
               </Button>
-              {!steering ? (
-                <Button variant="ghost" onClick={clearNav}>
-                  Clear route
-                </Button>
-              ) : null}
-            </div>
+            ) : null}
           </>
         ) : null}
 
@@ -925,175 +1062,44 @@ export function ChartTab() {
 
       {steering && boatCard}
 
-      {sheet ? (
-        <Sheet
-          label={
-            sheet.how === 'waypoint'
-              ? 'Choose a saved waypoint'
-              : sheet.end === 'start'
-                ? 'Enter the start position'
-                : 'Enter the destination'
-          }
-          onDismiss={() => setSheet(null)}
-        >
-          {sheet.how === 'coords' ? (
-            <>
-              <Label>{sheet.end === 'start' ? 'Start position' : 'Destination'}</Label>
-              <CoordInput
-                label={sheet.end === 'start' ? 'Start' : 'Destination'}
-                value={draft}
-                onChange={setDraft}
-                onUseFix={fix ? () => setDraft({ lat: fix.lat, lon: fix.lon }) : undefined}
-                fixLabel="Fill from my current position"
-              />
-              <div className="mt-3 mb-3 grid grid-cols-2 gap-2">
-                <Button variant="ghost" onClick={() => setSheet(null)}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  disabled={!Number.isFinite(draft.lat) || !Number.isFinite(draft.lon)}
-                  onClick={() => {
-                    const place = { lat: draft.lat, lon: draft.lon, label: 'Typed position' }
-                    if (sheet.end === 'start') chooseStart(place)
-                    else chooseDest(place)
-                    setSheet(null)
-                  }}
-                >
-                  Use this position
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <Label>Saved waypoints</Label>
-                <AddWaypointButton label="Add waypoint" compact />
-              </div>
-              {waypoints.length === 0 ? (
-                <EmptyState>No saved waypoints in this scope yet.</EmptyState>
-              ) : (
-                <div className="mb-3 space-y-1">
-                  {waypoints.slice(0, 60).map((w) => (
-                    <button
-                      key={w.id}
-                      onClick={() => {
-                        chooseDest({ lat: w.lat, lon: w.lon, label: w.name })
-                        setSheet(null)
-                      }}
-                      className="min-h-11 w-full rounded-lg border border-white/10 px-3 py-2 text-left hover:bg-white/5"
-                    >
-                      <span className="block text-sm text-slate-100">{w.name}</span>
-                      <span className="tnum block text-xs text-slate-400">
-                        {formatPlace(w, format)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </Sheet>
+      {/* Save and share, at the very bottom, whenever there is a route. */}
+      {plan && routeOk && dest ? (
+        <RouteActions
+          plan={plan}
+          dest={dest}
+          origin={origin}
+          boatName={boat?.name?.trim() || null}
+          safeDepthM={useNavigation.getState().plannedFor?.safeDepthM ?? null}
+          clearanceM={useNavigation.getState().plannedFor?.clearanceM ?? null}
+          routeIdx={routeIdx}
+          onSaveWaypoints={() => void saveRoute()}
+          onOpenSaved={() => setShowSaved(true)}
+        />
+      ) : null}
+
+      <PlanCourseSheet
+        waypoints={waypoints}
+        hasFix={!!fix}
+        onCreate={(to, from) => createRoute(to, from)}
+        onOpenSaved={savedCount > 0 ? () => {
+          planDispatch({ type: 'cancel' })
+          setShowSaved(true)
+        } : undefined}
+      />
+      {showSaved ? (
+        <SavedRoutesSheet
+          onDismiss={() => setShowSaved(false)}
+          onOpen={(r) => {
+            setShowSaved(false)
+            void openSavedRoute(r).then((ok) => {
+              if (ok) window.scrollTo?.({ top: 0 })
+            })
+          }}
+        />
       ) : null}
     </div>
   )
 
-  /**
-   * One end of the route: where it is, and the ways to set it.
-   *
-   * The destination row is the primary one. The start row only appears once
-   * the crew asks to "Change start" — the route starts from the boat's live
-   * position unless they are planning ahead from somewhere else.
-   */
-  function endRow({
-    end,
-    label,
-    place,
-    onClear,
-  }: {
-    end: 'start' | 'dest'
-    label: string
-    place: Place | null
-    onClear: () => void
-  }) {
-    const picked = picking === end
-    const lkp =
-      end === 'dest' && incident?.lkp_lat != null && incident?.lkp_lng != null
-        ? incident
-        : null
-
-    return (
-      <div>
-        {label ? (
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              {label}
-            </span>
-            {place ? (
-              <button
-                onClick={onClear}
-                className="text-xs font-semibold text-slate-400 hover:text-slate-200"
-              >
-                Clear
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
-        {end === 'dest' ? (
-          <>
-            <p className={'truncate text-sm ' + (place ? 'text-slate-100' : 'text-slate-400')}>
-              {place ? place.label : 'Where to?'}
-            </p>
-            {place ? (
-              <p className="tnum truncate text-xs text-slate-400">{formatPlace(place, format)}</p>
-            ) : null}
-          </>
-        ) : null}
-
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {end === 'start' ? (
-            <Chip
-              active={origin === null}
-              onClick={() => {
-                chooseStart(null)
-                setChangingStart(false)
-              }}
-            >
-              My location
-            </Chip>
-          ) : null}
-          <Chip active={picked} onClick={() => setPicking(picked ? null : end)}>
-            {picked ? 'Tap chart…' : 'Map'}
-          </Chip>
-          <Chip
-            onClick={() => {
-              setDraft(place ? { lat: place.lat, lon: place.lon } : { lat: NaN, lon: NaN })
-              setSheet({ end, how: 'coords' })
-            }}
-          >
-            Coords
-          </Chip>
-          {end === 'dest' && waypoints.length > 0 ? (
-            <Chip onClick={() => setSheet({ end: 'dest', how: 'waypoint' })}>Waypoint</Chip>
-          ) : null}
-          {lkp ? (
-            <Chip
-              onClick={() =>
-                chooseDest({
-                  lat: lkp.lkp_lat as number,
-                  lon: lkp.lkp_lng as number,
-                  label: `LKP — ${lkp.incident_name}`,
-                })
-              }
-            >
-              LKP
-            </Chip>
-          ) : null}
-        </div>
-      </div>
-    )
-  }
 }
 
 const ACTION_LABEL: Record<FailureAction, string> = {
@@ -1140,43 +1146,8 @@ function RouteLegend() {
 }
 
 /** A small pill in an end row. Same shape as the app's segmented options. */
-function Chip({
-  children,
-  onClick,
-  active = false,
-}: {
-  children: React.ReactNode
-  onClick: () => void
-  active?: boolean
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={
-        'min-h-9 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ' +
-        (active
-          ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-          : 'border-white/10 text-slate-300 hover:bg-white/5')
-      }
-    >
-      {children}
-    </button>
-  )
-}
 
 /** A position on one line, in whichever format the crew reads. */
-function formatPlace(
-  p: { lat: number; lon: number },
-  format: 'dd' | 'ddm' | 'dms',
-): string {
-  if (format === 'dd') return `${toDD(p.lat)}, ${toDD(p.lon)}`
-  if (format === 'dms') {
-    return `${toDMS(p.lat, 'lat')}  ${toDMS(p.lon, 'lon')}`
-  }
-  return `${toDDM(p.lat, 'lat')}  ${toDDM(p.lon, 'lon')}`
-}
-
 /* -------------------------------------------------------------------------
  * The boat
  * ---------------------------------------------------------------------- */
@@ -1202,6 +1173,8 @@ function VesselForm({
     max: vessel ? String(vessel.max_speed_kn) : '',
     burn: vessel && vessel.fuel_burn_gph > 0 ? String(vessel.fuel_burn_gph) : '',
     clearanceFt: vessel ? (vessel.clearance_m * 3.280839895).toFixed(0) : '',
+    shallowFt:
+      vessel && vessel.shallow_margin_m != null ? (vessel.shallow_margin_m * 3.280839895).toFixed(0) : '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -1235,6 +1208,10 @@ function VesselForm({
       fuel_burn_gph: readVesselField(form.burn, 'fuel_burn_gph') ?? 0,
       under_keel_margin_m: ft(form.marginFt, VESSEL_DEFAULTS.under_keel_margin_m),
       clearance_m: ft(form.clearanceFt, VESSEL_DEFAULTS.clearance_m),
+      shallow_margin_m: Math.min(
+        VESSEL_LIMITS.shallow_margin_m.max,
+        ft(form.shallowFt, vessel ? shallowMarginOf(vessel) : DEFAULT_SHALLOW_MARGIN_M),
+      ),
       team_id: teamId,
     }
 
@@ -1316,6 +1293,14 @@ function VesselForm({
           onChange={set('clearanceFt')}
         />
       </div>
+      <Field
+        label="Keep this far from shallows (ft)"
+        hint="Routes keep at least this far from water too shallow for the boat, and to the middle of a marked channel. Legs where no route can are flagged."
+        inputMode="decimal"
+        placeholder={(DEFAULT_SHALLOW_MARGIN_M * 3.280839895).toFixed(0)}
+        value={form.shallowFt}
+        onChange={set('shallowFt')}
+      />
       <Field
         label="Fuel burn at cruise (gal/h) — optional"
         inputMode="decimal"

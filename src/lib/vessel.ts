@@ -41,6 +41,15 @@ export interface Vessel {
   under_keel_margin_m: number
   /** Lateral stand-off kept from any charted hazard, metres. */
   clearance_m: number
+  /**
+   * "Keep ___ from shallows": how far outside marked channels the planned
+   * route keeps from water too shallow for the boat, metres (inside a
+   * channel it keeps to the middle). Optional — a row written before the
+   * setting existed, or a database without the column, has none, and the
+   * default (`DEFAULT_SHALLOW_MARGIN_M`, 100 ft) is used. See
+   * `shallowMarginOf`.
+   */
+  shallow_margin_m?: number | null
   /** Soft delete (N10): set instead of removing the row. Never shown. */
   deleted_at?: string | null
   created_at: string
@@ -60,7 +69,7 @@ export type NewVessel = Pick<
   | 'fuel_burn_gph'
   | 'under_keel_margin_m'
   | 'clearance_m'
-> & { team_id?: string | null }
+> & { team_id?: string | null; shallow_margin_m?: number | null }
 
 /**
  * Defaults sized for a typical inshore rescue boat rather than left at zero.
@@ -81,6 +90,16 @@ export const VESSEL_DEFAULTS: NewVessel = {
   clearance_m: 30,
 }
 
+/** "Keep 100 ft from shallows" — the default, metres (routing.ts `DEFAULT_SHALLOW_MARGIN_M`). */
+export const DEFAULT_SHALLOW_MARGIN_M = 100 * 0.3048
+
+/** The boat's "keep ___ from shallows", metres: its own setting, or the default. */
+export function shallowMarginOf(v: Pick<Vessel, 'shallow_margin_m'> | null | undefined): number {
+  const m = v?.shallow_margin_m
+  if (m == null || !Number.isFinite(m) || m < 0) return DEFAULT_SHALLOW_MARGIN_M
+  return Math.min(VESSEL_LIMITS.shallow_margin_m.max, m)
+}
+
 /** Sensible bounds. Outside these the number is a typo, not a boat. */
 export const VESSEL_LIMITS = {
   draft_m: { min: 0.05, max: 15 },
@@ -92,6 +111,7 @@ export const VESSEL_LIMITS = {
   fuel_burn_gph: { min: 0, max: 500 },
   under_keel_margin_m: { min: 0, max: 10 },
   clearance_m: { min: 0, max: 500 },
+  shallow_margin_m: { min: 0, max: 300 },
 } as const
 
 /**

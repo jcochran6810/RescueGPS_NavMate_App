@@ -379,6 +379,22 @@ describe('queryLayer', () => {
     expect(r.features.length).toBe(16)
   })
 
+  it('asks a failed piece once more before giving it up (2026-09-28)', async () => {
+    // A piece of the harbour chart that failed once on a marginal link and
+    // was given up on left a hole the planner routed 8 NM round.
+    let calls = 0
+    const fetcher: Fetcher = async () => {
+      calls++
+      // Both formats of the first try fail; the retry answers.
+      if (calls <= 2) throw new Error('Chart service returned 502')
+      return { features: [{ geometry: {}, properties: { DRVAL1: 3 } }] }
+    }
+    const r = await queryLayer('https://example.test/MapServer', 40, BOX, fetcher)
+    expect(r.complete).toBe(true)
+    expect(r.features).toHaveLength(1)
+    expect(calls).toBe(3)
+  })
+
   it('treats a dead service as incomplete, never as empty water', async () => {
     const fetcher: Fetcher = async () => {
       throw new Error('403')
@@ -1647,6 +1663,32 @@ describe('fetchChartArea — detail round the ends', () => {
     expect(f.regions[0]).toEqual({ bounds: LONG_BOX, bands: ['approach', 'coastal', 'general'] })
     expect(f.regions[1].bands).toEqual(['harbour'])
     expect(inside(START, f.regions[1].bounds)).toBe(true)
+  })
+
+  it('does not record a band whose depths came back with a piece missing, so it is asked again', async () => {
+    // One quadrant of the harbour depth query fails every time: the band
+    // "answered", but with a hole in its depths — the hole the crew's phone
+    // planned round (2026-09-28). The data that did come is used, the band
+    // is named incomplete, and it is not recorded as read.
+    const SHORT_BOX: ChartBounds = { minLat: 29.3, minLon: -94.82, maxLat: 29.34, maxLon: -94.78 }
+    const base = galveston([])
+    const fetcher: Fetcher = async (url) => {
+      if (url.includes('enc_harbour') && url.includes('/40/query')) {
+        const env = envelopeOf(url)!
+        const whole = env.maxLat - env.minLat > (SHORT_BOX.maxLat - SHORT_BOX.minLat) * 0.9
+        if (whole) return { exceededTransferLimit: true, features: [] }
+        // The south-west quadrant never answers.
+        if (env.minLon < SHORT_BOX.minLon + 0.001 && env.minLat < SHORT_BOX.minLat + 0.001) {
+          throw new Error('Chart service returned 502')
+        }
+      }
+      return base(url)
+    }
+    const f = await fetchChartArea(SHORT_BOX, { fetcher })
+    expect(f.coverage).toBe('partial')
+    expect(f.incompleteBands).toEqual(['harbour'])
+    expect(f.depthAreas.some((d) => d.minDepthM === 12)).toBe(true)
+    expect(f.regions[0].bands).not.toContain('harbour')
   })
 
   it('reports a detail band that failed as partial, naming it, and keeps the rest', async () => {

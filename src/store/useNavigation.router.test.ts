@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { ChartFeatures, Ring } from '@/lib/routing'
+import type { ChartFeatures, Ring, RoutePlan } from '@/lib/routing'
+import { readFileSync } from 'node:fs'
 import { DETAIL_HALF_NM } from '@/lib/chart'
 import type { Fix } from '@/lib/types'
 import type { Vessel } from '@/lib/vessel'
@@ -91,7 +92,7 @@ vi.mock('@/store/useTeams', async () => {
   return { useTeams: create(() => ({ activeTeamId: null as string | null })) }
 })
 
-import { chartStateAt, planningBounds, planRoute } from '@/lib/routing'
+import { chartStateAt, planningBounds } from '@/lib/routing'
 import { loadGalveston } from '@/lib/__fixtures__/galveston'
 import { bearingDeg, haversineNM } from '@/lib/geo'
 import { steerCourse } from '@/lib/navigate'
@@ -164,8 +165,10 @@ beforeEach(() => {
   useNavigation.getState().clear()
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
+  const { useVessels } = await import('@/store/useVessels')
+  ;(useVessels as unknown as { setState: (p: object) => void }).setState({ boat: BOAT })
 })
 
 describe('navigation store with the real router', () => {
@@ -255,7 +258,13 @@ describe('navigation store with the real router', () => {
   })
 
   it('says "slow down" when the fix is poorer than the margin AND the shallows are that close to the line ahead (F3)', async () => {
-    // A 1 m shoal 25 m east of the line, 100–500 m ahead of the boat.
+    // A 1 m shoal 25 m east of the line, 100–500 m ahead of the boat — a
+    // boat whose "keep ___ from shallows" is off, so the line runs there
+    // (with the default 100 ft the route keeps clear of it, as it should).
+    const { useVessels } = await import('@/store/useVessels')
+    ;(useVessels as unknown as { setState: (p: object) => void }).setState({
+      boat: { ...BOAT, shallow_margin_m: 0 },
+    })
     chart.features = sea({
       depthAreas: [
         { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
@@ -276,6 +285,41 @@ describe('navigation store with the real router', () => {
     // Past the shoal, open water ahead: it goes away.
     useNavigation.getState().onFix({ ...fixAt(at(0, 0)), accuracy: 20, timestamp: Date.now() + 2 })
     expect(useNavigation.getState().gpsSlow).toBe(false)
+  })
+
+  it('says "slow down for the turn" well before a turn the chart leaves no room to make at speed (rc8 F2)', async () => {
+    // A T-junction: a 120 m channel east–west, a 70 m one north off it. At
+    // 30 kn the ~90° turn into the side channel swings a boat onto the
+    // shoal beyond it, and there is no room to split it: the plan says so,
+    // and the card asks for less speed well before the mark.
+    const { useVessels } = await import('@/store/useVessels')
+    ;(useVessels as unknown as { setState: (p: object) => void }).setState({
+      boat: { ...BOAT, cruise_speed_kn: 30 },
+    })
+    chart.features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 0.5, rings: [rect(-6000, 60, -35, 6000)] },
+        { minDepthM: 0.5, rings: [rect(35, 60, 6000, 6000)] },
+        { minDepthM: 0.5, rings: [rect(-6000, -6000, 6000, -60)] },
+      ],
+    })
+    useTracker.setState({ fix: fixAt(at(-1500, 0)) })
+    await useNavigation.getState().setDestination({ ...at(0, 900), label: 'Up the creek' }, null)
+    const plan = useNavigation.getState().plan!
+    expect(plan.source).toBe('charted')
+    expect(plan.slowTurns).toEqual([1])
+    expect(plan.warnings).toContain('Slow down for the turn at waypoint 1: at 30 kn there is not room there to turn at speed.')
+    expect(useNavigation.getState().start()).toBe(true)
+    const run = (x: number, t: number) =>
+      useNavigation.getState().onFix({ ...fixAt(at(x, 0)), speed: 15, heading: 90, timestamp: Date.now() + t })
+    // Far off: nothing yet.
+    run(-1200, 1000)
+    expect(useNavigation.getState().targetIdx).toBe(1)
+    expect(useNavigation.getState().turnSlow).toBe(false)
+    // 180 m out at 15 m/s — 12 s before the mark, time to come off the plane.
+    run(-180, 2000)
+    expect(useNavigation.getState().turnSlow).toBe(true)
   })
 
   it('says the boat MAY be in the shallows when they lie within its GPS error (M1, drift 109)', async () => {
@@ -390,20 +434,22 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
    * fits (F8), which draws this passage differently; the corner C1 is about
    * is reproduced on the route without it, put in place of the store's own.
    */
-  async function c1Plan() {
-    await useNavigation.getState().setDestination(TO, null)
-    const plan = planRoute({
-      from: useNavigation.getState().plan!.points[0],
-      to: TO,
-      safeDepthM: SAFE_M,
-      clearanceM: 5,
-      speedKn: 12,
-      features: galveston,
-      arrivalFt: 200,
-      planBufferM: 0,
-    })
+  /** A plan pinned as it was drawn when the test was written, in place of the store's own. */
+  function pinned(name: string): RoutePlan {
+    const plan = JSON.parse(readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), 'utf8')) as RoutePlan
+    expect(plan.points[0].lat).toBeCloseTo(useNavigation.getState().plan!.points[0].lat, 9)
     useNavigation.setState({ plan })
     return plan
+  }
+  async function c1Plan() {
+    await useNavigation.getState().setDestination(TO, null)
+    // Pinned (2026-09-28): the planner now draws the shortest route that
+    // keeps the rules, which on this passage no longer has the 46° corner at
+    // WP10 that C1 is about (it is 10 points, not 13). The corner, and the
+    // guard against cutting it, are what these tests pin — so the route is
+    // the one the planner drew when C1 was found, exactly (c1-plan.json,
+    // planRoute at 8f21d4d with this request), not a fresh plan.
+    return pinned('c1-plan.json')
   }
   const card = (f: Fix) => {
     const s = useNavigation.getState()
@@ -576,7 +622,10 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
       const S5_TO = { lat: 29.387957, lon: -94.830768, label: 'seed 5' }
       useTracker.setState({ fix: fixAt(S5_FROM), arrivalFt: 200 })
       await useNavigation.getState().setDestination(S5_TO, null)
-      const plan = useNavigation.getState().plan!
+      // Pinned, like `c1Plan` (2026-09-28): the turn this test is about is on
+      // the route the planner drew when seed 5 was found (seed5-plan.json);
+      // today's shortest route rounds that corner differently.
+      const plan = pinned('seed5-plan.json')
       expect(plan.source).toBe('charted')
       expect(useNavigation.getState().start()).toBe(true)
       // The turn the re-check grounded at: WP3 → WP4, 75° to port.
@@ -628,7 +677,9 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
       chart.features = galveston
       useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
       await useNavigation.getState().setDestination(TO, null)
-      const plan = useNavigation.getState().plan!
+      // Pinned, like `c1Plan` (2026-09-28): the route the store drew for this
+      // boat when the test was written (c1-buffered-plan.json).
+      const plan = pinned('c1-buffered-plan.json')
       expect(useNavigation.getState().start()).toBe(true)
       // Waypoint 3 → 4 is a shallow turn in open water: 190 ft short of
       // WP3, on the inbound leg, the line on to WP4 is clear.

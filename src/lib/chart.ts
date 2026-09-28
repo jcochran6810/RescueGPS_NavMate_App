@@ -828,7 +828,14 @@ export async function queryLayer(
   fetcher: Fetcher = defaultFetcher,
   depth = 0,
 ): Promise<LayerResult> {
-  const got = await runQuery(service, layerId, b, fetcher)
+  let got = await runQuery(service, layerId, b, fetcher)
+  // One more try before a piece of the chart is given up on. A query that
+  // failed once on a marginal link usually answers the second time, and a
+  // piece given up on is a hole in the chart the planner routes round —
+  // 17.7 NM round the South Boat Cut instead of 9.8 NM through Five Mile
+  // Cut, with the missing harbour cell read from the coastal chart's "0 m"
+  // for the whole bay (2026-09-28).
+  if ('failed' in got) got = await runQuery(service, layerId, b, fetcher)
   // A failure used to return zero features and nothing else, which is
   // indistinguishable from water with nothing charted in it. It is not the
   // same thing, and on the water the difference is a straight line through a
@@ -944,6 +951,19 @@ interface FeatureSink {
 }
 
 /**
+ * A channel's charted name (S-57 OBJNAM), when it has a real one — so a crew
+ * can be told "via Five Mile Cut Channel". Dredged areas are charted in
+ * pieces named for the reach and the quarter of the cut ("Five Mile Cut
+ * LOQ"); the quarter is dropped.
+ */
+function channelName(f: RawFeature): { name?: string } {
+  const raw = f.properties?.OBJNAM ?? f.properties?.objnam
+  if (typeof raw !== 'string') return {}
+  const name = raw.replace(/\s+(LOQ|ROQ|LIQ|RIQ|MH)$/i, '').trim()
+  return name && name.toLowerCase() !== 'null' ? { name: name.slice(0, 80) } : {}
+}
+
+/**
  * Sort one feature into the shapes the router uses.
  *
  * Dispatch is on the geometry the feature actually has, not on the layer's
@@ -958,7 +978,7 @@ function readFeature(role: ChartRole, f: RawFeature, sink: FeatureSink): void {
       const rings = ringsOf(f.geometry)
       if (d !== null && rings.length > 0) sink.depthAreas.push({ minDepthM: d, rings })
       if (role === 'dredged' && rings.length > 0) {
-        sink.channels.push({ kind: 'dredged', rings })
+        sink.channels.push({ kind: 'dredged', rings, ...channelName(f) })
       }
       return
     }
@@ -968,7 +988,7 @@ function readFeature(role: ChartRole, f: RawFeature, sink: FeatureSink): void {
       // refuses everywhere else. It is preferable water, not usable water
       // — a depth area has to say so independently.
       const rings = ringsOf(f.geometry)
-      if (rings.length > 0) sink.channels.push({ kind: 'fairway', rings })
+      if (rings.length > 0) sink.channels.push({ kind: 'fairway', rings, ...channelName(f) })
       return
     }
     case 'bridge':
@@ -1037,7 +1057,7 @@ function readFeature(role: ChartRole, f: RawFeature, sink: FeatureSink): void {
 export async function fetchChartFeatures(
   bounds: ChartBounds,
   options: { fetcher?: Fetcher; band?: EncBand } = {},
-): Promise<ChartFeatures & { lines: LineHazard[] }> {
+): Promise<ChartFeatures & { lines: LineHazard[]; depthIncomplete?: boolean }> {
   const fetcher = options.fetcher ?? defaultFetcher
   const band = options.band ?? bandForSpan(boundsSpanNM(bounds))
 
@@ -1093,9 +1113,15 @@ export async function fetchChartFeatures(
 
   const sink: FeatureSink = { depthAreas: [], channels: [], land: [], hazards: [], lines: [] }
   let complete = true
+  // Every depth-carrying layer came back whole — no piece failed, none hit
+  // the transfer limit. A band without it is a band with holes in its depths.
+  let depthComplete = true
 
   for (const { layer, features, complete: ok } of results) {
-    if (!ok) complete = false
+    if (!ok) {
+      complete = false
+      if (DEPTH_ROLES.includes(layer.role)) depthComplete = false
+    }
     for (const f of features) readFeature(layer.role, f, sink)
   }
 
@@ -1123,6 +1149,7 @@ export async function fetchChartFeatures(
     hazards,
     lines,
     coverage: complete ? 'full' : 'partial',
+    ...(depthComplete ? {} : { depthIncomplete: true }),
   }
 }
 
@@ -1510,6 +1537,9 @@ export async function fetchChartArea(
   const lines: LineHazard[] = []
   const used = new Set<string>()
   const failed = new Set<string>()
+  // Bands whose depths came back with a piece missing (a query that failed
+  // twice, or one that hit the transfer limit at the deepest split).
+  const incomplete = new Set<string>()
   let partial = false
 
   const newDepth = onceEach<DepthPolygon>(
@@ -1532,6 +1562,7 @@ export async function fetchChartArea(
     for (const c of base.channels) if (newChannel(c)) channels.push(c)
     for (const h of base.hazards) if (newHazard(h)) hazards.push(h)
     if (base.coverage === 'partial' && !(base.failedBands?.length)) partial = true
+    for (const id of base.incompleteBands ?? []) incomplete.add(id)
     for (const r of have) for (const id of r.bands) used.add(id)
   }
 
@@ -1558,6 +1589,7 @@ export async function fetchChartArea(
     for (const c of f.channels) if (newChannel(c)) channels.push(c)
     for (const h of f.hazards) if (newHazard(h)) hazards.push(h)
     if (f.coverage === 'partial') partial = true
+    if (f.depthIncomplete) incomplete.add(band.id)
     used.add(band.id)
   }
 
@@ -1569,7 +1601,12 @@ export async function fetchChartArea(
         .filter(
           (band) =>
             already(region, band) ||
-            settled.some((s) => s.region === region && s.band === band && s.error == null),
+            // A band read with holes in its depths is not "read": the next
+            // request for this box asks it again rather than planning on the
+            // holes for the rest of the session.
+            settled.some(
+              (s) => s.region === region && s.band === band && s.error == null && !s.features?.depthIncomplete,
+            ),
         )
         .map((band) => band.id),
   }))
@@ -1613,6 +1650,7 @@ export async function fetchChartArea(
     // the same warning.
     coverage: partial || failedBands.length > 0 ? 'partial' : 'full',
     failedBands,
+    ...(incomplete.size > 0 ? { incompleteBands: inOrder(incomplete) } : {}),
     bands: inOrder(used),
     regions,
   }

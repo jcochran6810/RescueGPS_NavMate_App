@@ -4,6 +4,7 @@ import { useTeams } from '@/store/useTeams'
 import { useTracker } from '@/store/useTracker'
 import { useVessels } from '@/store/useVessels'
 import { routeArrivalFt } from '@/lib/steer'
+import { shallowMarginOf } from '@/lib/vessel'
 
 /**
  * What drives the route while the crew is looking at something else.
@@ -52,6 +53,7 @@ export function planSettingsKey(): string {
     boat.draft_m,
     boat.under_keel_margin_m,
     boat.clearance_m,
+    shallowMarginOf(boat),
     boat.cruise_speed_kn,
   ].join('|')
 }

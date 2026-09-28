@@ -22,6 +22,8 @@ import { useNavigation } from '@/store/useNavigation'
 export async function navigateTo(
   place: GoToPlace,
   confirmReplace: (message: string) => boolean = defaultConfirm,
+  /** Where from: null (the default) is the boat's live position — "Plan a course" may give a place. */
+  origin: { lat: number; lon: number; label: string } | null = null,
 ): Promise<boolean> {
   const s = useNavigation.getState()
   if (s.status === 'navigating') {
@@ -29,7 +31,10 @@ export async function navigateTo(
       `Stop the route to ${s.dest?.label ?? 'your destination'} and go to ${place.label} instead?`
     if (!confirmReplace(message)) return false
   }
-  await s.setDestination({ lat: place.lat, lon: place.lon, label: place.label }, null)
+  await s.setDestination(
+    { lat: place.lat, lon: place.lon, label: place.label },
+    origin ? { lat: origin.lat, lon: origin.lon, label: origin.label } : null,
+  )
   return true
 }
 

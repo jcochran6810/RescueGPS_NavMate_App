@@ -41,6 +41,8 @@ import {
 } from './navigate'
 import { depthMarginFor, type LegCaution, type RouteLeg, type RoutePlan } from './routing'
 import type { LatLon } from './search'
+import { resolveEtaSpeed, type EtaSpeed, type EtaSpeedMode } from './etaSpeed'
+import type { SpeedUnit } from './units'
 import {
   FT_PER_NM,
   formatNavBearing,
@@ -169,26 +171,47 @@ export interface RouteSummary {
   eta: ClockText | null
   /** "12.4 NM · 38 min · ETA 14:52" */
   line: string
+  /** What speed the time is at — "ETA at 22 kn (top)" — when a choice was given. */
+  etaLabel: string | null
+}
+
+/**
+ * "ETA at 22 kn (top)" — or the whole note when the chosen speed could not be
+ * used ("Not moving — ETA at cruise 25 kn"). Null without a choice.
+ */
+export function etaLabelOf(choice: EtaSpeed | null | undefined): string | null {
+  if (!choice) return null
+  if (choice.note) return choice.note
+  return choice.label ? `ETA ${choice.label}` : null
 }
 
 /** The one line under a planned route, Google-Maps style. */
 export function routeSummary(
   plan: Pick<RoutePlan, 'totalNM' | 'hours'>,
-  opts: { cruiseKn?: number | null; now: number; formatLength?: LengthFormatter },
+  opts: {
+    cruiseKn?: number | null
+    now: number
+    formatLength?: LengthFormatter
+    /**
+     * The crew's ETA speed choice, resolved (`resolveEtaSpeed`). When given
+     * it decides the time; `cruiseKn` is the older default.
+     */
+    eta?: EtaSpeed | null
+  },
 ): RouteSummary {
   const fmt = opts.formatLength ?? defaultLength
   const distance = fmt(plan.totalNM)
-  const cruise = opts.cruiseKn
+  const cruise = opts.eta ? opts.eta.speedKn : opts.cruiseKn
   const hours =
     cruise != null && Number.isFinite(cruise) && cruise > 0
       ? plan.totalNM / cruise
-      : Number.isFinite(plan.hours) && plan.hours > 0
+      : !opts.eta && Number.isFinite(plan.hours) && plan.hours > 0
         ? plan.hours
         : null
   const duration = hours != null ? formatDuration(hours) : null
   const eta = hours != null ? formatClock(opts.now + hours * 3_600_000, opts.now) : null
   const line = [distance, duration, etaText(eta)].filter(Boolean).join(' · ')
-  return { distance, duration, eta, line }
+  return { distance, duration, eta, line, etaLabel: etaLabelOf(opts.eta) }
 }
 
 export interface LegRow {
@@ -219,6 +242,9 @@ type LegLike = Pick<RouteLeg, 'n' | 'courseDeg' | 'lengthNM' | 'caution'> &
       | 'nearShoalDepthM'
       | 'nearShoalDistM'
       | 'unverified'
+      | 'narrow'
+      | 'corridorGapM'
+      | 'corridorDepthM'
     >
   >
 
@@ -282,6 +308,15 @@ export function legNote(
         : null
     const shallow = reasons.includes('depth') || reasons.length === 0 ? 'Check depth here' : null
     return [shallow, close].filter(Boolean).join(' · ')
+  }
+  // Sound, but closer to the shallows than the crew's margin — where no
+  // route keeps it: say how close, never a silent squeeze.
+  if (leg.narrow) {
+    if (leg.corridorGapM != null && Number.isFinite(leg.corridorGapM)) {
+      const water = leg.corridorDepthM != null ? depthWords(leg.corridorDepthM, depth) : 'shallow water'
+      return `Narrow — passes ${feetFirst(leg.corridorGapM)} from ${water}, keep a lookout`
+    }
+    return 'Narrow — keep to the middle'
   }
   return null
 }
@@ -439,6 +474,20 @@ export interface NavCardInput {
    */
   routeSpeedKn?: number | null
   /**
+   * The crew's ETA speed choice (`etaSpeed.ts`): current, cruise, top or
+   * custom. Absent: the older rule — made good, else over the ground, else
+   * cruise below a knot.
+   */
+  etaMode?: EtaSpeedMode
+  /** The boat's top speed, knots (`max_speed_kn`). */
+  topKn?: number | null
+  /** The crew's custom ETA speed, knots. */
+  customKn?: number | null
+  /** Speed made good along the route with no floor (`madeGoodKn`) — tells "stopped" from "not known yet". */
+  madeGoodKn?: number | null
+  /** The crew's speed unit, for the ETA label. */
+  speedUnit?: SpeedUnit
+  /**
    * The smaller of the boat's safety margins, metres — its stand-off and the
    * depth margin beside the track (`safetyMarginM`). A fix claiming more
    * error than this is said so on the card. Null/absent: not known.
@@ -570,6 +619,14 @@ export interface NavCardView {
   eta: ClockText | null
   /** How the time was worked: "at 14.2 kn" or "at cruise 20 kn". */
   speedNote: string | null
+  /**
+   * With an ETA speed choice (`NavCardInput.etaMode`): the label the ETA is
+   * shown under — "ETA at 22 kn (top)", or "Not moving — ETA at cruise
+   * 25 kn". Null without a choice.
+   */
+  etaLabel: string | null
+  /** "Current" was chosen and the boat is not making way: the time is at the fallback speed. */
+  notMoving: boolean
   /** The circle actually in use for this point, feet. */
   radiusFt: number
   radiusText: string
@@ -678,8 +735,24 @@ export function navCardView(input: NavCardInput): NavCardView {
     input.routeSpeedKn != null && Number.isFinite(input.routeSpeedKn) && input.routeSpeedKn > 0
       ? input.routeSpeedKn
       : null
+  // The crew's choice of speed, when they made one: the time is worked at
+  // exactly that speed (never a drift's arithmetic — "current" while not
+  // moving is worked at cruise, and says so).
+  const choice = input.etaMode
+    ? resolveEtaSpeed({
+        mode: input.etaMode,
+        madeGoodKn: input.madeGoodKn ?? made,
+        sogKn: input.speedKn,
+        cruiseKn: input.cruiseKn,
+        topKn: input.topKn,
+        customKn: input.customKn,
+        unit: input.speedUnit,
+      })
+    : null
   const prog = here
-    ? navProgress(plan, idx, here, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now, allowance: true })
+    ? choice
+      ? navProgress(plan, idx, here, { speedKn: null, cruiseKn: choice.speedKn, now, allowance: true })
+      : navProgress(plan, idx, here, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now, allowance: true })
     : null
   const madeGood = made != null && prog?.speedSource === 'gps'
 
@@ -833,8 +906,9 @@ export function navCardView(input: NavCardInput): NavCardView {
   const nextName = logical === last ? 'the destination' : `waypoint ${logical}`
 
   const eta = prog?.etaMs != null ? formatClock(prog.etaMs, now) : null
-  const speedNote =
-    prog?.speedKn != null
+  const speedNote = choice
+    ? choice.note ?? choice.label
+    : prog?.speedKn != null
       ? prog.speedSource === 'gps'
         ? madeGood
           ? `at ${prog.speedKn.toFixed(1)} kn made good along the route`
@@ -1083,6 +1157,8 @@ export function navCardView(input: NavCardInput): NavCardView {
     timeToGo: prog?.timeToGoH != null ? formatDuration(prog.timeToGoH) : null,
     eta,
     speedNote,
+    etaLabel: etaLabelOf(choice),
+    notMoving: choice?.notMoving ?? false,
     radiusFt: Math.round(radiusFt),
     radiusText: rounding
       ? `Then ${nextName}`
@@ -1585,4 +1661,61 @@ export function failureFrame(o: {
       { lat: o.dest.lat, lon: o.dest.lon },
     ],
   }
+}
+
+/* -------------------------------------------------------------------------
+ * Route options — the main route and its faded alternatives
+ * ---------------------------------------------------------------------- */
+
+/** What the preview and the map show for one route on offer. */
+export interface RouteOptionView {
+  idx: number
+  /** "Route 1", "Route 2" — for the toggle. */
+  name: string
+  /** "9.81 NM · 29 min" at the ETA speed (distance alone without one). */
+  line: string
+  /**
+   * The chip on the map and the toggle's second line: for an alternative,
+   * what it saves and what it bends ("8.0 NM shorter · Shallow 0 ft"); for
+   * the main route, "Keeps your boat's rules".
+   */
+  chip: string
+  /** It bends a rule (needs "I understand" before Start). */
+  flagged: boolean
+  selected: boolean
+}
+
+interface RouteOptionLike {
+  plan: Pick<RoutePlan, 'totalNM' | 'needsConfirm' | 'source'>
+  label: string
+  shorterNM: number
+}
+
+/** The routes on offer, for the toggle and the map's chips. */
+export function routeOptionsView(
+  routes: readonly RouteOptionLike[] | null | undefined,
+  selected: number,
+  opts: { speedKn?: number | null; formatLength?: LengthFormatter } = {},
+): RouteOptionView[] {
+  if (!routes || routes.length < 2) return []
+  const fmt = opts.formatLength ?? defaultLength
+  const kn = opts.speedKn != null && Number.isFinite(opts.speedKn) && opts.speedKn > 0 ? opts.speedKn : null
+  return routes.map((r, idx) => {
+    const time = kn ? formatDuration(r.plan.totalNM / kn) : null
+    const saved =
+      r.shorterNM > 0
+        ? kn && (r.shorterNM / kn) * 60 >= 1
+          ? `${formatDuration(r.shorterNM / kn)} shorter`
+          : `${fmt(r.shorterNM)} shorter`
+        : null
+    const flagged = r.plan.needsConfirm || r.plan.source === 'best-effort'
+    return {
+      idx,
+      name: `Route ${idx + 1}`,
+      line: [fmt(r.plan.totalNM), time].filter(Boolean).join(' · '),
+      chip: idx === 0 ? 'Keeps your boat’s rules' : [saved, r.label].filter(Boolean).join(' · '),
+      flagged,
+      selected: idx === selected,
+    }
+  })
 }
