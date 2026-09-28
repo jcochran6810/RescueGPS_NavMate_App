@@ -242,6 +242,9 @@ type LegLike = Pick<RouteLeg, 'n' | 'courseDeg' | 'lengthNM' | 'caution'> &
       | 'nearShoalDepthM'
       | 'nearShoalDistM'
       | 'unverified'
+      | 'narrow'
+      | 'corridorGapM'
+      | 'corridorDepthM'
     >
   >
 
@@ -305,6 +308,15 @@ export function legNote(
         : null
     const shallow = reasons.includes('depth') || reasons.length === 0 ? 'Check depth here' : null
     return [shallow, close].filter(Boolean).join(' · ')
+  }
+  // Sound, but closer to the shallows than the crew's margin — where no
+  // route keeps it: say how close, never a silent squeeze.
+  if (leg.narrow) {
+    if (leg.corridorGapM != null && Number.isFinite(leg.corridorGapM)) {
+      const water = leg.corridorDepthM != null ? depthWords(leg.corridorDepthM, depth) : 'shallow water'
+      return `Narrow — passes ${feetFirst(leg.corridorGapM)} from ${water}, keep a lookout`
+    }
+    return 'Narrow — keep to the middle'
   }
   return null
 }

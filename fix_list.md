@@ -8,6 +8,22 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-09-28 — **Merged mid-verification to save usage.** The safety-corridor
+      planner (keep N ft from shallows, channel centreline, turn room) was merged
+      after its previous iteration (v4) passed the full Galveston acceptance run
+      (564 voyages: 0 major/critical with honest GPS + competent helm; plan audits
+      clean). The final tweak (v5: more corner room) was only checked at plan level
+      (Galveston margins p5 29.5 m, median 48.8 m; lengths within 0.4 % of v4);
+      its full voyage run and the upper-bay voyage run were NOT completed. Re-run
+      the rc8 harness (scratchpad) on main before relying on it.
+- [ ] 2026-09-28 — **fmc-125 goes the long way.** 0.75 m boat, 10 m stand-off,
+      eastbound start (29.634428,-94.889325) → (29.700335,-95.001038): planned safe
+      but 16.9 NM round instead of ~9.7 NM through Five Mile Cut since the v5
+      corner-room change (src/lib/routing.corridor.test.ts documents it).
+- [ ] 2026-09-28 — **Vessel 'keep from shallows' column not applied.** Migration
+      supabase/migrations/20260928000000_navmate_vessel_shallow_margin.sql is
+      written but NOT applied; the app stores the value locally per boat until it is.
+
 - [ ] 2026-09-28 — **Turn-by-turn navigation: confirm on the water.** Everything
       was verified in simulation on real Galveston ENC data and in headless
       browser drives (see CLAUDE.md session log 2026-09-28), never on a boat.

@@ -3,12 +3,14 @@ import {
   planRoute,
   planAlternatives,
   alternateLabel,
+  DEFAULT_SHALLOW_MARGIN_M,
+  MIN_DEPTH_MARGIN_M,
   type ChartFeatures,
   type RoutePlan,
 } from './routing'
 import { loadUpperBay, UPPER_BAY_FROM, UPPER_BAY_TO } from './__fixtures__/upperBay'
 import { loadGalveston } from './__fixtures__/galveston'
-import { independentShortest, stateAtPoint } from './__fixtures__/shortestPath'
+import { independentShortest, shoalDistanceField, stateAtPoint } from './__fixtures__/shortestPath'
 import type { LatLon } from './search'
 
 /*
@@ -174,8 +176,13 @@ describe('alternateLabel', () => {
 
 /*
  * The property: on random passages across both real charts, planRoute's
- * route is never more than 5 % longer than the independent shortest
- * compliant path. The pairs were drawn at random (seeded) from water deep
+ * route is never more than 5 % longer than the independent shortest path
+ * INSIDE THE CORRIDOR — "keep 100 ft from shallows" outside marked channels
+ * (inside them the independent search is held only to the 3 m the planner
+ * never goes below: a lower bound). Where no path keeps the corridor the
+ * planner keeps the most it can, and the bound is the path on the least
+ * margin it ever keeps. And every leg the plan does not flag `narrow` keeps
+ * the corridor, measured on the independent raster. The pairs were drawn at random (seeded) from water deep
  * enough for the boat at both ends, 1.2–6 km apart, and pinned here so the
  * test is reproducible; a few structured ones cross the ship channel and
  * round Atkinson Island, where the channel preference used to add 34 %.
@@ -205,16 +212,39 @@ const PAIRS: [string, ChartFeatures, [number, number, number, number, number, nu
   ).map((p) => ['upper bay', upper, [...p]] as [string, ChartFeatures, [number, number, number, number, number, number]]),
 ]
 
-describe('planRoute is within 5 % of an independent shortest compliant path', () => {
+describe('planRoute is within 5 % of an independent shortest path inside the corridor', () => {
   const cases = PAIRS.map(([name, f, p]) => [name, p.join(', '), f, p] as const)
   it.each(cases)('%s: %s', (_name, _text, f, [aLat, aLon, bLat, bLon, safeDepthM, clearanceM]) => {
     const from = { lat: aLat, lon: aLon }
     const to = { lat: bLat, lon: bLon }
-    const ind = independentShortest(f, from, to, { safeDepthM, clearanceM })
+    const ind =
+      independentShortest(f, from, to, { safeDepthM, clearanceM, marginOutM: DEFAULT_SHALLOW_MARGIN_M }) ??
+      independentShortest(f, from, to, { safeDepthM, clearanceM })
     expect(ind).not.toBeNull()
     const plan = planRoute({ from, to, safeDepthM, clearanceM, speedKn: 20, features: f })
     expect(plan.source).toBe('charted')
     expect(depthViolations(plan, f, safeDepthM)).toEqual([])
     expect((plan.totalNM * NM) / ind!.lengthM).toBeLessThanOrEqual(1.05)
+    // The corridor, leg by leg, outside channels and the ends' 130 m.
+    const field = shoalDistanceField(f, plan.points, safeDepthM)
+    const start = plan.points[0]
+    const end = plan.points[plan.points.length - 1]
+    const far = (p: LatLon, q: LatLon) =>
+      Math.hypot((p.lat - q.lat) * 111_000, (p.lon - q.lon) * 96_800) > 130
+    plan.legs.forEach((leg, li) => {
+      if (leg.caution !== 'ok') return
+      const want = (leg.narrow ? MIN_DEPTH_MARGIN_M : DEFAULT_SHALLOW_MARGIN_M) - 3
+      const n = Math.max(1, Math.ceil((leg.lengthNM * NM) / 10))
+      for (let k = 0; k <= n; k++) {
+        const p = {
+          lat: leg.from.lat + ((leg.to.lat - leg.from.lat) * k) / n,
+          lon: leg.from.lon + ((leg.to.lon - leg.from.lon) * k) / n,
+        }
+        if (!far(p, start) || !far(p, end)) continue
+        const r = field(p)
+        if (r.inChannel || !Number.isFinite(r.distM)) continue
+        expect(r.distM, `leg ${li + 1} at ${p.lat.toFixed(5)},${p.lon.toFixed(5)}`).toBeGreaterThanOrEqual(want)
+      }
+    })
   })
 })

@@ -33,19 +33,13 @@ export interface ShortestResult {
 
 const LAND = -Infinity
 
-export function independentShortest(
-  f: ChartFeatures,
-  from: LatLon,
-  to: LatLon,
-  rules: ShortestRules,
-): ShortestResult | null {
-  const cell = rules.cellM ?? 12
-  const approach = rules.approachM ?? 120
+/** The independent raster of a chart round two points (margin `marginM`, default max(2 km, 0.6 × their distance)). */
+function rasterFor(f: ChartFeatures, from: LatLon, to: LatLon, cell: number, marginM?: number) {
   const midLat = (from.lat + to.lat) / 2
   const mLat = 111_132.954 - 559.822 * Math.cos((2 * midLat * Math.PI) / 180)
   const mLon = (Math.PI / 180) * 6_378_137 * Math.cos((midLat * Math.PI) / 180)
   const dist = Math.hypot((to.lat - from.lat) * mLat, (to.lon - from.lon) * mLon)
-  const margin = Math.max(2000, 0.6 * dist)
+  const margin = marginM ?? Math.max(2000, 0.6 * dist)
   const lat0 = Math.min(from.lat, to.lat) - margin / mLat
   const lon0 = Math.min(from.lon, to.lon) - margin / mLon
   const W = Math.abs(to.lon - from.lon) * mLon + 2 * margin
@@ -168,6 +162,18 @@ export function independentShortest(
     for (let i = 0; i < n; i++) g[i] = Math.sqrt(g[i]) * cell
     return g
   }
+  return { cols, rows, n, X, Y, state, hazard, channel, edt, lat0, lon0, mLat, mLon }
+}
+
+export function independentShortest(
+  f: ChartFeatures,
+  from: LatLon,
+  to: LatLon,
+  rules: ShortestRules,
+): ShortestResult | null {
+  const cell = rules.cellM ?? 12
+  const approach = rules.approachM ?? 120
+  const { cols, rows, n, X, Y, state, hazard, channel, edt, lat0, lon0, mLat, mLon } = rasterFor(f, from, to, cell)
   const toBlocked = edt((i) => state[i] === LAND || hazard[i] === 1)
   const toShallow = edt((i) => Number.isFinite(state[i]) && state[i] < rules.safeDepthM && hazard[i] === 0)
 
@@ -376,4 +382,33 @@ export function stateAtPoint(f: ChartFeatures, p: LatLon): number {
   }
   if (level === -Infinity) return NaN
   return land ? LAND : depth
+}
+
+/**
+ * Distance from a point to water charted shallower than `safeDepthM`
+ * (land, hazards and unsurveyed water aside), metres, on the independent
+ * raster round a route (`cellM`, default 3 m) — and whether the point is in
+ * a marked channel. For the corridor tests.
+ */
+export function shoalDistanceField(
+  f: ChartFeatures,
+  pts: readonly LatLon[],
+  safeDepthM: number,
+  cellM = 3,
+): (p: LatLon) => { distM: number; inChannel: boolean } {
+  let a = { lat: Infinity, lon: Infinity }
+  let b = { lat: -Infinity, lon: -Infinity }
+  for (const p of pts) {
+    a = { lat: Math.min(a.lat, p.lat), lon: Math.min(a.lon, p.lon) }
+    b = { lat: Math.max(b.lat, p.lat), lon: Math.max(b.lon, p.lon) }
+  }
+  const r = rasterFor(f, a, b, cellM, 400)
+  const d = r.edt((i) => Number.isFinite(r.state[i]) && r.state[i] < safeDepthM && r.hazard[i] === 0)
+  return (p) => {
+    const c = Math.floor(r.X(p.lon) / cellM)
+    const row = Math.floor(r.Y(p.lat) / cellM)
+    if (c < 0 || row < 0 || c >= r.cols || row >= r.rows) return { distM: NaN, inChannel: false }
+    const i = row * r.cols + c
+    return { distM: d[i], inChannel: r.channel[i] === 1 }
+  }
 }

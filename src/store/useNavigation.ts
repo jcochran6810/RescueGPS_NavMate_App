@@ -71,7 +71,7 @@ import { bearingDeg, haversineNM, MPS_TO_KNOTS, NM_TO_METERS } from '@/lib/geo'
 import { MAX_ARRIVAL_FT, routeArrivalFt } from '@/lib/steer'
 import type { LatLon } from '@/lib/search'
 import type { Fix } from '@/lib/types'
-import { safeDepthM, M_TO_FEET, type Vessel } from '@/lib/vessel'
+import { DEFAULT_SHALLOW_MARGIN_M, safeDepthM, shallowMarginOf, M_TO_FEET, type Vessel } from '@/lib/vessel'
 import { describeError } from '@/lib/retry'
 import { useChartData } from '@/store/useChartData'
 import { useTeams } from '@/store/useTeams'
@@ -216,6 +216,11 @@ export interface PlannedFor {
   safeDepthM: number
   clearanceM: number
   speedKn: number
+  /**
+   * The boat's "keep ___ from shallows", metres (`RouteRequest.shallowMarginM`).
+   * Absent on a passage saved before the setting existed: the default.
+   */
+  shallowMarginM?: number
 }
 
 /** One chart load a passage was planned on — replayed after a reload. */
@@ -492,13 +497,23 @@ function plannedForBoat(boat: Vessel): PlannedFor {
     safeDepthM: safeDepthM(boat),
     clearanceM: boat.clearance_m,
     speedKn: boat.cruise_speed_kn,
+    shallowMarginM: shallowMarginOf(boat),
   }
+}
+
+/** The corridor a plan was made with (the default for a passage saved before there was one). */
+function marginOf(p: PlannedFor | null): number {
+  return p?.shallowMarginM ?? DEFAULT_SHALLOW_MARGIN_M
 }
 
 /** Does the boat now ask more of the route than the one it was planned for? */
 function stricter(boat: Vessel | null, was: PlannedFor | null): boolean {
   if (!boat || !was) return true
-  return safeDepthM(boat) > was.safeDepthM + 1e-9 || boat.clearance_m > was.clearanceM + 1e-9
+  return (
+    safeDepthM(boat) > was.safeDepthM + 1e-9 ||
+    boat.clearance_m > was.clearanceM + 1e-9 ||
+    shallowMarginOf(boat) > marginOf(was) + 1e-9
+  )
 }
 
 function samePlannedFor(a: PlannedFor | null, b: PlannedFor): boolean {
@@ -506,6 +521,7 @@ function samePlannedFor(a: PlannedFor | null, b: PlannedFor): boolean {
     !!a &&
     Math.abs(a.safeDepthM - b.safeDepthM) < 1e-9 &&
     Math.abs(a.clearanceM - b.clearanceM) < 1e-9 &&
+    Math.abs(marginOf(a) - marginOf(b)) < 1e-9 &&
     a.speedKn === b.speedKn
   )
 }
@@ -1144,6 +1160,8 @@ function tooFastAt(
   const w = (turnModel.dps * Math.PI) / 180
   const lead = v * turnModel.reactS + (v / w) * Math.tan(((delta / 2) * Math.PI) / 180)
   if (toGo < -10 || toGo > lead + v * SLOW_WARN_S) return false
+  // The planner found no room to turn here at cruise speed (`RoutePlan.slowTurns`).
+  if (plan.slowTurns?.includes(idx)) return true
   let req: LiveChartRequest
   try {
     req = liveRequest(plan, was)
@@ -1184,7 +1202,11 @@ function tooFastAt(
   // sluggish helm). Water is "too shallow" here below the boat's need — or,
   // on a best-effort route, below the least the legs round the turn
   // themselves cross: the crew accepted that, not worse.
-  if (turnModel.dps >= TURN_ASSUMED_DPS && turnModel.reactS <= TURN_ASSUMED_REACT_S) return false
+  // (Also for a boat that turns as assumed: the card switches at the crew's
+  // 100–200 ft circle, and a boat sent on to the mark — "round waypoint N
+  // first", a lost fix — turns only there. An 83° turn with 42 m of water
+  // beyond it was taken at 40 kn with no warning at all: the straight line
+  // on past the mark missed the shoal the arc ran onto (rc8 F2).)
   const floor = Math.min(
     was.safeDepthM,
     ...[plan.legs[idx - 1], plan.legs[idx]]
@@ -1588,6 +1610,7 @@ export const useNavigation = create<NavigationState>()(
             ? recheckPlan(cur, {
                 safeDepthM: nowFor.safeDepthM,
                 clearanceM: nowFor.clearanceM,
+                shallowMarginM: marginOf(nowFor),
                 features: useChartData.getState().features,
                 arrivalFt: arrivalOpts().arrivalFt,
               })
@@ -1784,6 +1807,7 @@ export const useNavigation = create<NavigationState>()(
             to,
             safeDepthM: forBoat.safeDepthM,
             clearanceM: forBoat.clearanceM,
+            shallowMarginM: marginOf(forBoat),
             speedKn: forBoat.speedKn,
             features: f,
             arrivalFt: arrivalOpts().arrivalFt,
@@ -2200,6 +2224,7 @@ export const useNavigation = create<NavigationState>()(
             const checked = recheckPlan(plan, {
               safeDepthM: forBoat.safeDepthM,
               clearanceM: forBoat.clearanceM,
+              shallowMarginM: marginOf(forBoat),
               features: got.features,
               arrivalFt: arrivalOpts().arrivalFt,
             })

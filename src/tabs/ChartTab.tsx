@@ -19,10 +19,13 @@ import { formatPlace } from '@/lib/placeText'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { formatDuration, formatEtaClock, haversineNM, NM_TO_METERS } from '@/lib/geo'
 import {
+  DEFAULT_SHALLOW_MARGIN_M,
   fuelForHours,
   readVesselField,
   safeDepthM,
+  shallowMarginOf,
   VESSEL_DEFAULTS,
+  VESSEL_LIMITS,
   type NewVessel,
   type Vessel,
 } from '@/lib/vessel'
@@ -1170,6 +1173,8 @@ function VesselForm({
     max: vessel ? String(vessel.max_speed_kn) : '',
     burn: vessel && vessel.fuel_burn_gph > 0 ? String(vessel.fuel_burn_gph) : '',
     clearanceFt: vessel ? (vessel.clearance_m * 3.280839895).toFixed(0) : '',
+    shallowFt:
+      vessel && vessel.shallow_margin_m != null ? (vessel.shallow_margin_m * 3.280839895).toFixed(0) : '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -1203,6 +1208,10 @@ function VesselForm({
       fuel_burn_gph: readVesselField(form.burn, 'fuel_burn_gph') ?? 0,
       under_keel_margin_m: ft(form.marginFt, VESSEL_DEFAULTS.under_keel_margin_m),
       clearance_m: ft(form.clearanceFt, VESSEL_DEFAULTS.clearance_m),
+      shallow_margin_m: Math.min(
+        VESSEL_LIMITS.shallow_margin_m.max,
+        ft(form.shallowFt, vessel ? shallowMarginOf(vessel) : DEFAULT_SHALLOW_MARGIN_M),
+      ),
       team_id: teamId,
     }
 
@@ -1284,6 +1293,14 @@ function VesselForm({
           onChange={set('clearanceFt')}
         />
       </div>
+      <Field
+        label="Keep this far from shallows (ft)"
+        hint="Routes keep at least this far from water too shallow for the boat, and to the middle of a marked channel. Legs where no route can are flagged."
+        inputMode="decimal"
+        placeholder={(DEFAULT_SHALLOW_MARGIN_M * 3.280839895).toFixed(0)}
+        value={form.shallowFt}
+        onChange={set('shallowFt')}
+      />
       <Field
         label="Fuel burn at cruise (gal/h) — optional"
         inputMode="decimal"

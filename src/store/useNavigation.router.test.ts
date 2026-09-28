@@ -165,8 +165,10 @@ beforeEach(() => {
   useNavigation.getState().clear()
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
+  const { useVessels } = await import('@/store/useVessels')
+  ;(useVessels as unknown as { setState: (p: object) => void }).setState({ boat: BOAT })
 })
 
 describe('navigation store with the real router', () => {
@@ -256,7 +258,13 @@ describe('navigation store with the real router', () => {
   })
 
   it('says "slow down" when the fix is poorer than the margin AND the shallows are that close to the line ahead (F3)', async () => {
-    // A 1 m shoal 25 m east of the line, 100–500 m ahead of the boat.
+    // A 1 m shoal 25 m east of the line, 100–500 m ahead of the boat — a
+    // boat whose "keep ___ from shallows" is off, so the line runs there
+    // (with the default 100 ft the route keeps clear of it, as it should).
+    const { useVessels } = await import('@/store/useVessels')
+    ;(useVessels as unknown as { setState: (p: object) => void }).setState({
+      boat: { ...BOAT, shallow_margin_m: 0 },
+    })
     chart.features = sea({
       depthAreas: [
         { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
@@ -277,6 +285,41 @@ describe('navigation store with the real router', () => {
     // Past the shoal, open water ahead: it goes away.
     useNavigation.getState().onFix({ ...fixAt(at(0, 0)), accuracy: 20, timestamp: Date.now() + 2 })
     expect(useNavigation.getState().gpsSlow).toBe(false)
+  })
+
+  it('says "slow down for the turn" well before a turn the chart leaves no room to make at speed (rc8 F2)', async () => {
+    // A T-junction: a 120 m channel east–west, a 70 m one north off it. At
+    // 30 kn the ~90° turn into the side channel swings a boat onto the
+    // shoal beyond it, and there is no room to split it: the plan says so,
+    // and the card asks for less speed well before the mark.
+    const { useVessels } = await import('@/store/useVessels')
+    ;(useVessels as unknown as { setState: (p: object) => void }).setState({
+      boat: { ...BOAT, cruise_speed_kn: 30 },
+    })
+    chart.features = sea({
+      depthAreas: [
+        { minDepthM: 10, rings: [rect(-12000, -12000, 12000, 12000)] },
+        { minDepthM: 0.5, rings: [rect(-6000, 60, -35, 6000)] },
+        { minDepthM: 0.5, rings: [rect(35, 60, 6000, 6000)] },
+        { minDepthM: 0.5, rings: [rect(-6000, -6000, 6000, -60)] },
+      ],
+    })
+    useTracker.setState({ fix: fixAt(at(-1500, 0)) })
+    await useNavigation.getState().setDestination({ ...at(0, 900), label: 'Up the creek' }, null)
+    const plan = useNavigation.getState().plan!
+    expect(plan.source).toBe('charted')
+    expect(plan.slowTurns).toEqual([1])
+    expect(plan.warnings).toContain('Slow down for the turn at waypoint 1: at 30 kn there is not room there to turn at speed.')
+    expect(useNavigation.getState().start()).toBe(true)
+    const run = (x: number, t: number) =>
+      useNavigation.getState().onFix({ ...fixAt(at(x, 0)), speed: 15, heading: 90, timestamp: Date.now() + t })
+    // Far off: nothing yet.
+    run(-1200, 1000)
+    expect(useNavigation.getState().targetIdx).toBe(1)
+    expect(useNavigation.getState().turnSlow).toBe(false)
+    // 180 m out at 15 m/s — 12 s before the mark, time to come off the plane.
+    run(-180, 2000)
+    expect(useNavigation.getState().turnSlow).toBe(true)
   })
 
   it('says the boat MAY be in the shallows when they lie within its GPS error (M1, drift 109)', async () => {

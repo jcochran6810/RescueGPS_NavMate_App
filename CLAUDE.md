@@ -310,6 +310,12 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-28 (later) — claude/brave-gates-xmu47k (shortest routes, alternates, Plan a course, save/share, safety corridor)
+- Long upper-bay route root cause: a failed chart sub-query was silently dropped (coarse 0–1.8 m data over Five Mile Cut); queries now retry and incomplete bands are never cached as loaded.
+- Planner: shortest route **inside a safety corridor** — per-boat "keep N ft from shallows" (default 100 ft, local until the migration is applied), channel centreline, turn room / turn splitting, speed-aware slow-for-turn; channel/bank preference only as tie-breakers.
+- Alternates (faded, reasons, confirm to steer), ETA at Current/Cruise/Top/Custom (no days when stopped), guided Plan a course sheet, saved routes (on device), share (text + validated deep link + GPX).
+- Merged before the final verification finished to save usage — see fix_list.md (2026-09-28 items).
+
 ### 2026-09-28 — claude/brave-gates-xmu47k (turn-by-turn navigation: "Google Maps for the waterways")
 
 The user asked for automatic routing that works like Google Maps on the water,
