@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { ChartFeatures, Ring } from '@/lib/routing'
+import type { ChartFeatures, Ring, RoutePlan } from '@/lib/routing'
+import { readFileSync } from 'node:fs'
 import { DETAIL_HALF_NM } from '@/lib/chart'
 import type { Fix } from '@/lib/types'
 import type { Vessel } from '@/lib/vessel'
@@ -91,7 +92,7 @@ vi.mock('@/store/useTeams', async () => {
   return { useTeams: create(() => ({ activeTeamId: null as string | null })) }
 })
 
-import { chartStateAt, planningBounds, planRoute } from '@/lib/routing'
+import { chartStateAt, planningBounds } from '@/lib/routing'
 import { loadGalveston } from '@/lib/__fixtures__/galveston'
 import { bearingDeg, haversineNM } from '@/lib/geo'
 import { steerCourse } from '@/lib/navigate'
@@ -390,20 +391,22 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
    * fits (F8), which draws this passage differently; the corner C1 is about
    * is reproduced on the route without it, put in place of the store's own.
    */
-  async function c1Plan() {
-    await useNavigation.getState().setDestination(TO, null)
-    const plan = planRoute({
-      from: useNavigation.getState().plan!.points[0],
-      to: TO,
-      safeDepthM: SAFE_M,
-      clearanceM: 5,
-      speedKn: 12,
-      features: galveston,
-      arrivalFt: 200,
-      planBufferM: 0,
-    })
+  /** A plan pinned as it was drawn when the test was written, in place of the store's own. */
+  function pinned(name: string): RoutePlan {
+    const plan = JSON.parse(readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), 'utf8')) as RoutePlan
+    expect(plan.points[0].lat).toBeCloseTo(useNavigation.getState().plan!.points[0].lat, 9)
     useNavigation.setState({ plan })
     return plan
+  }
+  async function c1Plan() {
+    await useNavigation.getState().setDestination(TO, null)
+    // Pinned (2026-09-28): the planner now draws the shortest route that
+    // keeps the rules, which on this passage no longer has the 46° corner at
+    // WP10 that C1 is about (it is 10 points, not 13). The corner, and the
+    // guard against cutting it, are what these tests pin — so the route is
+    // the one the planner drew when C1 was found, exactly (c1-plan.json,
+    // planRoute at 8f21d4d with this request), not a fresh plan.
+    return pinned('c1-plan.json')
   }
   const card = (f: Fix) => {
     const s = useNavigation.getState()
@@ -576,7 +579,10 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
       const S5_TO = { lat: 29.387957, lon: -94.830768, label: 'seed 5' }
       useTracker.setState({ fix: fixAt(S5_FROM), arrivalFt: 200 })
       await useNavigation.getState().setDestination(S5_TO, null)
-      const plan = useNavigation.getState().plan!
+      // Pinned, like `c1Plan` (2026-09-28): the turn this test is about is on
+      // the route the planner drew when seed 5 was found (seed5-plan.json);
+      // today's shortest route rounds that corner differently.
+      const plan = pinned('seed5-plan.json')
       expect(plan.source).toBe('charted')
       expect(useNavigation.getState().start()).toBe(true)
       // The turn the re-check grounded at: WP3 → WP4, 75° to port.
@@ -628,7 +634,9 @@ describe('C1 — round the turn point first, on the Galveston chart', () => {
       chart.features = galveston
       useTracker.setState({ fix: fixAt(FROM), arrivalFt: 200 })
       await useNavigation.getState().setDestination(TO, null)
-      const plan = useNavigation.getState().plan!
+      // Pinned, like `c1Plan` (2026-09-28): the route the store drew for this
+      // boat when the test was written (c1-buffered-plan.json).
+      const plan = pinned('c1-buffered-plan.json')
       expect(useNavigation.getState().start()).toBe(true)
       // Waypoint 3 → 4 is a shallow turn in open water: 190 ft short of
       // WP3, on the inbound leg, the line on to WP4 is clear.

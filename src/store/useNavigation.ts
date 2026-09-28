@@ -14,8 +14,10 @@ import {
   livePathShortcut,
   liveShortcut,
   planningBounds,
+  planAlternatives,
   planRoute,
   recheckPlan,
+  type AltReason,
   widePlanningBounds,
   recomputeArrivalRadii,
   type ChartFeatures,
@@ -234,11 +236,40 @@ export interface ShallowHere {
   maybe?: boolean
 }
 
+/**
+ * One of the routes offered for a passage — Google Maps' main line and its
+ * faded alternatives. Index 0 is always the planner's own route (keeps every
+ * rule); the rest are shorter ways that bend one (`planAlternatives`).
+ */
+export interface RouteOption {
+  plan: RoutePlan
+  /** What it bends — empty for the main route. */
+  reasons: AltReason[]
+  /** "Shallow 3.5 ft · close to land 15 ft"; "" for the main route. */
+  label: string
+  /** How much shorter than the main route, NM (0 for the main route). */
+  shorterNM: number
+}
+
 export interface NavigationState {
   dest: Place | null
   /** null = start from my live position (the normal case). */
   origin: Place | null
   plan: RoutePlan | null
+  /**
+   * The routes on offer for this passage (not persisted): [main, …shorter
+   * alternatives]. Null until worked out (just after the plan) or when there
+   * are none. `plan` is always `routes[routeIdx].plan` while they exist.
+   */
+  routes: RouteOption[] | null
+  /** Which of `routes` is shown and will be steered. */
+  routeIdx: number
+  /**
+   * "A way 8.0 NM shorter … crosses water charted 0 ft — your boat needs
+   * 4.9 ft" — when the main route is much longer than the shortest water
+   * path. Null otherwise.
+   */
+  shorterNote: string | null
   status: NavStatus
   /** The point being steered to, while navigating (or last steered to). */
   targetIdx: number | null
@@ -395,6 +426,26 @@ export interface NavigationState {
    */
   start: () => boolean
   confirmBestEffort: () => void
+  /**
+   * Show route `i` of `routes` instead (preview only). A route that bends a
+   * rule needs the "I understand" again — every switch clears it.
+   */
+  selectRoute: (i: number) => void
+  /**
+   * Open a route made elsewhere — saved on this phone, or shared by another
+   * crew — as a preview. It is re-checked against the chart for THIS boat
+   * first (`recheckPlan`): still sound, it is shown as it is; not, it is
+   * re-planned between the same two ends and the crew is told why. Never
+   * steered on the strength of the boat it was made for.
+   */
+  openRoute: (input: {
+    plan: RoutePlan
+    dest: Place
+    origin: Place
+    name: string
+    /** How the crew knows it: "Saved route" (default) or "Shared route". */
+    noun?: string
+  }) => Promise<void>
   /** Steer the re-route waiting for confirmation (its flagged legs accepted). */
   acceptPendingPlan: () => void
   /** Keep steering the current route; drop the waiting re-route. */
@@ -524,11 +575,20 @@ function capLoads(loads: ChartLoadRecord[]): ChartLoadRecord[] {
 
 /** Bumped by every plan, `stop` and `clear`; a result from an older one is dropped. */
 let seq = 0
+/**
+ * The saved or shared route on screen, while it is the preview: a re-plan
+ * for a boat that arrives (or changes) after it was opened says so in its
+ * own words, instead of dropping the note about where the route came from.
+ */
+let opened: { noun: string; name: string } | null = null
 
 const INITIAL = {
   dest: null,
   origin: null,
   plan: null,
+  routes: null as RouteOption[] | null,
+  routeIdx: 0,
+  shorterNote: null as string | null,
   status: 'idle' as NavStatus,
   targetIdx: null,
   error: null,
@@ -1573,6 +1633,49 @@ export const useNavigation = create<NavigationState>()(
       }
 
       /**
+       * The shorter ways that bend a rule, worked out after the route is on
+       * screen (it is never held up for them) on the same chart, and offered
+       * beside it. A relaxed search that found a way keeping every rule
+       * shorter than the plan's replaces the plan outright in a preview —
+       * that is not an alternative, it is the route.
+       */
+      async function findAlternates(
+        my: number,
+        req: Parameters<typeof planAlternatives>[0],
+        main: RoutePlan,
+      ): Promise<void> {
+        try {
+          await yieldToPaint()
+          if (seq !== my || get().plan !== main) return
+          const alts = planAlternatives(req, main)
+          if (seq !== my || get().plan !== main) return
+          let base = main
+          if (alts.betterMain && get().status === 'preview') {
+            base = alts.betterMain
+          }
+          const routes: RouteOption[] = [
+            { plan: base, reasons: [], label: '', shorterNM: 0 },
+            ...alts.alternates
+              .filter((a) => a.plan.totalNM < base.totalNM)
+              .map((a) => ({
+                plan: a.plan,
+                reasons: a.reasons,
+                label: a.label,
+                shorterNM: base.totalNM - a.plan.totalNM,
+              })),
+          ]
+          set({
+            ...(base !== main ? { plan: base } : {}),
+            routes: routes.length > 1 ? routes : null,
+            routeIdx: 0,
+            shorterNote: alts.shorterNote,
+          })
+        } catch {
+          // Alternatives are an offer; the route stands without them.
+        }
+      }
+
+      /**
        * Plan (or re-plan) to the destination.
        *
        * Two modes. Steering, for anything but a new destination or start
@@ -1592,6 +1695,11 @@ export const useNavigation = create<NavigationState>()(
         if (!s.dest) return
         const dest = s.dest
         const live = s.status === 'navigating' && reason !== 'user'
+        if (reason === 'user' && notice == null) opened = null
+        if (reason === 'boat' && !live && notice == null && opened) {
+          const name = activeVessel()?.name?.trim() || 'your boat'
+          notice = `${opened.noun} “${opened.name}” re-planned for ${name}.`
+        }
         const my = ++seq
         const now = Date.now()
 
@@ -1610,6 +1718,9 @@ export const useNavigation = create<NavigationState>()(
           set({
             status: 'planning',
             plan: null,
+            routes: null,
+            routeIdx: 0,
+            shorterNote: null,
             targetIdx: null,
             confirmed: false,
             pendingPlan: null,
@@ -1689,6 +1800,9 @@ export const useNavigation = create<NavigationState>()(
           await yieldToPaint()
           if (seq !== my) return
           let plan = planRoute(request(features))
+          // The chart the plan in hand was made on — the alternatives are
+          // worked out on the same one.
+          let planFeatures = features
 
           // A long passage: read the finest charts all along the route found
           // (or the direct line, when none was), and plan again on them. A
@@ -1711,7 +1825,10 @@ export const useNavigation = create<NavigationState>()(
                 const second = planRoute(request(more))
                 const rank = (p: RoutePlan) =>
                   p.source === 'charted' ? 2 : steerable(p) ? 1 : 0
-                if (rank(second) >= rank(plan)) plan = second
+                if (rank(second) >= rank(plan)) {
+                  plan = second
+                  planFeatures = more
+                }
                 loads = [...loads, { bounds: box, detailAround }]
               }
             } catch {
@@ -1740,6 +1857,7 @@ export const useNavigation = create<NavigationState>()(
                 const second = planRoute(request(more))
                 if (second.source === 'charted' || (steerable(second) && !steerable(plan))) {
                   plan = second
+                  planFeatures = more
                   loads = [...loads, { bounds: box, detailAround: [from, to] }]
                 }
               }
@@ -1774,6 +1892,7 @@ export const useNavigation = create<NavigationState>()(
                 const second = planRoute(request(more))
                 if (second.source === 'charted' || (steerable(second) && !steerable(plan))) {
                   plan = second
+                  planFeatures = more
                   loads = [...loads, { bounds: wide, detailAround: [from, to] }]
                 }
               }
@@ -1883,7 +2002,12 @@ export const useNavigation = create<NavigationState>()(
               resume: false,
               lastPlannedAt: done,
               error: null,
+              routes: null,
+              routeIdx: 0,
+              shorterNote: null,
             })
+            // Offered, never switched to: the boat keeps steering this one.
+            void findAlternates(my, request(planFeatures), plan)
             return
           }
 
@@ -1906,6 +2030,7 @@ export const useNavigation = create<NavigationState>()(
             error: notice ?? null,
             lastPlannedAt: done,
           })
+          void findAlternates(my, request(planFeatures), plan)
         } catch (e) {
           if (seq !== my) return
           const message = e instanceof Error ? e.message : describeError(e)
@@ -2030,6 +2155,104 @@ export const useNavigation = create<NavigationState>()(
           set({ confirmed: true, error: null, reconfirm: false })
         },
 
+        openRoute: async ({ plan, dest, origin, name, noun = 'Saved route' }) => {
+          const my = ++seq
+          opened = { noun, name }
+          set({
+            dest: { lat: dest.lat, lon: dest.lon, label: dest.label },
+            origin: { lat: origin.lat, lon: origin.lon, label: origin.label },
+            status: 'planning',
+            plan: null,
+            routes: null,
+            routeIdx: 0,
+            shorterNote: null,
+            targetIdx: null,
+            confirmed: false,
+            pendingPlan: null,
+            reconfirm: false,
+            error: null,
+            rerouteError: null,
+          })
+          const boat = activeVessel()
+          const boatName = boat?.name?.trim() || 'your boat'
+          const replanned = (why: string) => {
+            if (seq !== my) return
+            void runPlan('user', undefined, `${noun} “${name}” re-planned for ${boatName} — ${why}.`)
+          }
+          try {
+            if (!boat) {
+              replanned('no boat is selected to check it against')
+              return
+            }
+            if (plan.points.length < 2) {
+              replanned('it has no route to check')
+              return
+            }
+            const from = plan.points[0]
+            const to = plan.points[plan.points.length - 1]
+            const got = await chartFor(from, to, false, my)
+            if (seq !== my) return
+            if (!got || got.features.coverage === 'none') {
+              replanned('no chart could be read to check the old route')
+              return
+            }
+            const forBoat = plannedForBoat(boat)
+            const checked = recheckPlan(plan, {
+              safeDepthM: forBoat.safeDepthM,
+              clearanceM: forBoat.clearanceM,
+              features: got.features,
+              arrivalFt: arrivalOpts().arrivalFt,
+            })
+            if (!checked) {
+              replanned('the old route could not be checked against the chart')
+              return
+            }
+            if (checked.source === 'charted') {
+              set({
+                plan: checked,
+                plannedFor: forBoat,
+                chartLoads: capLoads(got.loads),
+                status: 'preview',
+                departure: from,
+                lastPlannedAt: Date.now(),
+                error: `${noun} “${name}” re-checked for ${boatName}: it keeps your depth and stand-off.`,
+              })
+              return
+            }
+            // Say what the old route does wrong for this boat, in its own words.
+            const worst = checked.legs.reduce<number | null>(
+              (m, l) =>
+                l.caution === 'unsafe-depth' && l.minChartedDepthM != null
+                  ? Math.min(m ?? Infinity, l.minChartedDepthM)
+                  : m,
+              null,
+            )
+            replanned(
+              worst != null
+                ? `the old route crosses ${feet(Math.max(0, worst)).replace(/ \(.*\)$/, '')}`
+                : 'the old route does not keep your stand-off',
+            )
+          } catch (e) {
+            if (seq !== my) return
+            set({ status: 'failed', error: e instanceof Error ? e.message : describeError(e) })
+          }
+        },
+
+        selectRoute: (i) => {
+          const s = get()
+          if (s.status !== 'preview' || !s.routes || i < 0 || i >= s.routes.length) return
+          if (i === s.routeIdx) return
+          set({
+            plan: s.routes[i].plan,
+            routeIdx: i,
+            // Read again for this route: an "I understand" given for one
+            // route is not given for another.
+            confirmed: false,
+            reconfirm: false,
+            error: null,
+          })
+        },
+
         acceptPendingPlan: () => {
           const s = get()
           const pending = s.pendingPlan
@@ -2140,11 +2363,13 @@ export const useNavigation = create<NavigationState>()(
 
         clear: () => {
           seq++
+          opened = null
           set({ ...INITIAL, ownerId: get().ownerId })
         },
 
         reset: () => {
           seq++
+          opened = null
           set({ ...INITIAL })
         },
 

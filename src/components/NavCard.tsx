@@ -4,6 +4,9 @@ import { useFormat } from '@/hooks/useFormat'
 import { useNavCard } from '@/hooks/useNavCard'
 import { keepUnitsTogether, legRows, routeSummary, type NavNotice } from '@/lib/navView'
 import { useNavigation } from '@/store/useNavigation'
+import { useTeams } from '@/store/useTeams'
+import { useVessels } from '@/store/useVessels'
+import { EtaSpeedPicker } from '@/components/EtaSpeedPicker'
 
 /**
  * The big card at the top of the Chart tab while a route is being steered.
@@ -147,11 +150,22 @@ export function NavCard() {
           small
         />
       </div>
-      {v.speedNote && (
-        <p className={'tnum mt-1 text-[11px] text-slate-400 ' + grey}>
-          Time worked {v.speedNote}.
+      {v.etaLabel ? (
+        <p
+          className={
+            'tnum mt-1 text-xs font-semibold ' + (v.notMoving ? 'text-amber-200' : 'text-slate-300') + ' ' + grey
+          }
+        >
+          {v.etaLabel}
         </p>
+      ) : (
+        v.speedNote && (
+          <p className={'tnum mt-1 text-[11px] text-slate-400 ' + grey}>
+            Time worked {v.speedNote}.
+          </p>
+        )
       )}
+      <NavEtaPicker />
 
       {v.notices.map((n) => (
         <Notice key={n.kind + n.text} notice={n} />
@@ -177,6 +191,14 @@ export function NavCard() {
       </span>
     </section>
   )
+}
+
+/** The ETA speed choice, under the passage numbers, for the boat being steered. */
+function NavEtaPicker() {
+  const activeTeamId = useTeams((s) => s.activeTeamId)
+  const cruiseKn = useVessels((s) => s.active(activeTeamId)?.cruise_speed_kn ?? null)
+  const topKn = useVessels((s) => s.active(activeTeamId)?.max_speed_kn ?? null)
+  return <EtaSpeedPicker cruiseKn={cruiseKn} topKn={topKn} className="mt-2" />
 }
 
 /**

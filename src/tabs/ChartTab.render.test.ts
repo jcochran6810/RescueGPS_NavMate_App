@@ -164,10 +164,14 @@ beforeEach(() => {
 })
 
 describe('Chart tab, by navigation state', () => {
-  it('idle: asks where to, no banner', () => {
+  it('idle: asks where to, with one way to set it — Plan a course — and no banner', () => {
     const r = render('idle', null)
     expect(r.tab).toContain('Where to?')
-    expect(r.tab).toContain('My location')
+    // Changed on purpose (2026-09-28): the Map / Coords / Waypoint chips and
+    // "Change start" folded into the one "Plan a course" flow; "My location"
+    // is one of its choices, not a chip on the page.
+    expect(r.tab).toContain('>Plan a course</button>')
+    expect(r.tab).not.toContain('Change start')
     expect(r.banner).toBe('')
   })
 
@@ -177,7 +181,11 @@ describe('Chart tab, by navigation state', () => {
 
   it('preview, charted: summary and a big Start', () => {
     const r = render('preview', CHARTED)
-    expect(r.tab).toMatch(/1\.05 NM · 3 min · ETA/)
+    // The time follows the ETA speed choice (2026-09-28); the default is
+    // "current", and the fix here makes 9.7 kn — so 1.05 NM is 6 min, not
+    // the 3 min at cruise it used to show, and it says which speed.
+    expect(r.tab).toMatch(/1\.05 NM · 6 min · ETA/)
+    expect(r.tab).toContain('ETA at 9.7 kn (current)')
     expect(r.tab).toContain('>Start</button>')
     expect(r.tab).not.toContain('I understand')
     expect(r.tab).toContain('Waypoint reached within')
@@ -228,7 +236,7 @@ describe('Chart tab, by navigation state', () => {
     const map = r.tab.indexOf('Base layer')
     expect(start).toBeGreaterThan(-1)
     expect(start).toBeLessThan(map)
-    expect(r.tab.indexOf('1.05 NM · 3 min')).toBeLessThan(map)
+    expect(r.tab.indexOf('1.05 NM · 6 min')).toBeLessThan(map)
     // The intro paragraph folds away once there is a destination.
     expect(r.tab).not.toContain('Pick where you are going')
   })

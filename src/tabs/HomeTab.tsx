@@ -4,7 +4,9 @@ import { useTracker } from '@/store/useTracker'
 import { toDD, toDDM, toDMS } from '@/lib/coords'
 import { DaylightTracker } from '@/components/DaylightTracker'
 import { NearbyWaypoints } from '@/components/NearbyWaypoints'
-import { Card, Label } from '@/components/ui'
+import { Button, Card, Label } from '@/components/ui'
+import { usePlanCourse } from '@/store/usePlanCourse'
+import { useNavigation } from '@/store/useNavigation'
 import type { TabId } from '@/components/NavMenu'
 
 /**
@@ -23,6 +25,8 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
   }, [fix, watching, once])
 
   const fmt = useFormat()
+  const planCourse = usePlanCourse((s) => s.dispatch)
+  const navStatus = useNavigation((s) => s.status)
   const lat = fix?.lat ?? null
   const lon = fix?.lon ?? null
 
@@ -79,6 +83,20 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
           </p>
         )}
       </Card>
+
+      {/* The chart plotter's "Plan a course", one tap from the first screen. */}
+      {navStatus !== 'navigating' ? (
+        <Button
+          variant="primary"
+          className="min-h-12 w-full text-base"
+          onClick={() => {
+            planCourse({ type: 'open' })
+            onNavigate('chart')
+          }}
+        >
+          Plan a course
+        </Button>
+      ) : null}
 
       <DaylightTracker lat={lat} lon={lon} />
 

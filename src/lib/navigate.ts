@@ -1387,6 +1387,18 @@ function robustRatePerH(t: readonly number[], y: readonly number[]): number | nu
  * ground, then the cruise speed.
  */
 export function routeSpeedKn(log: readonly ProgressSample[] | null | undefined): number | null {
+  const kn = madeGoodKn(log)
+  return kn != null && kn >= MIN_SOG_KN ? kn : null
+}
+
+/**
+ * The same speed made good along the route, knots, without the one-knot
+ * floor — zero or negative when the boat is stopped or opening the
+ * destination. Null only until there is `PROGRESS_MIN_S` of log. The ETA
+ * speed choice (`etaSpeed.ts`) reads it to tell "not moving" from "not known
+ * yet".
+ */
+export function madeGoodKn(log: readonly ProgressSample[] | null | undefined): number | null {
   if (!log || log.length < 2) return null
   const a = log[0]
   const b = log[log.length - 1]
@@ -1424,7 +1436,7 @@ export function routeSpeedKn(log: readonly ProgressSample[] | null | undefined):
       kn = (progress / overGround) * recent
     }
   }
-  return Number.isFinite(kn) && kn >= MIN_SOG_KN ? kn : null
+  return Number.isFinite(kn) ? kn : null
 }
 
 /* -------------------------------------------------------------------------

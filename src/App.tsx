@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
 import { toast } from '@/store/useToast'
@@ -46,6 +46,8 @@ import { TeamTab } from '@/tabs/TeamTab'
 import { DataTab } from '@/tabs/DataTab'
 import { HelpTab } from '@/tabs/HelpTab'
 import { SettingsTab } from '@/tabs/SettingsTab'
+import { useRouteLink } from '@/hooks/useRouteLink'
+import { useSavedRoutes } from '@/store/useSavedRoutes'
 
 export default function App() {
   const { session, ready, recovering, init } = useAuth()
@@ -54,6 +56,10 @@ export default function App() {
   const [tab, setTab] = useState<TabId>(() => initialTab(useNavigation.getState().status))
 
   useEffect(() => init(), [init])
+
+  // A shared route link (`/?route=…`), opened once signed in, on the chart.
+  const openChart = useCallback(() => setTab('chart'), [])
+  useRouteLink(ready && !!session, openChart)
 
   // Steering runs whichever tab is open — see hooks/useNavigationEngine.ts
   // (mounted as <NavigationEngine/> inside the signed-in tree below: it keeps
@@ -120,6 +126,7 @@ export default function App() {
     }
     // A passage left on this phone by another account is not this crew's.
     useNavigation.getState().bindOwner(session.user.id)
+    useSavedRoutes.getState().bindOwner(session.user.id)
     void useTeams.getState().load()
     void useWaypoints.getState().load()
     void useSarRecords.getState().load()

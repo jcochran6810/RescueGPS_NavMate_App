@@ -81,6 +81,34 @@ const MENU_W = 216
  */
 export type MapBase = 'satellite' | 'chart' | 'hybrid'
 
+/** The point halfway along a polyline, by length; null for an empty one. */
+function midpointOf(points: { lat: number; lon: number }[]): { lat: number; lon: number } | null {
+  if (points.length === 0) return null
+  if (points.length === 1) return points[0]
+  const seg: number[] = []
+  let total = 0
+  for (let k = 1; k < points.length; k++) {
+    const d = Math.hypot(
+      points[k].lat - points[k - 1].lat,
+      (points[k].lon - points[k - 1].lon) * Math.cos((points[k].lat * Math.PI) / 180),
+    )
+    seg.push(d)
+    total += d
+  }
+  let run = total / 2
+  for (let k = 1; k < points.length; k++) {
+    if (run <= seg[k - 1] || k === points.length - 1) {
+      const t = seg[k - 1] > 0 ? Math.min(1, run / seg[k - 1]) : 0
+      return {
+        lat: points[k - 1].lat + (points[k].lat - points[k - 1].lat) * t,
+        lon: points[k - 1].lon + (points[k].lon - points[k - 1].lon) * t,
+      }
+    }
+    run -= seg[k - 1]
+  }
+  return points[points.length - 1]
+}
+
 export function SatelliteMap({
   trail,
   fix,
@@ -90,6 +118,8 @@ export function SatelliteMap({
   route = [],
   routeUnverified = false,
   navRoute = null,
+  routeOptions = [],
+  onSelectRoute,
   frame = null,
   labels = false,
   base = 'satellite',
@@ -156,6 +186,21 @@ export function SatelliteMap({
     view: 'fit' | 'follow'
     fitKey?: string | number | null
   } | null
+  /**
+   * The other routes on offer for this passage, Google-Maps style — drawn
+   * faded (half opacity) under the route being shown, each with a small chip
+   * saying what it saves and what it bends ("−2 min · Shallow 3.5 ft").
+   * Tapping one (its line or its chip) calls `onSelectRoute` with its `idx`;
+   * the chosen one becomes `navRoute` and the one it replaces fades in turn.
+   */
+  routeOptions?: {
+    idx: number
+    points: { lat: number; lon: number }[]
+    chip: string
+    /** It bends a rule: its chip is amber. */
+    flagged: boolean
+  }[]
+  onSelectRoute?: (idx: number) => void
   /**
    * Positions to frame once per `key` when there is no route to fit — a plan
    * that found no route: the boat (or start) and the destination that failed,
@@ -645,6 +690,8 @@ export function SatelliteMap({
 
   /** How close a tap has to land to count as hitting a marker, in pixels. */
   const MARKER_HIT_PX = 22
+  /** …and a faded route option. */
+  const ROUTE_HIT_PX = 16
 
   const onPointerUp = (e: ReactPointerEvent) => {
     const t = tap.current
@@ -665,6 +712,28 @@ export function SatelliteMap({
      * hijacking that to open a sheet would take the task away from them. When
      * they are just looking at the chart, the marker is the thing they meant.
      */
+    // A tap on a faded route option selects it — before anything else, when
+    // the map is not being used as a picker.
+    if (!onPick && onSelectRoute && routeOptions.length > 0) {
+      let best: { idx: number; d: number } | null = null
+      for (const opt of routeOptions) {
+        for (let k = 1; k < opt.points.length; k++) {
+          const a = project(opt.points[k - 1].lat, opt.points[k - 1].lon)
+          const b = project(opt.points[k].lat, opt.points[k].lon)
+          const dx = b.x - a.x
+          const dy = b.y - a.y
+          const len2 = dx * dx + dy * dy
+          const u = len2 > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2)) : 0
+          const d = Math.hypot(a.x + u * dx - x, a.y + u * dy - y)
+          if (!best || d < best.d) best = { idx: opt.idx, d }
+        }
+      }
+      if (best && best.d <= ROUTE_HIT_PX) {
+        onSelectRoute(best.idx)
+        return
+      }
+    }
+
     if (!onPick) {
       const hit = markers.find((m) => {
         if (!m.waypointId) return false
@@ -1044,10 +1113,42 @@ export function SatelliteMap({
         </div>
 
         {placed && onPick && pickHint ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-navy-950/70 px-3 py-1.5 text-center text-xs text-slate-200">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-navy-950/70 px-12 py-1.5 text-center text-xs text-slate-200">
             {pickHint}
           </div>
         ) : null}
+
+        {/* A chip on each faded route option, at the middle of its line: what
+            it saves and what it bends. Tapping it selects the route — the
+            accessible twin of tapping the line. North-up only (the preview);
+            turned head-up, the line itself is still tappable. */}
+        {placed && !onPick && onSelectRoute && rot === 0
+          ? routeOptions.map((opt) => {
+              const mid = midpointOf(opt.points)
+              if (!mid) return null
+              const v = project(mid.lat, mid.lon)
+              if (v.x < 0 || v.x > w || v.y < 0 || v.y > h) return null
+              return (
+                <button
+                  key={`chip-${opt.idx}`}
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onSelectRoute(opt.idx)}
+                  aria-label={`Show route ${opt.idx + 1}: ${opt.chip}`}
+                  style={{ left: Math.max(4, Math.min(w - 4, v.x)), top: v.y }}
+                  className={
+                    'absolute z-10 max-w-[70%] -translate-x-1/2 -translate-y-1/2 truncate rounded-full border px-2 py-0.5 ' +
+                    'text-[11px] font-semibold shadow shadow-black/40 opacity-90 ' +
+                    (opt.flagged
+                      ? 'border-amber-300/70 bg-amber-950/90 text-amber-100'
+                      : 'border-slate-300/60 bg-navy-950/90 text-slate-100')
+                  }
+                >
+                  {opt.chip}
+                </button>
+              )
+            })
+          : null}
 
         {/* On the map, not only on a card below it. Whoever is looking at this
             line is looking here. */}
@@ -1055,8 +1156,8 @@ export function SatelliteMap({
           // Above the map's own buttons (bottom-2, 32 px tall), not under
           // them: they cut the warning in half.
           <div className="pointer-events-none absolute inset-x-0 bottom-12 z-10 bg-red-950/80 px-3 py-1.5 text-center text-xs font-semibold text-red-100">
-            Not a safe course — the safest route found. Some legs break your
-            depth or stand-off; read the flagged legs before you steer it.
+            Not a safe course. Some legs break your depth or stand-off; read
+            the flagged legs before you steer it.
           </div>
         ) : null}
 
@@ -1309,6 +1410,28 @@ export function SatelliteMap({
               })}
             </>
           )}
+
+          {routeOptions.map((opt) => {
+            const d = opt.points
+              .map((q, k) => {
+                const v = project(q.lat, q.lon)
+                return `${k === 0 ? 'M' : 'L'}${v.x.toFixed(1)},${v.y.toFixed(1)}`
+              })
+              .join(' ')
+            return (
+              <g key={`opt-${opt.idx}`} opacity={0.5} data-route-option={opt.idx}>
+                <path d={d} fill="none" stroke="#06131f" strokeOpacity="0.6" strokeWidth={7} strokeLinejoin="round" strokeLinecap="round" />
+                <path
+                  d={d}
+                  fill="none"
+                  stroke={opt.flagged ? '#fbbf24' : '#94a3b8'}
+                  strokeWidth={4.5}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </g>
+            )
+          })}
 
           {navRoute &&
             navRoute.segments.map((seg) => {

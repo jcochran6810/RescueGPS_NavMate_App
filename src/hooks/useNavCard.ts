@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import { useFormat } from '@/hooks/useFormat'
 import { useClock } from '@/hooks/useNow'
-import { routeSpeedKn } from '@/lib/navigate'
+import { madeGoodKn, routeSpeedKn } from '@/lib/navigate'
+import { useEtaSpeed } from '@/store/useEtaSpeed'
 import { declinationFor, navCardView, safetyMarginM, type NavCardView } from '@/lib/navView'
 import { useHeading } from '@/store/useHeading'
 import { useNavigation } from '@/store/useNavigation'
@@ -47,6 +48,9 @@ export function useNavCard(): NavCardView | null {
   const bearingPref = useHeading((s) => s.reference)
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const cruiseKn = useVessels((s) => s.active(activeTeamId)?.cruise_speed_kn ?? null)
+  const topKn = useVessels((s) => s.active(activeTeamId)?.max_speed_kn ?? null)
+  const etaMode = useEtaSpeed((s) => s.mode)
+  const customKn = useEtaSpeed((s) => s.customKn)
   const fmt = useFormat()
   // The header's GPS chip reads the same clock: they never disagree.
   const now = useClock()
@@ -80,6 +84,11 @@ export function useNavCard(): NavCardView | null {
     roundIdx,
     roundAim,
     routeSpeedKn: routeSpeedKn(progressLog),
+    madeGoodKn: madeGoodKn(progressLog),
+    etaMode,
+    topKn,
+    customKn,
+    speedUnit: fmt.units.speed,
     safetyMarginM: safetyMarginM(clearanceM),
     gpsSlow,
     turnSlow,

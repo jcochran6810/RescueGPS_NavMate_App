@@ -20,6 +20,7 @@ import {
   planningBounds,
   chartStateAt,
   depthMarginFor,
+  NARROW_MARGIN_MIN_M,
   planRoute,
   widePlanningBounds,
   prepareGrid,
@@ -1844,10 +1845,11 @@ describe('channelPenalty', () => {
 })
 
 describe('astar with a marked channel', () => {
-  it('rides a channel rather than the shorter open-water line', () => {
-    // The channel runs down column 1 and dog-legs across row 4 to column 5.
-    // Straight down column 5 is shorter, and charts deep enough for the boat
-    // — but it is not dredged, not swept and not buoyed.
+  // Changed on purpose (2026-09-28, the crew: "always create the shortest
+  // route possible"): a marked channel is now only a tie-breaker. It used to
+  // be worth a detour of up to 2.5× — this test was "rides a channel rather
+  // than the shorter open-water line".
+  it('takes the shorter open-water line over a longer channel dog-leg', () => {
     const g = gridFromAscii([
       '=:::::',
       '=:::::',
@@ -1858,9 +1860,25 @@ describe('astar with a marked channel', () => {
     const p = passability(g, 0, 1.5)
     const path = astar(g, { col: 0, row: 0 }, { col: 5, row: 4 }, p)
     expect(path).not.toBeNull()
-    for (const c of path ?? []) {
-      expect(g.channel[c.row * g.cols + c.col]).toBe(1)
-    }
+    // The octile-shortest path: four diagonal steps and one straight — not
+    // the eight straight steps of the dog-leg.
+    expect(path!.length).toBe(6)
+  })
+
+  it('still prefers the channel between two equally short ways', () => {
+    // Two cells east and one diagonal either way; the channel is the tie-break.
+    const g = gridFromAscii([
+      '====',
+      '::::',
+    ])
+    const p = passability(g, 0, 1.5)
+    const path = astar(g, { col: 0, row: 0 }, { col: 3, row: 1 }, p)
+    expect(path).toEqual([
+      { col: 0, row: 0 },
+      { col: 1, row: 0 },
+      { col: 2, row: 0 },
+      { col: 3, row: 1 },
+    ])
   })
 
   it('takes the open-water line when that water is amply deep', () => {
@@ -1897,13 +1915,11 @@ describe('astar with a marked channel', () => {
     expect(path?.[path.length - 1]).toEqual({ col: 4, row: 1 })
   })
 
-  it('will not leave a narrow channel merely to stop shaving its bank', () => {
-    // The invariant that makes "stay in the channel" true rather than
-    // approximately true: the worst cell inside a channel must stay cheaper
-    // than the best cell outside one in water that only just clears the boat.
-    // The channel is one cell wide against a wall, so every cell in it pays
-    // the full bank-edge cost, and its dog-leg is LONGER than cutting the
-    // corner through the thin water alongside. It must still be chosen.
+  it('costs at most about 1 % extra anywhere, so no preference can lengthen a route by more', () => {
+    // Changed on purpose (2026-09-28): this was "will not leave a narrow
+    // channel merely to stop shaving its bank" — a channel worth any detour.
+    // What is pinned now is the bound on every tie-breaker together: the
+    // dearest usable cell costs no more than 1 % over its length.
     const g = gridFromAscii([
       '#=::::',
       '#=::::',
@@ -1911,19 +1927,24 @@ describe('astar with a marked channel', () => {
       '#=====',
     ])
     const p = passability(g, 0, 1.5)
+    for (let i = 0; i < g.cols * g.rows; i++) {
+      if (!passable(g, i, p)) continue
+      expect(1 + channelPenalty(g, i, p)).toBeLessThanOrEqual(1.01)
+    }
     const path = astar(g, { col: 1, row: 0 }, { col: 5, row: 3 }, p)
     expect(path).not.toBeNull()
-    for (const c of path ?? []) {
-      expect(g.channel[c.row * g.cols + c.col]).toBe(1)
-    }
+    // Three diagonal steps and one straight: the corner is cut through the
+    // water that clears the boat, not run round inside the channel.
+    expect(path!.length).toBe(5)
   })
 })
 
 describe('stringPull with a marked channel', () => {
-  it('keeps the dog-leg of a channel whose chord is open water', () => {
-    // The shortest line between two points in a channel is very often not in
-    // the channel. Without the budget the smoother would undo, in its last
-    // pass, every bit of seamanship A* had just paid for.
+  it('straightens a channel dog-leg into the chord when the chord keeps every rule', () => {
+    // Changed on purpose (2026-09-28): the smoother used to keep every
+    // dog-leg of a channel whose chord crossed open water ("keeps the dog-leg
+    // of a channel whose chord is open water"). The chord is shorter and
+    // keeps every rule, so it is taken.
     const g = gridFromAscii([
       '=:::::',
       '=:::::',
@@ -1932,12 +1953,12 @@ describe('stringPull with a marked channel', () => {
       '======',
     ])
     const p = passability(g, 0, 1.5)
-    const path = astar(g, { col: 0, row: 0 }, { col: 5, row: 4 }, p)
-    expect(path).not.toBeNull()
-    const pulled = stringPull(g, path ?? [], p)
-    for (let i = 1; i < pulled.length; i++) {
-      expect(chordOutsideChannel(g, pulled[i - 1], pulled[i], p)).toBe(0)
-    }
+    const dogLeg = [
+      { col: 0, row: 0 }, { col: 0, row: 1 }, { col: 0, row: 2 }, { col: 0, row: 3 },
+      { col: 0, row: 4 }, { col: 1, row: 4 }, { col: 2, row: 4 }, { col: 3, row: 4 },
+      { col: 4, row: 4 }, { col: 5, row: 4 },
+    ]
+    expect(stringPull(g, dogLeg, p)).toEqual([{ col: 0, row: 0 }, { col: 5, row: 4 }])
   })
 
   it('still collapses a staircase that stays inside the channel', () => {
@@ -2039,17 +2060,19 @@ describe('planRoute with a marked channel', () => {
   const to = { lat: 29.34, lon: -94.82 }
   const boat = { safeDepthM: 1.5, clearanceM: 0, speedKn: 20 }
 
-  it('rides the channel when the water around it only just clears the boat', () => {
+  it('runs direct even when the water around the channel only just clears the boat', () => {
+    // Changed on purpose (2026-09-28, "always the shortest route"): this was
+    // "rides the channel when the water around it only just clears the
+    // boat" — half again as far, to stay in marked water. Water that clears
+    // the boat keeps the rule; the channel is only a tie-breaker now.
     const b = routeBounds(from, to)
     const plan = planRoute({ from, to, ...boat, features: channelChart(b, 1.7) })
 
     expect(plan.source).toBe('charted')
     const directNM = haversineNM(from.lat, from.lon, to.lat, to.lon)
-    expect(plan.totalNM).toBeGreaterThan(directNM)
-    // Most of the course is inside marked water; what is not is the run off
-    // each end to the points the crew actually asked for.
-    expect(plan.outsideChannelNM).not.toBeNull()
-    expect(plan.outsideChannelNM!).toBeLessThan(plan.totalNM / 2)
+    expect(plan.totalNM).toBeLessThan(directNM * 1.01)
+    // …and it says so: most of it is outside marked water.
+    expect(plan.warnings.join(' ')).toMatch(/outside the marked channel/i)
   })
 
   it('runs direct when the water around the channel is amply deep', () => {
@@ -2540,7 +2563,10 @@ function marginCheck(
       if (metresBetween(p, start) <= 121 || metresBetween(p, end) <= 121) continue
       if (f.channels.some((c) => inRings(c.rings, p.lon, p.lat))) continue
       const m = metersPerDegree(p.lat)
-      const r = marginM - 1
+      // A leg the plan says keeps to the middle of a gut too narrow for the
+      // full margin (2026-09-28, "keep to the middle") is held to the gut's
+      // own floor, NARROW_MARGIN_MIN_M, instead — and must say so.
+      const r = (leg.narrow ? NARROW_MARGIN_MIN_M : marginM) - 1
       for (let d = 0; d < 8; d++) {
         const th = (d * Math.PI) / 4
         const q = { lat: p.lat + (r * Math.sin(th)) / m.lat, lon: p.lon + (r * Math.cos(th)) / m.lon }
@@ -2589,9 +2615,12 @@ describe('planRoute keeps a depth margin beside the track', () => {
     expect(plan.totalNM).toBeLessThan(direct * 1.01)
   })
 
-  it('flags a leg with shallow water inside the margin when nothing better exists', () => {
-    // A 16 m gap between two shoals is the only way through: the route takes
-    // it, flagged, and says how close the shallow water is.
+  it('takes a gap narrower than twice the margin through its middle, and says "keep to the middle"', () => {
+    // Changed on purpose (2026-09-28, "always the shortest route"): a 16 m
+    // gap between two shoals used to be best-effort — the 10 m margin either
+    // side does not fit. The margin may not exceed what the gap's width
+    // allows: its middle, 8 m from each side, is more than the 5 m floor
+    // (NARROW_MARGIN_MIN_M), so the leg is charted and flagged instead.
     const features = sea({
       depthAreas: [
         ...sea().depthAreas,
@@ -2600,10 +2629,29 @@ describe('planRoute keeps a depth margin beside the track', () => {
       ],
     })
     const plan = planRoute({ from: SOUTH, to: NORTH, ...boat, clearanceM: 0, features })
+    expect(plan.source).toBe('charted')
+    expect(plan.legs.some((l) => l.narrow)).toBe(true)
+    expect(plan.warnings.join(' ')).toMatch(/keep to the middle/i)
+    expect(marginCheck(plan, features, boat.safeDepthM, 10)).toEqual([])
+  })
+
+  it('flags a leg with shallow water inside the margin when nothing better exists', () => {
+    // An 8 m gap between two shoals is the only way through: even its middle
+    // is 4 m from the shallow water, under the 5 m floor. The route takes
+    // it, flagged, and says how close the shallow water is. (This was a
+    // 16 m gap before the keep-to-the-middle rule — see above.)
+    const features = sea({
+      depthAreas: [
+        ...sea().depthAreas,
+        { minDepthM: 1, rings: [rect(-12000, -5, -4, 5)] },
+        { minDepthM: 1, rings: [rect(4, -5, 12000, 5)] },
+      ],
+    })
+    const plan = planRoute({ from: SOUTH, to: NORTH, ...boat, clearanceM: 0, features })
     expect(plan.source).toBe('best-effort')
     const flagged = plan.legs.filter((l) => l.caution === 'unsafe-depth')
     expect(flagged.length).toBeGreaterThan(0)
-    expect(flagged.some((l) => l.nearShoalDistM != null && l.nearShoalDistM < 10)).toBe(true)
+    expect(flagged.some((l) => l.nearShoalDistM != null && l.nearShoalDistM < 5)).toBe(true)
     expect(plan.confirmReason).toMatch(/clear of water shallower than/)
   })
 })
@@ -2624,6 +2672,10 @@ describe('planRoute on the Galveston chart — the depth margin', () => {
     expect(plan.source).not.toBe('none')
     expect(marginCheck(plan, features, 2.5, 10, 10)).toEqual([])
     // What it did before the margin: charted, with 1.8 m water 2 m abeam.
+    // Changed (2026-09-28): the shortest route that keeps the rules now goes
+    // the other side of this shoal whatever the margin, so the plan made
+    // without the margin is no longer pinned as the bad one — only that it
+    // is sound where this one is.
     const old = planRoute({
       from: { lat: 29.37310680382458, lon: -94.79208850226718 },
       to: { lat: 29.3806, lon: -94.7965 },
@@ -2637,7 +2689,8 @@ describe('planRoute on the Galveston chart — the depth margin', () => {
       planBufferM: 0,
       features,
     })
-    expect(marginCheck(old, features, 2.5, 10, 10)).not.toEqual([])
+    expect(old.source).not.toBe('none')
+    expect(marginCheck(old, features, 2.5, 0.5, 10)).toEqual([])
   })
 
   it('keeps the margin on a longer passage across the bay', () => {
@@ -2676,7 +2729,11 @@ describe('arrival radii for a plan already made', () => {
     const small = recomputeArrivalRadii(plan, req, 100)!
     expect(small).toHaveLength(plan.points.length)
     expect(Math.max(...small)).toBeLessThanOrEqual(100)
-    expect(planRoute({ ...req, arrivalFt: 100 }).arrivalFt).toEqual(small)
+    // Every point keeps the crew's setting. (This used to compare with a
+    // fresh plan made at 100 ft, which is a different route whenever the
+    // setting changes which stub legs merge — since 2026-09-28's tighter
+    // routes, it does here.)
+    expect(small).toEqual(plan.points.map(() => 100))
   })
 
   it('has nothing to say about a plan with no line', () => {
