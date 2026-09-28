@@ -310,6 +310,62 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-09-28 — claude/brave-gates-xmu47k (turn-by-turn navigation: "Google Maps for the waterways")
+
+The user asked for automatic routing that works like Google Maps on the water,
+with seven rules: (1) keep the vessel in its minimum depth the whole route;
+(2) keep the set stand-off from hazards and land; (3) as many waypoints as
+needed; (4) bearing + distance to the next waypoint underway; (5) switch to the
+next waypoint within 100–200 ft; (6) ETA + distance remaining to the end;
+(7) set start + destination → plan and connect the legs.
+
+**User decisions (keep them):** no fully safe route → best-effort route with the
+unsafe legs flagged and an explicit "I understand" before steering; charted
+shallow bands allowed only near the start/end (approach zones, flagged); off
+course → automatic re-route (re-route from charted land needs no confirm);
+alerts on-screen only; always switch at the crew's 100–200 ft circle and guard
+corners with "Round waypoint N first — don't cut the corner" (never shrink the
+circle).
+
+**Built:**
+- Chart data (`src/lib/chart.ts`, `src/store/useChartData.ts`): harbour/approach
+  detail round both ends and along long passages, no reuse of coarser data,
+  failed bands reported, many more hazard layers (jetties/piers as lines,
+  pylons, islets, platforms, dams, causeways…), per-request timeouts.
+- Router (`src/lib/routing.ts`, `src/lib/routeGeometry.ts`): conservative
+  rasterisation, vector verification of every leg against the real chart with
+  local repair, depth-edge margin (incl. inside channels, centreline), planning
+  buffer beyond the stand-off, approach zones, connected snapping, wide-box
+  retry before best-effort, best-effort ladder, 'none' only with no water path,
+  live checks (`liveShortcut`, `liveChartNear`, `liveAhead`). Real Galveston
+  fixture: `src/lib/__fixtures__/galveston*.{json,ts}`.
+- Navigation engine (`src/lib/navigate.ts`, `src/store/useNavigation.ts`,
+  `src/hooks/useNavigationEngine.ts`): persisted, account-scoped passage;
+  switching, pass-abeam, missed-mark recovery, rounding guard re-checked every
+  fix, course back onto the leg (speed-scaled look-ahead, set allowance),
+  route-relative off-course with back-off, no switching/arrival on estimated or
+  settling fixes, speed-made-good ETA.
+- GPS filter (`src/lib/track.ts`): boat-tuned turns, honest accuracy, rejects
+  multipath/impossible jumps (Doppler/NIS), dead reckoning through dropouts.
+- UI (`ChartTab.tsx`, `NavCard.tsx`, `NavBanner.tsx`, `SatelliteMap.tsx`,
+  `src/lib/navView.ts`): Navigate here → route from my location → Start; two-row
+  card (STEER course / WP bearing·distance), one turn cue, off-track distance,
+  red "Slow down" (poor/lost GPS near hazards), round-first, arrival; banner on
+  every tab; flagged/dotted legs on the map.
+
+**How it was verified:** 1317 unit/integration tests; six rounds of independent
+simulated-voyage testing on real Galveston NOAA data (each tester wrote its own
+harness and judged the TRUE boat position with its own geometry), plus headless
+Playwright drives of the production build at 320/390 px. Final independent
+acceptance (rc7, 564 voyages + 420 plan audits): **no critical or major
+failures with honest GPS and a competent helm**; 287/287 started voyages
+arrived. Harnesses and reports are session-scratchpad only (not in the repo).
+
+**Known limits (fix_list.md):** sluggish helm at 20–45 kn can oscillate onto a
+shoal (8/94 simulated); STEER can flip under ±50–60 m GPS; planning 0.5–2.4 s
+on a laptop (slower on phones, runs on the main thread); not yet run on the
+water.
+
 ### 2026-09-24 — claude/brave-gates-xmu47k (auto-routing drew straight lines; offline chart cache)
 
 Reported: auto-routing to a waypoint always drew a straight line "because of

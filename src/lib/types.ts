@@ -399,4 +399,38 @@ export interface Fix {
   /** Metres above the WGS-84 ellipsoid, or null. */
   altitude: number | null
   timestamp: number
+  /**
+   * The phone's own clock (ms since the epoch) when this position arrived —
+   * or, for a receiver repeating a position it already gave, when that
+   * position first arrived. Freshness is judged on this, never on
+   * `timestamp`: some platforms stamp positions with GNSS time, and a phone
+   * clock set by hand can be minutes off it, which made every fix look stale
+   * and froze the route. `timestamp` stays for the time BETWEEN fixes.
+   * Absent on fixes made before this existed; `timestamp` is used then.
+   */
+  receivedAt?: number
+  /**
+   * Set by the track filter on the first few fixes after it has adopted a
+   * jump in position (the receiver re-acquired somewhere else, and the
+   * filter believed it only once several fixes agreed). The position is new
+   * and not yet borne out: navigation shows it, but does not switch
+   * waypoints or declare arrival on it. Absent otherwise.
+   */
+  settling?: boolean
+  /**
+   * Set by the track filter when this is not a fix it believes, but the
+   * best estimate it has, because nothing better arrived for a few seconds:
+   *
+   *   - `'dead-reckoned'` — every fix for over 3 s was refused (a jump no
+   *     boat could make): the position is run on from the last one believed,
+   *     at its course and speed, and `accuracy` is widened to cover where the
+   *     refused fixes put the boat too;
+   *   - `'poor'` — fixes kept arriving worse than the crew's accuracy gate
+   *     (but still a GPS fix, ±100 m or better): used, at their own honest
+   *     accuracy, rather than going silent and reading as "signal lost".
+   *
+   * Always `settling` too: nothing is switched or arrived on it. Never
+   * recorded in the track.
+   */
+  estimate?: 'dead-reckoned' | 'poor'
 }

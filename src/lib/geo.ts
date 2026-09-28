@@ -161,5 +161,9 @@ export function metersPerDegree(lat: number): { lat: number; lon: number } {
 export function formatEtaClock(hours: number, now = new Date()): string {
   if (!Number.isFinite(hours) || hours < 0 || hours > 24 * 7) return ''
   const at = new Date(now.getTime() + hours * 3600 * 1000)
-  return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // A no-break space before AM/PM, so a narrow column never wraps the clock
+  // into "04:10 / AM".
+  return at
+    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    .replace(/[ \u202f](?=[AaPp]\.?\s?[Mm])/, '\u00a0')
 }

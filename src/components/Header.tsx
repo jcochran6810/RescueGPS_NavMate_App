@@ -2,6 +2,8 @@ import { useTeams } from '@/store/useTeams'
 import { useTracker } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
+import { useClock } from '@/hooks/useNow'
+import { gpsChip, type GpsChip as GpsChipState } from '@/lib/navView'
 import { NavMenu, type TabId } from '@/components/NavMenu'
 import { AccountButton } from '@/components/AccountButton'
 
@@ -13,21 +15,8 @@ export function Header({
   onChange: (id: TabId) => void
 }) {
   const { teams, activeTeamId, setActiveTeam } = useTeams()
-  const watching = useTracker((s) => s.watching)
-  const fix = useTracker((s) => s.fix)
   const pending = useWaypoints((s) => s.pending.length)
   const online = useOnline()
-
-  // Three states, not two. The badge used to read "GPS off" whenever the
-  // continuous watch was stopped — including on the Home screen, which takes a
-  // single fix and prints the position right underneath. Saying the GPS is off
-  // above a live set of coordinates teaches a crew to distrust the badge, so it
-  // now distinguishes a running watch from a fix already in hand.
-  const gps = watching
-    ? { label: 'GPS live', tone: 'bg-emerald-500/15 text-emerald-300' }
-    : fix
-      ? { label: 'GPS fix', tone: 'bg-sky-500/15 text-sky-300' }
-      : { label: 'GPS off', tone: 'bg-white/5 text-slate-300' }
 
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-white/10 bg-navy-950/85 backdrop-blur">
@@ -67,18 +56,7 @@ export function Header({
               {pending} queued
             </span>
           )}
-          <span
-            title={
-              watching
-                ? 'Recording a continuous track'
-                : fix
-                  ? 'A position fix is in hand; the continuous track is not running'
-                  : 'No position yet'
-            }
-            className={'rounded-full px-2 py-1 text-[11px] font-semibold ' + gps.tone}
-          >
-            {gps.label}
-          </span>
+          <GpsChip />
 
           {/* The two corner controls: the account circle, then the menu in
               the very corner. */}
@@ -113,5 +91,38 @@ export function Header({
         </div>
       )}
     </header>
+  )
+}
+
+const CHIP_TONE: Record<GpsChipState['kind'], string> = {
+  live: 'bg-emerald-500/15 text-emerald-300',
+  lost: 'bg-red-500/15 text-red-300',
+  fix: 'bg-sky-500/15 text-sky-300',
+  off: 'bg-white/5 text-slate-300',
+}
+
+/**
+ * The GPS badge. Four states, not two: a running watch that has had no fix
+ * for 15 s is "GPS lost" — the same test the steering card greys itself on —
+ * where it used to stay green "GPS live" beside a card saying the signal was
+ * gone. And the badge no longer reads "GPS off" above a fix taken by hand on
+ * the Home screen: a fix in hand with no watch running is "GPS fix".
+ *
+ * Its own component, ticking once a second, so a fix that STOPS arriving is
+ * shown without re-rendering the whole header.
+ */
+function GpsChip() {
+  const watching = useTracker((s) => s.watching)
+  const fix = useTracker((s) => s.fix)
+  // The same clock the steering card reads, so the two never disagree.
+  const now = useClock()
+  const chip = gpsChip(watching, fix, now)
+  return (
+    <span
+      title={chip.title}
+      className={'rounded-full px-2 py-1 text-[11px] font-semibold ' + CHIP_TONE[chip.kind]}
+    >
+      {chip.label}
+    </span>
   )
 }

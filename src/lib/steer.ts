@@ -8,6 +8,7 @@
 
 import { bearingDeg, haversineNM, NM_TO_METERS } from './geo'
 import { M_TO_FEET } from './vessel'
+import { magneticFromTrue } from './geomag'
 import type { LatLon, PatternLeg } from './search'
 
 /** Feet in a nautical mile, derived so there is one conversion in the app. */
@@ -26,9 +27,41 @@ export const FT_PER_NM = NM_TO_METERS * M_TO_FEET
  * notice before they can do anything about it. The tightest setting is offered
  * for tight work, and the accuracy floor below is what keeps it honest.
  */
-export const ARRIVAL_FT_CHOICES = [50, 100, 150] as const
+export const ARRIVAL_FT_CHOICES = [50, 100, 150, 200] as const
 export type ArrivalFt = (typeof ARRIVAL_FT_CHOICES)[number]
 export const DEFAULT_ARRIVAL_FT: ArrivalFt = 150
+
+/**
+ * The choices offered for a chart-plotter route. 50 ft stays a Search-tab
+ * setting: a pattern leg in open water can be run that tight, but a route's
+ * turn points are placed by the planner round shoals and jetties, and a 50 ft
+ * circle at planing speed is two fixes wide — missed marks, not precision.
+ */
+export const ROUTE_ARRIVAL_FT_CHOICES = [100, 150, 200] as const satisfies readonly ArrivalFt[]
+
+/**
+ * The widest circle any route point is ever given, feet, whatever the fix
+ * accuracy says. Past this a poor fix no longer widens the circle — that
+ * would hide the bearing to a mark the boat has not reached — and the crew is
+ * told the fix is poor instead.
+ */
+export const MAX_ARRIVAL_FT = 200
+
+/**
+ * The arrival distance a ROUTE is steered with, feet: the crew's shared
+ * setting held to the route choices, 100–200 ft.
+ *
+ * The setting is one value shared with the Search tab, where 50 ft is a
+ * legitimate choice for a tight pattern. Carried through to a route it
+ * switched turn points only inside 50 ft (and pass-abeam inside 100) — below
+ * the 100–200 ft the crew asked routes to use — while the plotter's control
+ * showed nothing selected. So routes read it through this: 50 counts as 100,
+ * and the plotter shows 100 as the one in effect.
+ */
+export function routeArrivalFt(ft: number | null | undefined): number {
+  const v = ft != null && Number.isFinite(ft) && ft > 0 ? ft : DEFAULT_ARRIVAL_FT
+  return Math.max(ROUTE_ARRIVAL_FT_CHOICES[0], Math.min(v, MAX_ARRIVAL_FT))
+}
 
 /**
  * How far past the arrival circle the pass-abeam rule still applies.
@@ -180,9 +213,28 @@ export function shouldAdvance(
   // so the inbound one is the leg before. Steering to the very first point has
   // no inbound leg — there is no course to have carried on down — so the
   // circle is the only rule there.
-  const inbound = plan.legs[targetIdx - 1]
-  if (!inbound) return false
+  return pastMark(plan.legs[targetIdx - 1], target, fix)
+}
 
+/**
+ * Rule 2 of `shouldAdvance` on its own: is the boat beyond the perpendicular
+ * through `mark`, still running the course of the leg that arrives there?
+ *
+ * No range check — the caller decides how far past the mark still counts
+ * (`shouldAdvance` allows three circles, the route engine in navigate.ts a
+ * tighter bound). Exported so both apply the same geometry and the same
+ * heading refusal, rather than two copies drifting apart.
+ *
+ * False without an inbound leg or without a heading: a boat with no course to
+ * have carried on down, or no way to tell which way it is going, has not
+ * "passed" anything — it gets the circle alone, the safe way to be wrong.
+ */
+export function pastMark(
+  inbound: Pick<PatternLeg, 'courseDeg'> | undefined,
+  mark: LatLon,
+  fix: SteerFix,
+): boolean {
+  if (!inbound) return false
   const heading = fix.heading
   if (heading == null || !Number.isFinite(heading)) return false
   if (angleBetween(heading, inbound.courseDeg) >= HEADING_TOLERANCE_DEG) {
@@ -191,8 +243,79 @@ export function shouldAdvance(
 
   // Along-track component of the mark→boat vector. Positive means the boat
   // lies beyond the mark in the direction the leg was running.
-  const markToBoat = bearingDeg(target.lat, target.lon, fix.lat, fix.lon)
+  const rangeNM = haversineNM(fix.lat, fix.lon, mark.lat, mark.lon)
+  const markToBoat = bearingDeg(mark.lat, mark.lon, fix.lat, fix.lon)
   const along =
     rangeNM * Math.cos(((markToBoat - inbound.courseDeg) * Math.PI) / 180)
   return along > 0
+}
+
+/* -------------------------------------------------------------------------
+ * Saying it out loud — distances and bearings as the crew reads them
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Below this, a distance to a mark is given in feet. A tenth of a mile is
+ * about 600 ft — the point where "0.04 NM" stops meaning anything to a
+ * coxswain and "250 ft" is what the bow lookout would shout.
+ */
+export const FEET_BELOW_NM = 0.1
+
+/**
+ * A distance to steer to: feet when close, the crew's distance unit
+ * otherwise.
+ *
+ * Feet are rounded to the nearest 10 above 100 ft — the fix is not better
+ * than that, and a number that flickers by single feet every second is noise
+ * a crew learns to stop reading. Under 100 ft they are rounded to 5, which is
+ * still honest for a fix at its best.
+ *
+ * `formatLength` is passed in rather than imported so this file does not
+ * depend on the units module's display rules; callers hand over whichever
+ * formatter their screen already uses (`useFormat().length`).
+ */
+export function formatNavDistance(
+  nm: number | null | undefined,
+  formatLength: (nm: number) => string = (v) =>
+    `${v.toFixed(Math.abs(v) < 10 ? 2 : 1)} NM`,
+): string {
+  if (nm == null || !Number.isFinite(nm) || nm < 0) return '—'
+  if (nm < FEET_BELOW_NM) {
+    const ft = nm * FT_PER_NM
+    const step = ft >= 100 ? 10 : 5
+    return `${Math.round(ft / step) * step} ft`
+  }
+  return formatLength(nm)
+}
+
+/** Which north a bearing is given from. */
+export type BearingRef = 'T' | 'M'
+
+/**
+ * A true bearing, turned into the one the crew asked to read.
+ *
+ * Magnetic only when it was asked for AND a declination is known; otherwise
+ * true, and labelled so. A bearing is never shown without saying which north
+ * it is from — 10° of declination is 10° of wrong course, and on a 2 NM leg
+ * that is a third of a mile off the mark.
+ */
+export function navBearing(
+  trueDeg: number,
+  wanted: 'true' | 'magnetic' = 'true',
+  declination: number | null = null,
+): { deg: number; ref: BearingRef } {
+  const norm = (d: number) => ((d % 360) + 360) % 360
+  if (!Number.isFinite(trueDeg)) return { deg: Number.NaN, ref: 'T' }
+  if (wanted === 'magnetic' && declination != null && Number.isFinite(declination)) {
+    // Same conversion the Compass tab uses, so the two can never disagree.
+    return { deg: magneticFromTrue(trueDeg, declination), ref: 'M' }
+  }
+  return { deg: norm(trueDeg), ref: 'T' }
+}
+
+/** "047°T" / "041°M" — three digits, the way bearings are spoken on the radio. */
+export function formatNavBearing(b: { deg: number; ref: BearingRef }): string {
+  if (!Number.isFinite(b.deg)) return '—'
+  const whole = Math.round(b.deg) % 360
+  return `${String(whole).padStart(3, '0')}°${b.ref}`
 }

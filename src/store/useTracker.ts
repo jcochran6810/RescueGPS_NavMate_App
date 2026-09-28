@@ -129,6 +129,9 @@ function toFix(pos: GeolocationPosition): Fix {
     altitude:
       c.altitude != null && Number.isFinite(c.altitude) ? c.altitude : null,
     timestamp: pos.timestamp,
+    // Freshness is judged on the phone's clock at arrival, not on the
+    // position's own stamp — see `Fix.receivedAt`.
+    receivedAt: Date.now(),
   }
 }
 
@@ -193,7 +196,14 @@ export const useTracker = create<TrackerState>()(
 
         watchId = navigator.geolocation.watchPosition(
           (pos) => {
-            const raw = toFix(pos)
+            let raw = toFix(pos)
+            // A receiver that has lost the sky may keep handing back the
+            // position it last had. That must still go stale, so a repeat of
+            // the same position keeps the time it FIRST arrived.
+            const prevRaw = get().raw
+            if (prevRaw && prevRaw.timestamp === raw.timestamp && prevRaw.receivedAt != null) {
+              raw = { ...raw, receivedAt: prevRaw.receivedAt }
+            }
             const result = filter.push(raw)
 
             if (!result.accepted) {
@@ -210,9 +220,12 @@ export const useTracker = create<TrackerState>()(
 
             const { trail, intervalS } = get()
             const last = trail[trail.length - 1]
-            const next = shouldRecord(last, result.fix, intervalS)
-              ? [...trail, result.fix]
-              : trail
+            // An estimate (dead-reckoned, or a fix worse than the gate) is
+            // steered by, never recorded: the track is where the boat was.
+            const next =
+              !result.fix.estimate && shouldRecord(last, result.fix, intervalS)
+                ? [...trail, result.fix]
+                : trail
 
             set({
               fix: result.fix,
@@ -263,7 +276,7 @@ export const useTracker = create<TrackerState>()(
           // been through the filter and is better than anything a fresh
           // one-shot call will return.
           const current = get().fix
-          if (current && Date.now() - current.timestamp < FRESH_MS) {
+          if (current && Date.now() - (current.receivedAt ?? current.timestamp) < FRESH_MS) {
             resolve(current)
             return
           }

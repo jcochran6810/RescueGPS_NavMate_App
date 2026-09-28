@@ -8,7 +8,29 @@ Add new items at the top. Use the format:
 
 ## Open
 
-- [ ] 2026-09-24 — **Auto-routing drew a straight line because it only ever
+- [ ] 2026-09-28 — **Turn-by-turn navigation: confirm on the water.** Everything
+      was verified in simulation on real Galveston ENC data and in headless
+      browser drives (see CLAUDE.md session log 2026-09-28), never on a boat.
+      First trips: check the route against a paper chart, keep a lookout, and
+      note any "Round waypoint N first", "Slow down" or re-route that looks wrong.
+- [ ] 2026-09-28 — **Sluggish helm at speed.** In the final acceptance run a
+      helm that reads the card every 3–5 s and turns slowly oscillated ±40–70 m
+      after turns at 20–45 kn and grounded in 8/94 voyages (card guidance itself
+      was sensible). Candidates: widen the lateral depth margin with planned
+      speed, earlier "shallows ahead on your heading" at high speed, damped
+      STEER changes. Leg near 29.3535,-94.8113 (10.8 m from the 1.0 m band).
+- [ ] 2026-09-28 — **STEER flip-flop on very poor GPS (±50–60 m).** The course
+      alternates 150–180° between holding the leg and steering back to the line
+      from the poor fix. Hold the leg course whenever accuracy exceeds the
+      off-track distance.
+- [ ] 2026-09-28 — **Route planning speed.** planRoute takes 0.5–2.4 s on a
+      laptop for ≤7 NM passages and runs on the main thread; move it to a Web
+      Worker (the live checks reuse the chart index — share or rebuild it).
+- [ ] 2026-09-28 — **Re-route back-off after a long deviation** leaves up to
+      ~50 s of "Off the route — re-routing if you stay off" without a re-route
+      (limit 2 per 2 min).
+
+- [x] 2026-09-24 — **Auto-routing drew a straight line because it only ever
       asked one chart band — FIXED in code, confirm on the water.** Measured
       through the live `/api/enc` relay (via the Vercel connector, since the
       sandbox cannot reach NOAA): the relay works, the service paths in

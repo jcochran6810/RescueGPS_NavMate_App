@@ -14,9 +14,14 @@ import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
 import { MapActionHost } from '@/components/MapActionHost'
+import { NavBanner } from '@/components/NavBanner'
 import { WaypointSheet } from '@/components/WaypointSheet'
 import { useIncidentTelemetry } from '@/hooks/useIncidentUnits'
 import { useIncidentFeeds } from '@/hooks/useIncidentFeeds'
+import { useNavigationEngine } from '@/hooks/useNavigationEngine'
+import { useNavigation } from '@/store/useNavigation'
+import { useNavUi } from '@/store/useNavUi'
+import { initialTab, showNavBanner } from '@/lib/navView'
 import { useAssignments } from '@/store/useAssignments'
 import { useMessages } from '@/store/useMessages'
 import { useHazards } from '@/store/useHazards'
@@ -44,9 +49,28 @@ import { SettingsTab } from '@/tabs/SettingsTab'
 
 export default function App() {
   const { session, ready, recovering, init } = useAuth()
-  const [tab, setTab] = useState<TabId>('home')
+  // A reload mid-passage opens on the steering card, not the home screen:
+  // the store is rehydrated from storage before this first render.
+  const [tab, setTab] = useState<TabId>(() => initialTab(useNavigation.getState().status))
 
   useEffect(() => init(), [init])
+
+  // Steering runs whichever tab is open — see hooks/useNavigationEngine.ts
+  // (mounted as <NavigationEngine/> inside the signed-in tree below: it keeps
+  // the GPS on and re-plans, neither of which belongs on the sign-in screen).
+  // It is shown whichever tab is open: the Chart tab has the full card, every
+  // other tab — and the Chart tab while its card is scrolled out of view — a
+  // one-line banner above the stamp button. Steering paused for the crew to
+  // review a changed route keeps the banner up too, as an alert.
+  const navStatus = useNavigation((s) => s.status)
+  const navReconfirm = useNavigation((s) => s.reconfirm)
+  const cardInView = useNavUi((s) => s.cardInView)
+  const showBanner = showNavBanner({
+    onChartTab: tab === 'chart',
+    status: navStatus,
+    reconfirm: navReconfirm,
+    cardInView,
+  })
 
   // Runtime errors feed the admin dashboard's health numbers.
   useEffect(() => installErrorReporting(), [])
@@ -81,6 +105,10 @@ export default function App() {
      */
     if (!ready) return
     if (!session) {
+      // The passage — destination, route, the names of another crew's
+      // waypoints — goes with the account. First, so the team reset below
+      // does not look like a boat change to a route still being steered.
+      useNavigation.getState().reset()
       useTeams.getState().reset()
       // The waypoint cache is deliberately NOT cleared here — it may hold an
       // unsynced queue, and its ownerId guard stops another account from
@@ -90,6 +118,8 @@ export default function App() {
       useSupport.getState().reset()
       return
     }
+    // A passage left on this phone by another account is not this crew's.
+    useNavigation.getState().bindOwner(session.user.id)
     void useTeams.getState().load()
     void useWaypoints.getState().load()
     void useSarRecords.getState().load()
@@ -167,10 +197,15 @@ export default function App() {
           from here rather than from a map, because a crew reading the datum
           worksheet is still a unit on the search. */}
       <IncidentTelemetry />
+      <NavigationEngine />
       <Header active={tab} onChange={setTab} />
       {/* Clears the footer, which now carries only the stamp button — the
           section menu lives in the header's top corner. */}
-      <main className="mx-auto max-w-3xl px-3 pt-3 pb-24">
+      <main
+        className={
+          'mx-auto max-w-3xl px-3 pt-3 ' + (showBanner ? 'pb-40' : 'pb-24')
+        }
+      >
         {tab === 'home' && <HomeTab onNavigate={setTab} />}
         {tab === 'datum' && <DatumTab onNavigate={setTab} />}
         {tab === 'search' && <SearchTab />}
@@ -204,6 +239,17 @@ export default function App() {
             the search already knows the water temperature and when the person
             went in. */}
         <SurvivalBanner />
+        {showBanner && (
+          <div className="pt-1.5">
+            <NavBanner
+              onOpen={() => {
+                // On the Chart tab the card is only scrolled away: bring it back.
+                if (tab === 'chart') window.scrollTo({ top: 0, behavior: 'smooth' })
+                else setTab('chart')
+              }}
+            />
+          </div>
+        )}
         <div className="mx-auto max-w-3xl pb-2">
           <StampWaypoint />
         </div>
@@ -225,5 +271,11 @@ export default function App() {
 function IncidentTelemetry() {
   useIncidentTelemetry()
   useIncidentFeeds()
+  return null
+}
+
+/** The navigation engine, for the signed-in crew only. */
+function NavigationEngine() {
+  useNavigationEngine()
   return null
 }
