@@ -233,6 +233,48 @@ const DOPPLER_SLACK_MPS = 3
 const DOPPLER_MIN_MPS = 1
 
 /**
+ * A refused run is not believed while the receiver's own velocity says the
+ * boat could not be there: integrated from the last position believed, the
+ * Doppler velocities the run's fixes carry put the boat within this much
+ * (m/s of the run's length, for the error in those velocities — 0.1 m/s and
+ * a few degrees on a phone), plus both fixes' errors, of where the run is.
+ * Doppler does not jump with a reflected position: a multipath excursion
+ * 100–200 m off, claiming ±4 m, kept the course and speed of the boat and
+ * was believed on the strength of its fixes agreeing with each other (rc5
+ * F7). Only when the receiver reports a velocity for every fix of the run.
+ */
+const DOPPLER_DRIFT_MPS = 1.5
+/**
+ * …unless the run has gone on this long (seconds): the filter's own base may
+ * be what is wrong (`ADOPT_ANYWAY_S` for a run the Doppler check cannot
+ * judge).
+ */
+const DOPPLER_ANYWAY_S = 20
+/** …over at least this many refused fixes (a dropout in the middle of a reflection is not "a long run"). */
+const DOPPLER_ANYWAY_FIXES = 10
+
+/**
+ * The fixes' claimed error is checked against how far they actually fall
+ * from the prediction: the normalised innovation squared (chi-square, two
+ * degrees of freedom, expected 2), averaged over about this many fixes.
+ * A receiver that under-reports its error (a ±4 m claim on fixes scattered
+ * ±10 m) shows as an average well above 2, and its figure is scaled up by
+ * the square root of the excess — in the filter's weighting and in the
+ * accuracy reported — up to `NIS_MAX_SCALE`.
+ */
+const NIS_FIXES = 20
+const NIS_MAX_SCALE = 4
+/** Innovations beyond this (chi-square) are capped before averaging, so one outlier does not swamp it. */
+const NIS_CAP = 25
+
+/**
+ * A fix taken in although it lies this far from the prediction (chi-square)
+ * with no turn reported to explain it is flagged `settling`: nothing is
+ * switched or arrived on a fix that disagrees strongly with the track.
+ */
+const DISAGREE_CHI2 = 16
+
+/**
  * A sudden jump the filter took in (a fix well off the prediction with no
  * turn leading up to it) is held open for this many fixes: if the receiver
  * comes back to where the boat was going before it, the jump was a
@@ -347,6 +389,9 @@ interface LocalFix {
   y: number
   acc: number
   t: number
+  /** The receiver's own velocity (Doppler), m/s east/north, when it reports one making way. */
+  vx?: number
+  vy?: number
 }
 
 /** The filter as it was just before a sudden jump — see `SNAP_FIXES`. */
@@ -423,6 +468,15 @@ function dopplerOf(raw: Fix): number | null {
   return v != null && Number.isFinite(v) && v >= DOPPLER_MIN_MPS ? v : null
 }
 
+/** The receiver's velocity east/north, m/s, when it reports both a speed making way and a course. */
+function dopplerVelocity(raw: Fix): { vx?: number; vy?: number } {
+  const v = dopplerOf(raw)
+  const h = raw.heading
+  if (v == null || h == null || !Number.isFinite(h)) return {}
+  const r = (h * Math.PI) / 180
+  return { vx: v * Math.sin(r), vy: v * Math.cos(r) }
+}
+
 /**
  * Bring a filter velocity faster than the Doppler speed allows back to that
  * speed, keeping its course, and widen its variance to match.
@@ -478,6 +532,11 @@ export class TrackFilter {
   private held: { at: number; jumpM: number; fixes: number } | null = null
   /** The fix being processed is a poor one let past the gate (`POOR_MAX_M`). */
   private poorPass = false
+  /** Running mean of the normalised innovation squared (`NIS_FIXES`), and how many it holds. */
+  private nis = 2
+  private nisN = 0
+  /** The fix being processed disagreed strongly with the track (`DISAGREE_CHI2`). */
+  private disagree = false
 
   /** Is this disagreement on the same side as the last one? */
   private sameSide(x: number, y: number): boolean {
@@ -508,6 +567,8 @@ export class TrackFilter {
   reset(): void {
     this.x = null
     this.y = null
+    this.nis = 2
+    this.nisN = 0
     this.t = 0
     this.run = []
     this.runJump = false
@@ -557,9 +618,13 @@ export class TrackFilter {
     }
 
     // No accuracy at all and no gate: assume the worst rather than the best,
-    // so an unqualified fix cannot outvote a measured one.
-    const sigma = acc ?? 100
+    // so an unqualified fix cannot outvote a measured one. A receiver whose
+    // fixes scatter wider than it claims has its figure scaled up to match
+    // (`NIS_FIXES`).
+    const claimed = acc ?? 100
+    const sigma = claimed * this.nisScale()
     const r = sigma * sigma
+    this.disagree = false
 
     if (this.x === null || this.y === null) {
       this.begin(raw, r)
@@ -594,7 +659,7 @@ export class TrackFilter {
     }
 
     const { x: zx, y: zy } = this.toLocal(raw.lat, raw.lon)
-    const here: LocalFix = { x: zx, y: zy, acc: sigma, t: raw.timestamp }
+    const here: LocalFix = { x: zx, y: zy, acc: sigma, t: raw.timestamp, ...dopplerVelocity(raw) }
 
     // A jump taken in a fix or three ago, and now the receiver is back where
     // the boat was going before it: that was a reflection. Put the filter back
@@ -658,6 +723,23 @@ export class TrackFilter {
       }
     }
 
+    // Where the receiver's own velocity — at the last fix taken and at this
+    // one — puts the boat, from the last position believed: a fix well away
+    // from that has jumped, however long the gap before it. After a dropout
+    // the prediction is wide enough to take in a reflection 170 m off
+    // claiming ±6 m, and the step from the last fix, spread over the gap,
+    // was slower than the Doppler speed (rc5 F7). Both velocities are
+    // needed, and a turn between them is allowed for.
+    if (this.run.length === 0 && this.lastRaw && this.dopplerContradicts(here)) {
+      this.runJump = true
+      return this.refuse(
+        raw,
+        here,
+        r,
+        `Fix ${Math.round(Math.hypot(zx - this.x.p, zy - this.y.p))} m from where the receiver's own course and speed put the boat`,
+      )
+    }
+
     // A step the boat could not have made from the last fix taken, at the
     // velocity it had, without accelerating harder than any boat does — once
     // both fixes' own claimed errors are allowed for. Measured from the
@@ -688,7 +770,12 @@ export class TrackFilter {
     // fix after refusals must also be one the boat could have reached from
     // where dead reckoning puts it (`plausibleJump`); until then it joins
     // the refused run.
-    if (this.run.length > 0 && this.runJump && this.plausibleJump(here) == null) {
+    if (
+      this.run.length > 0 &&
+      this.runJump &&
+      (this.plausibleJump(here) == null ||
+        (this.dopplerContradicts(here) && !this.longRun(raw)))
+    ) {
       return this.refuse(
         raw,
         here,
@@ -778,6 +865,20 @@ export class TrackFilter {
         `Fix ${Math.round(Math.hypot(ix.y, iy.y))} m off the predicted track`,
       )
     }
+
+    // How far the fix fell from the plain prediction against its CLAIMED
+    // error, on a steady run (a turn's innovations are the turn's, not the
+    // receiver's): the running check on that claim.
+    if (!trend && q <= this.opts.accelNoise) {
+      const s0x = ix.s - r + claimed * claimed
+      const s0y = iy.s - r + claimed * claimed
+      const nis0 = Math.min(NIS_CAP, (first.x * first.x) / s0x + (first.y * first.y) / s0y)
+      const w = 1 / Math.min(NIS_FIXES, ++this.nisN)
+      this.nis += w * (nis0 - this.nis)
+    }
+    // Taken in, but a long way from the track with no turn to explain it:
+    // shown, and nothing switched or arrived on it.
+    if (first.d2 > DISAGREE_CHI2 && !trend) this.disagree = true
 
     if (!this.snap && first.d2 > MANOEUVRE_CHI2 && !trend) {
       this.snap = {
@@ -871,6 +972,11 @@ export class TrackFilter {
     if (this.run.length > RUN_KEEP) this.run.shift()
     const agreed = this.agreeingTail()
     let jumpM = agreed ? this.plausibleJump(agreed[agreed.length - 1]) : null
+    // The receiver's own velocity says the boat is not where the run is:
+    // not believed — unless it has gone on for `DOPPLER_ANYWAY_S`.
+    const againstDoppler =
+      !!agreed && this.dopplerContradicts(agreed[agreed.length - 1]) && !this.longRun(raw)
+    if (againstDoppler) jumpM = null
     // Refusing a consistent track for long enough is the filter being
     // wrong, whatever dead reckoning says — its own velocity can be what is
     // off (after a reflection it half-followed). Believed then, jump held in
@@ -878,6 +984,7 @@ export class TrackFilter {
     if (
       agreed &&
       jumpM == null &&
+      !againstDoppler &&
       agreed.length >= ADOPT_ANYWAY_FIXES &&
       (raw.timestamp - this.t) / 1000 >= ADOPT_ANYWAY_S &&
       this.x &&
@@ -942,6 +1049,65 @@ export class TrackFilter {
     const est = CIRCLE_68 * Math.sqrt((ax.pp + ay.pp) / 2)
     const noise = STEP_NOISE * Math.hypot(last.acc, est)
     return off <= 0.5 * ADOPT_ACCEL_MPS2 * T * T + noise ? off : null
+  }
+
+  /**
+   * Does the receiver's own velocity put the boat somewhere else than `upTo`
+   * (a fix of the refused run)? Its Doppler velocities, integrated from the
+   * last position believed through the run's fixes, against where `upTo`
+   * is, allowing `DOPPLER_DRIFT_MPS` of the run's length and both errors.
+   * False when any fix of the run carries no velocity — it cannot say.
+   */
+  private dopplerContradicts(upTo: LocalFix): boolean {
+    if (!this.x || !this.y) return false
+    const end = this.run.indexOf(upTo)
+    const seq = end < 0 ? [...this.run, upTo] : this.run.slice(0, end + 1)
+    if (seq.some((f) => f.vx == null || f.vy == null)) return false
+    const lr = this.lastRaw
+    if (!lr || lr.t !== this.t || lr.vx == null || lr.vy == null) return false
+    let px = this.x.p
+    let py = this.y.p
+    let t = this.t
+    let vx = lr.vx
+    let vy = lr.vy
+    // A turn between two fixes bends the path off the chord the mean of
+    // their velocities draws: allowed, as half the change in velocity over
+    // the interval.
+    let turn = 0
+    for (const f of seq) {
+      const dt = (f.t - t) / 1000
+      const fx = f.vx as number
+      const fy = f.vy as number
+      if (dt > 0) {
+        px += (dt * (vx + fx)) / 2
+        py += (dt * (vy + fy)) / 2
+        turn += (dt * Math.hypot(fx - vx, fy - vy)) / 2
+      }
+      vx = fx
+      vy = fy
+      t = f.t
+    }
+    const T = (upTo.t - this.t) / 1000
+    const est = CIRCLE_68 * Math.sqrt((this.x.pp + this.y.pp) / 2)
+    const allowed = STEP_NOISE * Math.hypot(upTo.acc, est, lr.acc) + DOPPLER_DRIFT_MPS * T + turn
+    return Math.hypot(upTo.x - px, upTo.y - py) > allowed
+  }
+
+  /**
+   * Has the receiver disagreed with the filter long enough — `DOPPLER_ANYWAY_S`
+   * over `DOPPLER_ANYWAY_FIXES` refused fixes — that the filter, not the
+   * receiver, may be what is wrong?
+   */
+  private longRun(raw: Fix): boolean {
+    return (
+      (raw.timestamp - this.t) / 1000 >= DOPPLER_ANYWAY_S && this.run.length >= DOPPLER_ANYWAY_FIXES
+    )
+  }
+
+  /** How much the receiver's claimed error is scaled up by (`NIS_FIXES`): 1 until it is seen to under-report. */
+  private nisScale(): number {
+    if (this.nisN < 5) return 1
+    return Math.min(NIS_MAX_SCALE, Math.max(1, Math.sqrt(this.nis / 2)))
   }
 
   /**
@@ -1150,7 +1316,7 @@ export class TrackFilter {
     // The covariance is per axis; the accuracy a receiver reports is the
     // radius of a circle (about 68 %), which is 1.5 σ in two dimensions.
     const est = CIRCLE_68 * Math.sqrt((ax.pp + ay.pp) / 2)
-    const floor = (raw.accuracy ?? est) * ACCURACY_FLOOR
+    const floor = (raw.accuracy ?? est) * ACCURACY_FLOOR * this.nisScale()
     const lag = raw.accuracy != null && residualM > raw.accuracy ? residualM : 0
     // Just believed a jump: until it is borne out, the old position is as
     // likely as the new, and the reported error says so — fading over
@@ -1198,7 +1364,7 @@ export class TrackFilter {
     // Just adopted after a jump, or a sudden jump still on probation: not
     // yet borne out — nothing is to be switched or arrived on it.
     const poor = this.poorPass
-    const settling = this.settle > 0 || this.snap != null || poor
+    const settling = this.settle > 0 || this.snap != null || poor || this.disagree
     if (this.settle > 0) this.settle--
 
     return {

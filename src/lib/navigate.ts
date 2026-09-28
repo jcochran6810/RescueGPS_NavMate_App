@@ -337,6 +337,38 @@ export interface ProgressOptions {
   cruiseKn?: number | null
   /** ms since the epoch. Default `Date.now()`. */
   now?: number
+  /**
+   * Add a mild allowance to the time to go for the turns still ahead and
+   * for slowing at the destination (`ETA_ARRIVAL_S`, `ETA_TURN_S`). The
+   * card asks for it; the plain figure is distance over speed.
+   */
+  allowance?: boolean
+}
+
+/**
+ * Time a boat loses slowing down to come alongside at the destination,
+ * seconds, and per 90° of each turn still ahead (pro rata, a turn counted
+ * at most 180°). Distance over speed made good ran 8–11 % short at the
+ * median over 500 simulated passages — most of it the approach and the
+ * turns (rc5 ETA).
+ */
+export const ETA_ARRIVAL_S = 15
+export const ETA_TURN_S = 4
+
+/** Seconds of `ETA_TURN_S` for the turns at points `from`…n−2. */
+function turnAllowanceS(plan: NavPlan, from: number): number {
+  const pts = plan.points
+  let s = 0
+  for (let i = Math.max(1, from); i < pts.length - 1; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    const c = pts[i + 1]
+    if (haversineNM(a.lat, a.lon, b.lat, b.lon) * NM_TO_METERS < 1) continue
+    if (haversineNM(b.lat, b.lon, c.lat, c.lon) * NM_TO_METERS < 1) continue
+    const d = angleBetween(bearingDeg(a.lat, a.lon, b.lat, b.lon), bearingDeg(b.lat, b.lon, c.lat, c.lon))
+    s += (ETA_TURN_S * Math.min(180, d)) / 90
+  }
+  return s
 }
 
 /**
@@ -375,7 +407,8 @@ export function navProgress(
     speedSource = 'cruise'
   }
   const now = opts.now ?? Date.now()
-  const timeToGoH = speedKn != null ? remainingNM / speedKn : null
+  const extraH = opts.allowance ? (ETA_ARRIVAL_S + turnAllowanceS(plan, idx)) / 3600 : 0
+  const timeToGoH = speedKn != null ? remainingNM / speedKn + extraH : null
   const etaMs = timeToGoH != null ? now + timeToGoH * 3_600_000 : null
 
   const legIdx = idx >= 1 ? idx - 1 : null
@@ -723,11 +756,54 @@ export const LOOKAHEAD_MAX_ACC_M = 400
 /** Off the line by at least this, the card says so and how to get back, metres. */
 export const XTE_CUE_M = 10
 
+/**
+ * The aim is put this many seconds of the boat's run ahead along the leg, at
+ * least (never under `LOOKAHEAD_MIN_M`, never over `LOOKAHEAD_MAX_M`). A
+ * fixed 30 m had a helm that answers slowly swinging ±54 m across the line
+ * at 20 kn — at speed 30 m is under two seconds of run, and the course
+ * swung harder than a boat can follow (rc5 F6). Six seconds is the run a
+ * helm needs to come onto a new course and settle on it.
+ */
+export const LOOKAHEAD_S = 6
+/** The most the speed puts the aim ahead, metres (30 kn for six seconds is 93 m). */
+export const LOOKAHEAD_MAX_M = 120
+
+/**
+ * The lookahead a boat at this fix's speed is steered with, metres —
+ * `LOOKAHEAD_S` of its run, `LOOKAHEAD_MIN_M`…`LOOKAHEAD_MAX_M`. The store
+ * may choose another where the chart says this one points the boat at land
+ * (`SteerOptions.lookaheadM`).
+ */
+export function speedLookaheadM(fix: { speed?: number | null } | null | undefined): number {
+  const v = fix?.speed
+  const run = v != null && Number.isFinite(v) && v > 0 ? LOOKAHEAD_S * v : 0
+  return Math.min(LOOKAHEAD_MAX_M, Math.max(LOOKAHEAD_MIN_M, run))
+}
+
+/** How the course to steer is worked, beyond the route and the fix. */
+export interface SteerOptions {
+  /**
+   * How far ahead along the leg to aim, metres, instead of the speed's own
+   * (`speedLookaheadM`) — the store's choice, checked against the chart so
+   * the course never points the boat at land. Still never less than the
+   * distance off the line (the intercept is never steeper than 45°).
+   */
+  lookaheadM?: number | null
+  /**
+   * Allowance for the set, degrees added to the course (+ = steer to the
+   * right of the line to the aim): a boat set sideways by a current holds
+   * its line only by pointing up into it. See `useNavigation.guide`.
+   */
+  setDeg?: number | null
+}
+
 export interface SteerCourse {
   /** The point steered for: on the leg ahead of the boat, or the target itself. */
   aim: LatLon
-  /** From the boat to `aim`, degrees TRUE — the course to steer. */
+  /** From the boat to `aim`, degrees TRUE, with the allowance for the set — the course to steer. */
   bearingDeg: number
+  /** From the boat to `aim`, degrees TRUE — the line to make good over the ground. */
+  trackDeg: number
   /** Signed distance from the leg's line, metres, + = right of it; null for the first point. */
   xteM: number | null
   /** How far ahead along the leg the aim was put, metres (0 when aiming at the target). */
@@ -758,18 +834,18 @@ export function steerCourse(
   plan: NavPlan,
   targetIdx: number,
   fix: SteerFix | null | undefined,
+  opts: SteerOptions = {},
 ): SteerCourse | null {
   const n = plan.points.length
   if (!fix || n === 0) return null
   const idx = clampIdx(plan, targetIdx)
   const target = plan.points[idx]
-  const direct = (xteM: number | null): SteerCourse => ({
-    aim: target,
-    bearingDeg: bearingDeg(fix.lat, fix.lon, target.lat, target.lon),
-    xteM,
-    lookaheadM: 0,
-    alongM,
-  })
+  const set = opts.setDeg != null && Number.isFinite(opts.setDeg) ? opts.setDeg : 0
+  const course = (track: number) => (((track + set) % 360) + 360) % 360
+  const direct = (xteM: number | null): SteerCourse => {
+    const track = bearingDeg(fix.lat, fix.lon, target.lat, target.lon)
+    return { aim: target, bearingDeg: course(track), trackDeg: track, xteM, lookaheadM: 0, alongM }
+  }
   let alongM: number | null = null
   if (idx === 0) return direct(null)
   const a = plan.points[idx - 1]
@@ -779,18 +855,411 @@ export function steerCourse(
   const acc =
     fix.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0 ? fix.accuracy : 0
   const noisy = Math.min(LOOKAHEAD_MAX_ACC_M, LOOKAHEAD_MIN_M * (acc / LOOKAHEAD_GOOD_ACC_M) ** 2)
-  const lookaheadM = Math.max(LOOKAHEAD_MIN_M, Math.abs(g.crossM), noisy)
+  const base =
+    opts.lookaheadM != null && Number.isFinite(opts.lookaheadM) && opts.lookaheadM > 0
+      ? opts.lookaheadM
+      : speedLookaheadM(fix)
+  const lookaheadM = Math.max(LOOKAHEAD_MIN_M, base, Math.abs(g.crossM), noisy)
   const s = Math.min(g.lengthM, Math.max(0, g.alongM)) + lookaheadM
   if (s >= g.lengthM) return direct(g.crossM)
   const f = s / g.lengthM
   const aim = { lat: a.lat + f * (target.lat - a.lat), lon: a.lon + f * (target.lon - a.lon) }
+  const track = bearingDeg(fix.lat, fix.lon, aim.lat, aim.lon)
   return {
     aim,
-    bearingDeg: bearingDeg(fix.lat, fix.lon, aim.lat, aim.lon),
+    bearingDeg: course(track),
+    trackDeg: track,
     xteM: g.crossM,
     lookaheadM,
     alongM,
   }
+}
+
+/**
+ * The course of the leg into point `idx` (the first leg, for the start),
+ * degrees true; null for a one-point plan or a leg under a metre.
+ */
+export function legCourseDeg(plan: NavPlan, idx: number): number | null {
+  const pts = plan.points
+  if (pts.length < 2) return null
+  const i = Math.max(1, Math.min(idx, pts.length - 1))
+  const a = pts[i - 1]
+  const b = pts[i]
+  if (haversineNM(a.lat, a.lon, b.lat, b.lon) * NM_TO_METERS < 1) return null
+  return bearingDeg(a.lat, a.lon, b.lat, b.lon)
+}
+
+/* -------------------------------------------------------------------------
+ * Allowing for the set — a cross-current at low speed
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The water's set as the steering has learnt it, m/s east and north. Only
+ * the part across each leg run is ever measured (from the cross-track error
+ * that part leaves); along the leg it shows only as speed.
+ */
+export interface SetEstimate {
+  e: number
+  n: number
+}
+
+/**
+ * How fast the set is learnt: the rate the estimate of the set across the
+ * leg grows per metre off the line, as a fraction of (speed / lookahead)² —
+ * the square of the rate the lookahead itself closes the line at. A quarter
+ * would damp it critically on paper; a helm that answers late (and a card
+ * read every few seconds) wants less.
+ */
+export const SET_GAIN = 0.25
+/** The most set the steering allows for, m/s (4 kn), and as a share of the boat's speed. */
+export const SET_MAX_MPS = 2
+export const SET_MAX_SHARE = 0.6
+/** The learnt set fades with this time constant when nothing renews it, seconds. */
+export const SET_FADE_S = 600
+/** The set is learnt only from fixes claiming this accuracy or better, metres. */
+export const SET_LEARN_MAX_ACC_M = 10
+/**
+ * An allowance of at least this (degrees) that the course over the ground
+ * follows — nearer it than the track by `SET_COG_MARGIN_DEG` — is let go
+ * with this time constant (seconds): see `updateSet`.
+ */
+export const SET_COG_MIN_DEG = 5
+export const SET_COG_MARGIN_DEG = 2
+export const SET_COG_RELEASE_S = 15
+
+/** Unit vector to the right of a course, east/north. */
+function rightOf(courseDeg: number): { e: number; n: number } {
+  const r = (courseDeg * Math.PI) / 180
+  return { e: Math.cos(r), n: -Math.sin(r) }
+}
+
+/**
+ * Learn the set from one fix: while the boat is running a leg (on it, at
+ * steerage speed, heading along it), a cross-track error that the lookahead
+ * does not take out is the set's doing, and the set across the leg is moved
+ * toward the side the boat is off by `SET_GAIN`·(v/L)²·xte·dt. Integral
+ * action, in other words, on top of the lookahead's proportional: a helm
+ * steering the card's course in a one-knot cross-set at four knots was held
+ * 40–50 m off the line, and re-routed again and again (rc5 hc-81, F8).
+ *
+ * Measured from the drift of the cross-track error rather than from course
+ * over the ground against a compass heading: a phone's compass is where the
+ * phone points, not the boat.
+ */
+export function updateSet(
+  prev: SetEstimate | null | undefined,
+  plan: NavPlan,
+  idx: number,
+  fix: NavFix,
+  dtS: number,
+  lookaheadM: number,
+): SetEstimate {
+  const est = prev && Number.isFinite(prev.e) && Number.isFinite(prev.n) ? { ...prev } : { e: 0, n: 0 }
+  const dt = Number.isFinite(dtS) && dtS > 0 ? Math.min(dtS, 5) : 0
+  if (dt === 0) return est
+  const fade = Math.exp(-dt / SET_FADE_S)
+  est.e *= fade
+  est.n *= fade
+  const n = plan.points.length
+  if (idx < 1 || idx >= n || fix.settling || fix.estimate) return est
+  // Not from a poor fix: its cross-track error is the receiver's, not the
+  // water's. Integrated from ±15–25 m fixes the set grew to 30° of allowance
+  // and crabbed a boat across the line onto the bank beyond (rc6, rc3
+  // narrow-7).
+  const acc = fix.accuracy
+  if (acc == null || !Number.isFinite(acc) || acc > SET_LEARN_MAX_ACC_M) return est
+  const v = fix.speed
+  if (v == null || !Number.isFinite(v) || v < 0.8) return est
+  const a = plan.points[idx - 1]
+  const b = plan.points[idx]
+  const g = legGeometry(a, b, fix)
+  if (g.lengthM < 20 || g.alongM < 0 || g.alongM > g.lengthM - 5) return est
+  const L = Math.max(LOOKAHEAD_MIN_M, lookaheadM)
+  if (Math.abs(g.crossM) > 2 * L + 20) return est
+  const leg = bearingDeg(a.lat, a.lon, b.lat, b.lon)
+  if (fix.heading != null && Number.isFinite(fix.heading) && angleBetween(fix.heading, leg) > 60) return est
+  // A helm that steers the course over the ground onto the card's course
+  // (by the GPS arrow, not a compass) makes its own allowance for the set:
+  // the card's allowance only moves its track off the line, and learning
+  // more of it winds up against the helm. Seen as the course over the
+  // ground lying nearer the card's course (the track plus the allowance)
+  // than the track itself — the allowance is let go instead
+  // (`SET_COG_RELEASE_S`). For a helm steering by compass that happens only
+  // when the allowance has overshot, and letting it go is right there too.
+  const allowance = setAllowanceDeg(est, plan, idx, fix)
+  if (Math.abs(allowance) >= SET_COG_MIN_DEG && fix.heading != null && Number.isFinite(fix.heading)) {
+    const c = steerCourse(plan, idx, fix, { lookaheadM: L })
+    if (c) {
+      const toSteer = angleBetween(fix.heading, c.trackDeg + allowance)
+      const toTrack = angleBetween(fix.heading, c.trackDeg)
+      if (toSteer < toTrack - SET_COG_MARGIN_DEG) {
+        const k = Math.exp(-dt / SET_COG_RELEASE_S)
+        est.e *= k
+        est.n *= k
+        return est
+      }
+    }
+  }
+  const r = rightOf(leg)
+  const across = est.e * r.e + est.n * r.n
+  const k = SET_GAIN * (v / L) ** 2
+  const cap = Math.min(SET_MAX_MPS, SET_MAX_SHARE * Math.max(v, 1))
+  const next = Math.max(-cap, Math.min(cap, across + k * g.crossM * dt))
+  est.e += (next - across) * r.e
+  est.n += (next - across) * r.n
+  return est
+}
+
+/**
+ * The allowance for the learnt set on the leg into point `idx`, degrees to
+ * add to the course (+ = steer right): the angle a boat at this speed must
+ * point up into the set across the leg to hold its line. 0 with nothing
+ * learnt, no leg or no speed.
+ */
+export function setAllowanceDeg(
+  est: SetEstimate | null | undefined,
+  plan: NavPlan,
+  idx: number,
+  fix: { speed?: number | null } | null | undefined,
+): number {
+  if (!est || !(Number.isFinite(est.e) && Number.isFinite(est.n))) return 0
+  const n = plan.points.length
+  if (idx < 1 || idx >= n) return 0
+  const v = fix?.speed
+  if (v == null || !Number.isFinite(v) || v < 0.5) return 0
+  const a = plan.points[idx - 1]
+  const b = plan.points[idx]
+  if (haversineNM(a.lat, a.lon, b.lat, b.lon) * NM_TO_METERS < 1) return 0
+  const r = rightOf(bearingDeg(a.lat, a.lon, b.lat, b.lon))
+  const across = est.e * r.e + est.n * r.n
+  const sin = Math.max(-SET_MAX_SHARE, Math.min(SET_MAX_SHARE, across / Math.max(v, 0.5)))
+  const deg = (-Math.asin(sin) * 180) / Math.PI
+  return Math.abs(deg) < 0.5 ? 0 : deg
+}
+
+/* -------------------------------------------------------------------------
+ * A helm that answers slowly — lengthen the lookahead
+ * ---------------------------------------------------------------------- */
+
+/**
+ * How the boat has been holding the line: the last two excursions off it
+ * (their side, their size, when they ended) and the factor the lookahead is
+ * stretched by for this helm (1 = the speed's own).
+ */
+export interface HelmRecord {
+  factor: number
+  /** The excursion under way: side (+1 right, −1 left), largest distance off, metres. */
+  side: number
+  peakM: number
+  /** The excursion before it, the other side: its size, and when it ended (ms). */
+  lastPeakM: number
+  lastAt: number | null
+  /** The leg it was measured on (target index), and when last updated (ms). */
+  leg: number
+  at: number | null
+}
+
+/** Excursions smaller than this either side are the line held, not swung across, metres. */
+export const SWING_MIN_M = 15
+/** Two swings across within this are one oscillation, ms. */
+export const SWING_WINDOW_MS = 120_000
+/** Each oscillation stretches the lookahead by this, up to `HELM_FACTOR_MAX`. */
+export const HELM_FACTOR_STEP = 1.4
+export const HELM_FACTOR_MAX = 2.5
+/** The stretch fades back with this time constant once the swinging stops, seconds. */
+export const HELM_FACTOR_FADE_S = 300
+/** Inside this of the line the side is not changed (GPS noise), metres. */
+const SWING_DEADBAND_M = 3
+
+/**
+ * Watch the boat cross the line. A helm that answers the card slowly
+ * (a heavy boat, a helmsman reading it every few seconds) overshoots the
+ * line and swings back past it: 40–55 m either side at 20 kn, over and over,
+ * until it ran out of water (rc5 sluggish helm). Each full swing — beyond
+ * `SWING_MIN_M` one side, then the other, within `SWING_WINDOW_MS` —
+ * stretches the lookahead by `HELM_FACTOR_STEP`: a longer lookahead asks for
+ * gentler turns the helm can follow. It fades back when the swinging stops.
+ * Measured only on a good fix, on a leg, not while rounding.
+ */
+export function updateHelm(
+  prev: HelmRecord | null | undefined,
+  leg: number,
+  xteM: number | null,
+  accuracyM: number | null | undefined,
+  now: number,
+): HelmRecord {
+  const h: HelmRecord = prev
+    ? { ...prev }
+    : { factor: 1, side: 0, peakM: 0, lastPeakM: 0, lastAt: null, leg, at: null }
+  const dt = h.at != null ? Math.max(0, (now - h.at) / 1000) : 0
+  h.at = now
+  if (dt > 0 && h.factor > 1) h.factor = 1 + (h.factor - 1) * Math.exp(-dt / HELM_FACTOR_FADE_S)
+  if (h.leg !== leg) {
+    h.leg = leg
+    h.side = 0
+    h.peakM = 0
+    h.lastPeakM = 0
+    h.lastAt = null
+  }
+  const acc = accuracyM != null && Number.isFinite(accuracyM) ? accuracyM : Infinity
+  if (xteM == null || !Number.isFinite(xteM) || acc > 10) return h
+  const a = Math.abs(xteM)
+  if (a < SWING_DEADBAND_M) return h
+  const side = xteM > 0 ? 1 : -1
+  if (side === h.side || h.side === 0) {
+    h.side = side
+    h.peakM = Math.max(h.peakM, a)
+    return h
+  }
+  // Across the line: the excursion that just ended, and the one before it.
+  if (
+    h.peakM >= SWING_MIN_M &&
+    h.lastPeakM >= SWING_MIN_M &&
+    h.lastAt != null &&
+    now - h.lastAt <= SWING_WINDOW_MS
+  ) {
+    h.factor = Math.min(HELM_FACTOR_MAX, h.factor * HELM_FACTOR_STEP)
+  }
+  h.lastPeakM = h.peakM
+  h.lastAt = now
+  h.side = side
+  h.peakM = a
+  return h
+}
+
+/* -------------------------------------------------------------------------
+ * How fast this boat and helm really turn
+ * ---------------------------------------------------------------------- */
+
+/**
+ * What the boat has shown of its turning when the card asked for a turn:
+ * the fastest it came round (degrees a second) and how long the helm took
+ * to start (seconds), each averaged over the turns timed, and the turn
+ * being timed now.
+ */
+export interface TurnRecord {
+  /** Learnt turn rate, degrees a second, or null before any turn was timed. */
+  dps: number | null
+  /** Learnt time from the card asking to the boat answering, seconds, or null. */
+  reactS: number | null
+  /** Turns timed. */
+  n: number
+  /** The turn being timed. */
+  ep: {
+    t0: number
+    h0: number
+    sign: number
+    /** When the boat was first seen answering (ms), or null. */
+    answeredAt: number | null
+    /** Fastest rate seen so far, degrees a second, and the last two courses (ms, degrees). */
+    peak: number
+    prev: [number, number][]
+  } | null
+}
+
+/** The rate a boat is assumed to turn at until it shows otherwise, degrees a second. */
+export const TURN_ASSUMED_DPS = 12
+/** How long the helm is assumed to take to answer the card, seconds, until it shows otherwise. */
+export const TURN_ASSUMED_REACT_S = 1.5
+/** A turn is timed when the card asks for at least this much, degrees… */
+export const TURN_LEARN_START_DEG = 25
+/** …and counts once the boat has come round this much… */
+export const TURN_LEARN_DONE_DEG = 20
+/** …within this long, seconds (longer: the helm chose not to, and nothing is learnt). */
+export const TURN_LEARN_MAX_S = 20
+/** The boat has answered once it has come round this much, degrees. */
+const TURN_ANSWER_DEG = 5
+/**
+ * The learnt rate is used only below this, degrees a second, and the learnt
+ * reaction only above `TURN_ADOPT_REACT_S`: a helm that answers the card
+ * briskly keeps the assumed figures (and the warnings tuned with them); a
+ * slow one — a heavy boat, a helm reading the card every few seconds — is
+ * warned for the turns it cannot make at speed, and turned for them earlier.
+ */
+export const TURN_ADOPT_DPS = 9
+export const TURN_ADOPT_REACT_S = 2.5
+/** The slowest rate, and the longest reaction, ever assumed. */
+export const TURN_MIN_DPS = 2
+export const TURN_MAX_REACT_S = 6
+
+function wrap180(d: number): number {
+  return ((((d + 180) % 360) + 360) % 360) - 180
+}
+
+/**
+ * Time the boat's turns. When the course to steer is `TURN_LEARN_START_DEG`
+ * or more off the boat's course over the ground, the clock starts: the time
+ * until the boat has come `TURN_ANSWER_DEG` round the right way is the
+ * helm's reaction, and the fastest it comes round (over two fixes, against
+ * GPS course noise) its turn rate. Once it has come `TURN_LEARN_DONE_DEG`
+ * round, both are averaged into the record. A helm that answered the card
+ * slowly ran a 22 kn boat 100 m past a 73° turn into the shallows beyond
+ * with no "slow down" given: the boat was assumed to turn at 12°/s a second
+ * and a half after the card asked, and it came round at 6°/s four seconds
+ * after (rc5 sluggish helm). Only on a good fix under way.
+ */
+export function updateTurnRate(
+  prev: TurnRecord | null | undefined,
+  fix: NavFix,
+  steerDeg: number | null,
+  now: number,
+): TurnRecord {
+  const rec: TurnRecord = prev
+    ? { ...prev, ep: prev.ep ? { ...prev.ep, prev: [...prev.ep.prev] } : null }
+    : { dps: null, reactS: null, n: 0, ep: null }
+  const h = fix.heading
+  const v = fix.speed
+  const acc = fix.accuracy
+  if (
+    fix.settling || fix.estimate ||
+    h == null || !Number.isFinite(h) ||
+    v == null || !Number.isFinite(v) || v < 2 ||
+    (acc != null && Number.isFinite(acc) && acc > 15)
+  ) {
+    return rec
+  }
+  const demand = steerDeg != null && Number.isFinite(steerDeg) ? wrap180(steerDeg - h) : null
+  const ep = rec.ep
+  if (!ep) {
+    if (demand != null && Math.abs(demand) >= TURN_LEARN_START_DEG) {
+      rec.ep = { t0: now, h0: h, sign: demand >= 0 ? 1 : -1, answeredAt: null, peak: 0, prev: [[now, h]] }
+    }
+    return rec
+  }
+  const dt = (now - ep.t0) / 1000
+  const done = ep.sign * wrap180(h - ep.h0)
+  if (ep.answeredAt == null && done >= TURN_ANSWER_DEG) ep.answeredAt = now
+  const back = ep.prev[0]
+  const span = (now - back[0]) / 1000
+  if (span > 0.5) ep.peak = Math.max(ep.peak, (ep.sign * wrap180(h - back[1])) / span)
+  ep.prev.push([now, h])
+  if (ep.prev.length > 2) ep.prev.shift()
+  if (done >= TURN_LEARN_DONE_DEG && ep.peak > 0 && ep.answeredAt != null) {
+    const react = (ep.answeredAt - ep.t0) / 1000
+    const k = rec.n === 0 ? 1 : 0.3
+    rec.dps = rec.dps == null ? ep.peak : rec.dps + k * (ep.peak - rec.dps)
+    rec.reactS = rec.reactS == null ? react : rec.reactS + k * (react - rec.reactS)
+    rec.n += 1
+    rec.ep = null
+  } else if (dt > TURN_LEARN_MAX_S || demand == null || Math.abs(demand) < 10) {
+    // Given up, or the card no longer asks for it: nothing learnt.
+    rec.ep = null
+  }
+  return rec
+}
+
+/** The turn rate to plan the boat's turns with, degrees a second (`TURN_ADOPT_DPS`). */
+export function turnRateDps(rec: TurnRecord | null | undefined): number {
+  const d = rec?.dps
+  if (d == null || !Number.isFinite(d) || !(rec!.n >= 1) || d >= TURN_ADOPT_DPS) return TURN_ASSUMED_DPS
+  return Math.max(TURN_MIN_DPS, d)
+}
+
+/** How long the helm takes to answer the card, seconds (`TURN_ADOPT_REACT_S`). */
+export function turnReactS(rec: TurnRecord | null | undefined): number {
+  const r = rec?.reactS
+  if (r == null || !Number.isFinite(r) || !(rec!.n >= 1) || r <= TURN_ADOPT_REACT_S) return TURN_ASSUMED_REACT_S
+  return Math.min(TURN_MAX_REACT_S, r)
 }
 
 /** Legs closer together than this are told apart by the boat's heading, metres. */
@@ -1108,7 +1577,27 @@ export function staleAfterS(fix: { speed?: number | null } | null | undefined): 
 }
 
 /** Below this age a fix is used as it is, seconds — one fix interval. */
-const DR_AFTER_S = 1.5
+export const DR_AFTER_S = 1.5
+
+/**
+ * With no fix for this long, seconds — two fixes missed — while under way
+ * near shallows, land or a hazard, the card goes red: "Slow down — GPS
+ * lost". Guidance on an estimated position is a guess, and at 25 kn a
+ * five-second guess is 60 m (rc5 F1).
+ */
+export const GPS_LOST_S = 2.5
+
+/**
+ * The fix's age on the phone's clock, seconds, or null when it cannot be
+ * known (see `fixTime`).
+ */
+export function fixAgeS(
+  fix: { timestamp?: number | null; receivedAt?: number | null } | null | undefined,
+  now: number,
+): number | null {
+  const ts = fixTime(fix)
+  return ts == null ? null : Math.max(0, (now - ts) / 1000)
+}
 /**
  * How fast a dead-reckoned position's error grows, as an acceleration, m/s²:
  * the boat may turn or change speed after the last fix, and after `t`
@@ -1129,10 +1618,14 @@ const DR_BLIND_MPS = 5
  * from this, so a boat running on through a short dropout is not shown
  * steering from where it was seconds ago — and the growing error is shown.
  */
-export function deadReckon<F extends NavFix>(fix: F, now: number): F & { deadReckoned?: boolean } {
+export function deadReckon<F extends NavFix>(
+  fix: F,
+  now: number,
+  maxAgeS: number = Infinity,
+): F & { deadReckoned?: boolean } {
   const ts = fixTime(fix)
   if (ts == null) return fix
-  const age = (now - ts) / 1000
+  const age = Math.min(maxAgeS, (now - ts) / 1000)
   if (!(age > DR_AFTER_S)) return fix
   const acc =
     fix.accuracy != null && Number.isFinite(fix.accuracy) && fix.accuracy > 0 ? fix.accuracy : 0

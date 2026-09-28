@@ -370,8 +370,14 @@ describe('navBannerView', () => {
   it('leads with re-routing, and goes stale with the fix', () => {
     expect(navBannerView(navCardView(input({ rerouting: true }))).primary).toMatch(/^Re-routing… · WP 2/)
     expect(navBannerView(navCardView(input({ rerouting: true }))).tone).toBe('alert')
+    // rc5 F1 (intended change): a boat still making way when the fix is lost
+    // is told to slow down — red, not grey. Stopped, the banner greys as
+    // before.
     const stale = navCardView(input({ fix: { ...go(B, 90, 0.5), timestamp: NOW - 60_000 } }))
-    expect(navBannerView(stale).tone).toBe('stale')
+    expect(navBannerView(stale).tone).toBe('alert')
+    expect(navBannerView(stale).status).toMatch(/^Slow down — GPS lost/)
+    const stopped = navCardView(input({ speedKn: 0, fix: { ...go(B, 90, 0.5), timestamp: NOW - 60_000, speed: 0 } }))
+    expect(navBannerView(stopped).tone).toBe('stale')
   })
 
   it('names the destination and the start', () => {
@@ -809,8 +815,12 @@ describe('the card off the line, and on a poor fix (F3, F4)', () => {
     const b = navBannerView(v)
     expect(b.tone).toBe('alert')
     expect(b.primary.startsWith('Slow down')).toBe(true)
-    // Not on a stale fix, and not without the store's say-so.
+    // Not on a stale fix, and not without the store's say-so. (rc5 F1,
+    // intended change: a stale fix while making way is "Slow down — GPS
+    // lost" instead — the GPS-poor warning itself is not given on it.)
     expect(navCardView(input({ fix, gpsSlow: false, safetyMarginM: 5 })).slowDown).toBe(false)
-    expect(navCardView(input({ fix: { ...fix, timestamp: NOW - 60_000 }, gpsSlow: true })).slowDown).toBe(false)
+    const staleSlow = navCardView(input({ fix: { ...fix, timestamp: NOW - 60_000 }, gpsSlow: true }))
+    expect(staleSlow.slowText).toBe('Slow down — GPS lost')
+    expect(staleSlow.notices.some((x) => x.kind === 'gps-slow')).toBe(false)
   })
 })

@@ -570,6 +570,19 @@ describe('onFix — advancing and arriving', () => {
 describe('onFix — off course and re-routing', () => {
   const off = () => go(go(A, 0, 0.5), 90, m(300))
 
+  it('re-routing while still in the dock stretch at the start plans as from the start (rc6)', async () => {
+    await navigating()
+    planRouteMock.mockClear()
+    // 100 m east of the start: off the line, but inside its 120 m approach.
+    const near = () => go(A, 90, m(100))
+    useNavigation.getState().onFix(fixAt(near()))
+    vi.setSystemTime(T0 + OFF_COURSE_HOLD_MS)
+    useNavigation.getState().onFix(fixAt(near()))
+    await settle()
+    expect(planRouteMock).toHaveBeenCalledTimes(1)
+    expect(planRouteMock.mock.calls[0][0].fromZoneM).toBe(120)
+  })
+
   it('waits 10 s of continuous off-course before re-routing from the live fix', async () => {
     await navigating()
     planRouteMock.mockClear()
@@ -589,7 +602,19 @@ describe('onFix — off course and re-routing', () => {
 
     expect(planRouteMock).toHaveBeenCalledTimes(1)
     expect(planRouteMock.mock.calls[0][0].from).toEqual({ lat: here.lat, lon: here.lon })
+    // rc6: the re-route's shallow-band allowance stays round the passage's
+    // real start and its destination — not round the boat (it is in deep
+    // water here, so no "way out" zone either).
+    expect(planRouteMock.mock.calls[0][0].approachZones).toEqual([
+      { lat: A.lat, lon: A.lon, radiusM: 120 },
+      { lat: C.lat, lon: C.lon, radiusM: 120 },
+    ])
+    // Round the boat: 30 m to leave a channel's edge, or the full 120 m if
+    // the chart has it in water too shallow for it (the router decides).
+    expect(planRouteMock.mock.calls[0][0].fromZoneM).toBe(30)
+    expect(planRouteMock.mock.calls[0][0].fromShallowZoneM).toBe(120)
     const s = useNavigation.getState()
+    expect(s.departure).toEqual({ lat: A.lat, lon: A.lon })
     expect(s.status).toBe('navigating')
     expect(s.reroutes).toBe(1)
     expect(s.rerouting).toBe(false)
@@ -863,11 +888,14 @@ describe('persistence', () => {
     const kept = partializeNav(useNavigation.getState())
     // Grown on purpose: what the plan was checked for (R1), the chart loads
     // to replay offline after a reload (R3), the owning account (regress R3)
-    // and a paused-for-review flag (R2).
+    // and a paused-for-review flag (R2). rc6 (intended): where the passage
+    // set out from, so a re-route after a reload keeps the approach zone
+    // round the real start, not round the boat.
     expect(Object.keys(kept).sort()).toEqual(
       [
         'chartLoads',
         'confirmed',
+        'departure',
         'dest',
         'error',
         'lastPlannedAt',

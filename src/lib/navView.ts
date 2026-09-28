@@ -26,11 +26,15 @@ import { declinationAt } from './geomag'
 import {
   arrivalRadiusFt,
   deadReckon,
+  DR_AFTER_S,
+  fixAgeS,
   fixTime,
+  GPS_LOST_S,
   isStale,
+  legCourseDeg,
   navProgress,
+  staleAfterS,
   steerCourse,
-  stepTarget,
   XTE_CUE_M,
   STALE_FIX_S,
   type NavFix,
@@ -63,6 +67,16 @@ export function feetFirst(m: number | null | undefined): string {
   const ftText = ft < 10 ? ft.toFixed(1).replace(/\.0$/, '') : String(Math.round(ft))
   const mText = m < 10 ? m.toFixed(1) : String(Math.round(m))
   return `${ftText} ft (${mText} m)`
+}
+
+/**
+ * Charted water in words: "3 ft (0.9 m) water", or for a drying height (a
+ * negative sounding) "ground that dries 1 ft (0.3 m)" — never "-1 ft".
+ */
+export function depthWords(m: number, depth: (m: number) => string = feetFirst): string {
+  if (!(m < 0)) return `${depth(m)} water`
+  const ft = Math.round(-m * M_TO_FEET)
+  return ft === 0 ? 'ground that dries at low water' : `ground that dries ${depth(-m)}`
 }
 
 export interface ClockText {
@@ -248,10 +262,11 @@ export function legNote(
     // Shallow water beside a track that is itself deep enough (the planner
     // only measures that when the track is sound): say how close it is.
     if (leg.nearShoalDistM != null && leg.nearShoalDepthM != null) {
-      return `Passes ${feetFirst(leg.nearShoalDistM)} from ${depth(leg.nearShoalDepthM)} water`
+      return `Passes ${feetFirst(leg.nearShoalDistM)} from ${depthWords(leg.nearShoalDepthM, depth)}`
     }
     // Outside the dock stretches — the figure the plan's warning quotes.
     const d = leg.minDepthOutsideM !== undefined ? leg.minDepthOutsideM : leg.minChartedDepthM
+    if (d != null && d < 0) return `Too shallow — ${depthWords(d, depth)}`
     return d != null ? `Too shallow — ${depth(d)} charted` : 'Too shallow — not surveyed'
   }
   if (caution === 'reduced-clearance') {
@@ -440,10 +455,35 @@ export interface NavCardInput {
    * the card goes red — "Slow down for the turn".
    */
   turnSlow?: boolean
+  /**
+   * What the store worked out for steering on the last fix
+   * (`useNavigation.guide`): the chart-checked lookahead, the allowance for
+   * the set, and whether shallows, land or a hazard lie near enough for a
+   * lost fix to matter. Used only while it is for the fix on the card.
+   */
+  guide?: SteerGuideLike | null
   /** How depths are written on this card (default feet first). */
   formatDepth?: (m: number) => string
   destLabel?: string | null
   formatLength?: LengthFormatter
+}
+
+/** The shape of `useNavigation.guide` the card reads. */
+export interface SteerGuideLike {
+  /** The fix it was worked for: its `timestamp`. */
+  fixAt: number
+  /** Lookahead along the leg, metres (`SteerOptions.lookaheadM`); null for the speed's own. */
+  lookaheadM: number | null
+  /** Allowance for the set, degrees (`SteerOptions.setDeg`). */
+  setDeg: number
+  /** Charted shallows, land or a hazard within the boat's run of the fix. */
+  hazardNear: boolean
+  /**
+   * The boat's course over the ground is well off the course to steer and
+   * runs into land or water too shallow for it within ten seconds' run
+   * (`useNavigation`): red — slow down and turn.
+   */
+  dangerAhead?: boolean
 }
 
 export type TurnCue =
@@ -466,6 +506,8 @@ export interface NavNotice {
     | 'gps-slow'
     | 'estimated'
     | 'turn-slow'
+    | 'gps-lost'
+    | 'heading-danger'
   text: string
   /** How loud: red for a rule broken, amber for "check this". */
   tone?: 'alert' | 'caution'
@@ -576,14 +618,15 @@ export const ON_COURSE_DEG = 5
  * degrees true; null for a one-point plan.
  */
 function legCourse(plan: Pick<RoutePlan, 'points'>, idx: number): number | null {
-  const pts = plan.points
-  if (pts.length < 2) return null
-  const i = Math.max(1, Math.min(idx, pts.length - 1))
-  const a = pts[i - 1]
-  const b = pts[i]
-  if (haversineNM(a.lat, a.lon, b.lat, b.lon) * 1852 < 1) return null
-  return bearingDeg(a.lat, a.lon, b.lat, b.lon)
+  return legCourseDeg(plan, idx)
 }
+
+function norm360(d: number): number {
+  return ((d % 360) + 360) % 360
+}
+
+/** Under this speed over the ground a lost fix is not a reason to slow down, m/s (about 2 kn). */
+const LOST_MOVING_MPS = 1
 
 /**
  * Everything the big card (and the banner) shows, from the store's state and
@@ -599,17 +642,22 @@ export function navCardView(input: NavCardInput): NavCardView {
   // Between fixes — a fix interval late up to stale — the numbers are worked
   // from where the boat has run on to since (course and speed from the last
   // fix), with the error that grows with it: a boat at 25 kn covers 60 m in
-  // the 5 s a frozen fix used to be shown as live for.
-  const here = fix && !stale ? deadReckon(fix, now) : fix
+  // the 5 s a frozen fix used to be shown as live for. Once stale, the
+  // position stays where the run-on had put it then — it does not jump back
+  // to the last fix (the distance went 140 ft → 370 ft at the moment the
+  // card greyed out: rc5 hc-67).
+  const here = fix ? deadReckon(fix, now, staleAfterS(fix)) : fix
   const stored = clampIdx(input.targetIdx ?? 1)
-  // …and a boat run on past its mark between fixes (a dropout at a turn) is
-  // shown the next point, as the store will once a fix comes — not the mark
-  // behind it.
   const reckoned = !!here && here !== fix && 'deadReckoned' in here && !!here.deadReckoned
-  const logical =
-    reckoned && input.status === 'navigating' && input.roundIdx == null && here
-      ? clampIdx(stepTarget(plan, stored, here, { arrivalFt: input.arrivalFt }).targetIdx)
-      : stored
+  // No fix for more than a fix interval: everything on the card is an
+  // estimate. Nothing is switched on it — not the waypoint (a run-on that
+  // reached the circle 200 ft early turned the boat for the next point into
+  // the side of a slip, round the "round first" guard: rc5 F1 R3), not the
+  // course (see below). The card holds what the last fix gave until the
+  // next one comes, and the store decides then.
+  const ageS = fix ? fixAgeS(fix, now) : null
+  const estimating = !!fix && (stale || ageS == null || ageS > DR_AFTER_S)
+  const logical = stored
   // Rounding a turn point first: everything on the card — bearing, distance,
   // the leg, what comes next, the distance to go — is worked to the turn
   // point, the one the crew is actually steering for.
@@ -631,7 +679,7 @@ export function navCardView(input: NavCardInput): NavCardView {
       ? input.routeSpeedKn
       : null
   const prog = here
-    ? navProgress(plan, idx, here, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now })
+    ? navProgress(plan, idx, here, { speedKn: made ?? input.speedKn, cruiseKn: input.cruiseKn, now, allowance: true })
     : null
   const madeGood = made != null && prog?.speedSource === 'gps'
 
@@ -640,11 +688,21 @@ export function navCardView(input: NavCardInput): NavCardView {
   // it is shown however close the boat is to it.
   const inCircle = !rounding && distFt != null && distFt <= radiusFt
   // "At the mark" only when the store can act on it: a fix still settling
-  // (or the filter's own estimate) is shown inside the circle, with the leg's
-  // course, but the point is not switched on it — the card must not say it is.
-  const atMark = inCircle && !here?.settling && !here?.estimate
+  // (or the filter's own estimate, or a position run on between fixes) is
+  // shown inside the circle, with the leg's course, but the point is not
+  // switched on it — the card must not say it is.
+  const atMark = inCircle && !here?.settling && !here?.estimate && !estimating
+  // The bearing to the point: from the last fix while estimating — a run-on
+  // position going past the mark turned it through 180° on the card.
+  const pointFrom = estimating && fix ? fix : here
+  const pointDeg =
+    prog && pointFrom
+      ? estimating
+        ? bearingDeg(pointFrom.lat, pointFrom.lon, plan.points[idx].lat, plan.points[idx].lon)
+        : prog.bearingDeg
+      : null
   const pointBearing =
-    prog && !atMark ? bearingText(prog.bearingDeg, input.bearingPref, input.declination) : null
+    pointDeg != null && !atMark ? bearingText(pointDeg, input.bearingPref, input.declination) : null
   // The course to steer: back onto the line into the point, not a new
   // straight line to it (a cross-current set a card-following helm onto the
   // bank that way). On the line it is the bearing to the point.
@@ -656,12 +714,36 @@ export function navCardView(input: NavCardInput): NavCardView {
   // dropturn-0: 47° in five seconds of a dropout, the boat led 70 m off the
   // mark). The course from the last fix stands; only when the run-on
   // carries the boat past the mark is it the course of the leg on.
-  const steerFrom = reckoned && fix ? fix : here
-  const course =
-    prog && !inCircle && steerFrom && !(reckoned && logical !== stored)
-      ? steerCourse(plan, idx, steerFrom)
+  //
+  // And while estimating it is not the course back onto the line either: a
+  // 45° intercept held for the length of a dropout carried the boat across
+  // the line and on into the bank beyond it (rc5 F1 R1). It is the course of
+  // the leg itself — parallel to the line the planner checked, however far
+  // off it the last fix was — the same whether the fix is a second late or
+  // gone stale, so it never flips back and forth (R2).
+  const steerFrom = estimating && fix ? fix : here
+  // The store's steering guide, when it was worked for this fix.
+  const guide =
+    input.guide && fix && Number.isFinite(input.guide.fixAt) && input.guide.fixAt === fix.timestamp
+      ? input.guide
       : null
-  const nextLegCourse = reckoned && logical !== stored && !inCircle ? legCourse(plan, idx) : null
+  const setDeg = input.guide && Number.isFinite(input.guide.setDeg) ? input.guide.setDeg : 0
+  const course =
+    prog && !inCircle && steerFrom && !estimating
+      ? steerCourse(plan, idx, steerFrom, { lookaheadM: guide?.lookaheadM ?? null, setDeg: guide ? setDeg : 0 })
+      : null
+  // (Rounding with a point to aim for, it is the bearing to that from the
+  // last fix — below; with none, the leg into the turn point, like any.)
+  const legOn = estimating && idx >= 1 ? legCourse(plan, idx) : null
+  const holdCourse =
+    estimating && !(rounding && input.roundAim)
+      ? legOn != null
+        ? norm360(legOn + setDeg)
+        : steerFrom && prog
+          ? bearingDeg(steerFrom.lat, steerFrom.lon, plan.points[idx].lat, plan.points[idx].lon)
+          : null
+      : null
+  const nextLegCourse = holdCourse
   // Rounding: toward the point the store cleared on the chart — on the leg
   // out of the turn point where it could, so the turn is made, not
   // overshot.
@@ -674,10 +756,10 @@ export function navCardView(input: NavCardInput): NavCardView {
   // that came into the last circle at an angle to the last leg was shown
   // that leg's course, 94° off its heading, until it was told it had
   // arrived (rc3 dock-15). There the course is the bearing to it.
-  const markCourse = prog && inCircle && idx < last ? legCourse(plan, idx) : null
+  const markCourse = prog && inCircle && idx < last && !estimating ? legCourse(plan, idx) : null
   const courseDeg = aim && steerFrom
     ? bearingDeg(steerFrom.lat, steerFrom.lon, aim.lat, aim.lon)
-    : (markCourse ?? nextLegCourse ?? course?.bearingDeg ?? prog?.bearingDeg ?? null)
+    : (markCourse ?? nextLegCourse ?? course?.bearingDeg ?? (estimating ? null : prog?.bearingDeg) ?? null)
   const bearing =
     courseDeg != null ? bearingText(courseDeg, input.bearingPref, input.declination) : null
   const xteM = course?.xteM ?? null
@@ -708,8 +790,11 @@ export function navCardView(input: NavCardInput): NavCardView {
         : `${ft} ft ${xteM > 0 ? 'right' : 'left'} of the line`
   }
 
+  // The turn cue is measured from the course over the ground the fix gave:
+  // with no fresh fix there is none to measure from, and a cue frozen at
+  // "Come right 63°" had a helm that follows it turning in circles.
   let turn: TurnCue | null = null
-  if (courseDeg != null && !stale) {
+  if (courseDeg != null && !stale && !estimating) {
     const t = turnToward(courseDeg, fix?.heading)
     if (t != null) {
       const deg = Math.round(Math.abs(t))
@@ -763,12 +848,32 @@ export function navCardView(input: NavCardInput): NavCardView {
 
   const slowGps = input.status === 'navigating' && !!input.gpsSlow && !stale && !!fix
   const slowTurn = input.status === 'navigating' && !!input.turnSlow && !stale && !!fix
-  const slowDown = slowGps || slowTurn
-  const slowText = slowGps
-    ? 'Slow down — GPS not accurate enough here'
-    : slowTurn
-      ? 'Slow down for the turn'
-      : null
+  // No fix for `GPS_LOST_S`, under way, with shallows, land or a hazard near
+  // (by the store's last look — or, not known, assumed): red, "slow down".
+  const moving = (() => {
+    const v = fix?.speed
+    if (v != null && Number.isFinite(v)) return v >= LOST_MOVING_MPS
+    return input.speedKn != null && Number.isFinite(input.speedKn) && input.speedKn >= 2
+  })()
+  const slowLost =
+    input.status === 'navigating' &&
+    !!fix &&
+    estimating &&
+    (ageS == null || ageS >= GPS_LOST_S) &&
+    moving &&
+    (input.guide ? input.guide.hazardNear : true)
+  const slowHeading =
+    input.status === 'navigating' && !!guide?.dangerAhead && !estimating && !stale && !!fix
+  const slowDown = slowGps || slowTurn || slowLost || slowHeading
+  const slowText = slowLost
+    ? 'Slow down — GPS lost'
+    : slowHeading
+      ? 'Slow down — shallows ahead on your heading'
+      : slowGps
+      ? 'Slow down — GPS not accurate enough here'
+      : slowTurn
+        ? 'Slow down for the turn'
+        : null
   const notices: NavNotice[] = []
   if (!fix) {
     notices.push({ kind: 'waiting', text: 'Waiting for a GPS fix…' })
@@ -811,6 +916,25 @@ export function navCardView(input: NavCardInput): NavCardView {
         ageS != null
           ? `GPS signal lost — last fix ${formatAge(ageS)} ago. These numbers are not live.`
           : 'GPS signal lost. These numbers are not live.',
+    })
+  }
+  if (slowHeading) {
+    notices.push({
+      kind: 'heading-danger',
+      tone: 'alert',
+      text:
+        'The way the boat is going runs into shallows or land within seconds. ' +
+        `Slow down and come round to ${bearing ?? 'the course'}.`,
+    })
+  }
+  if (slowLost) {
+    notices.push({
+      kind: 'gps-lost',
+      tone: 'alert',
+      text:
+        'GPS lost while under way near shallows or land. Slow down and hold ' +
+        `${bearing ?? 'the course of the leg'} by compass until the fix comes back — ` +
+        'waypoints will not switch until it does.',
     })
   }
   if (input.status === 'navigating') {
@@ -896,7 +1020,7 @@ export function navCardView(input: NavCardInput): NavCardView {
                 ? `You may be close to land or a structure — the chart shows one within your GPS accuracy${
                     within ? ` (${within})` : ''
                   }. Check your position and depth now.`
-                : `You may be in water too shallow for your boat — ${depth(sh.depthM ?? 0)} is charted within your GPS accuracy${
+                : `You may be in water too shallow for your boat — ${(sh.depthM ?? 0) < 0 ? depthWords(sh.depthM ?? 0, depth) : depth(sh.depthM ?? 0)} is charted within your GPS accuracy${
                     within ? ` (${within})` : ''
                   }. Check your depth now.`,
             }
@@ -905,7 +1029,9 @@ export function navCardView(input: NavCardInput): NavCardView {
               tone: 'alert',
               text: sh.land
                 ? 'The chart shows land or a structure here — check your position and depth now.'
-                : `Charted depth here ${depth(sh.depthM ?? 0)} — less than your boat needs. Check your depth now.`,
+                : (sh.depthM ?? 0) < 0
+                  ? `The chart shows ${depthWords(sh.depthM ?? 0, depth)} here — less than your boat needs. Check your depth now.`
+                  : `Charted depth here ${depth(sh.depthM ?? 0)} — less than your boat needs. Check your depth now.`,
             },
       )
     }
@@ -1053,9 +1179,13 @@ export function navBannerView(v: NavCardView): NavBannerView {
   const prefix = pending
     ? 'Re-route needs your OK'
     : v.slowDown && !(shallowNotice && shallowNotice.tone !== 'caution')
-      ? v.notices.some((x) => x.kind === 'gps-slow')
-        ? 'Slow down — GPS poor here'
-        : 'Slow down for the turn'
+      ? v.notices.some((x) => x.kind === 'gps-lost')
+        ? 'Slow down — GPS lost'
+        : v.notices.some((x) => x.kind === 'heading-danger')
+          ? 'Slow down — shallows ahead'
+        : v.notices.some((x) => x.kind === 'gps-slow')
+          ? 'Slow down — GPS poor here'
+          : 'Slow down for the turn'
       : shallow
       ? shallowNotice?.tone === 'caution'
         ? /land/.test(shallowNotice.text)

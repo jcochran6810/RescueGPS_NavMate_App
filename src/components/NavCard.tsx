@@ -280,6 +280,8 @@ const NOTICE_TONE: Record<NavNotice['kind'], string> = {
   'gps-slow': 'border-red-400/70 bg-red-500/25 text-red-50',
   estimated: 'border-amber-400/50 bg-amber-500/10 text-amber-100',
   'turn-slow': 'border-red-400/70 bg-red-500/25 text-red-50',
+  'gps-lost': 'border-red-400/70 bg-red-500/25 text-red-50',
+  'heading-danger': 'border-red-400/70 bg-red-500/25 text-red-50',
 }
 
 function Notice({ notice }: { notice: NavNotice }) {
@@ -295,6 +297,8 @@ function Notice({ notice }: { notice: NavNotice }) {
       role={
         notice.kind === 'shallow-here' ||
         notice.kind === 'gps-slow' ||
+        notice.kind === 'gps-lost' ||
+        notice.kind === 'heading-danger' ||
         notice.kind === 'reroute-confirm' ||
         notice.kind === 'round-first'
           ? 'alert'

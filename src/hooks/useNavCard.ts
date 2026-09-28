@@ -38,6 +38,7 @@ export function useNavCard(): NavCardView | null {
   const roundAim = useNavigation((s) => s.roundAim)
   const gpsSlow = useNavigation((s) => s.gpsSlow)
   const turnSlow = useNavigation((s) => s.turnSlow)
+  const guide = useNavigation((s) => s.guide)
   const progressLog = useNavigation((s) => s.progressLog)
   const clearanceM = useNavigation((s) => s.plannedFor?.clearanceM ?? null)
   const dest = useNavigation((s) => s.dest)
@@ -82,6 +83,7 @@ export function useNavCard(): NavCardView | null {
     safetyMarginM: safetyMarginM(clearanceM),
     gpsSlow,
     turnSlow,
+    guide,
     destLabel: dest?.label ?? null,
     formatLength: fmt.length,
     formatDepth: (m) => fmt.depth(m),

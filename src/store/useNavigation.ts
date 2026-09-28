@@ -8,6 +8,9 @@ import {
 import {
   liveAhead,
   liveChartNear,
+  type ApproachZone,
+  liveRay,
+  liveRayClear,
   livePathShortcut,
   liveShortcut,
   planningBounds,
@@ -43,12 +46,25 @@ import {
   shortcutClear,
   smoothSpeedKn,
   startTarget,
+  setAllowanceDeg,
+  speedLookaheadM,
   steerCourse,
   stepTarget,
+  updateHelm,
+  updateSet,
+  updateTurnRate,
+  turnRateDps,
+  turnReactS,
+  TURN_ASSUMED_DPS,
+  TURN_ASSUMED_REACT_S,
+  type TurnRecord,
+  LOOKAHEAD_MIN_M,
+  type HelmRecord,
   type ArrivalOptions,
   type ProgressSample,
+  type SetEstimate,
 } from '@/lib/navigate'
-import { safetyMarginM } from '@/lib/navView'
+import { safetyMarginM, type SteerGuideLike } from '@/lib/navView'
 import { bearingDeg, haversineNM, MPS_TO_KNOTS, NM_TO_METERS } from '@/lib/geo'
 import { MAX_ARRIVAL_FT, routeArrivalFt } from '@/lib/steer'
 import type { LatLon } from '@/lib/search'
@@ -104,6 +120,9 @@ import { useVessels } from '@/store/useVessels'
  *   - **Make a noise.** Alerts are on screen only — the crew asked for that.
  */
 
+/** See `NavigationState.guide`. */
+export type SteerGuide = SteerGuideLike
+
 /** A named position — the destination, or a start chosen by hand. */
 export interface Place {
   lat: number
@@ -142,6 +161,16 @@ export const OFF_COURSE_UNSAFE_HOLD_MS = 3_000
 const MAX_ADVANCE = 3
 /** Least time between two automatic re-routes, ms. */
 export const REROUTE_MIN_GAP_MS = 20_000
+/**
+ * Re-routes back off: at most `REROUTE_MAX_IN_WINDOW` automatic re-routes in
+ * any `REROUTE_WINDOW_MS`, and `REROUTE_MIN_GAP_MS` apart. Three or four in
+ * two minutes — a boat stopped and drifting in a current, a helm that cannot
+ * hold the line — is a new route thrown at the crew every time they look at
+ * the card (rc5 reroute storms; the rc3 harness counts three as a storm).
+ * Meanwhile the card keeps steering them back onto the route they have.
+ */
+export const REROUTE_WINDOW_MS = 120_000
+export const REROUTE_MAX_IN_WINDOW = 2
 /**
  * Longest a re-route waits for the chart, ms. On a stalled link the load
  * used to hang for minutes with "Re-routing…" on the card and every later
@@ -260,6 +289,13 @@ export interface NavigationState {
    */
   shallowHere: ShallowHere | null
   /**
+   * Where the passage set out from — the start of the last plan made from
+   * scratch (not a re-route). The shallow-band allowance of the approach
+   * stays round it on every re-route (`approachZonesFor`). Persisted with
+   * the passage.
+   */
+  departure: LatLon | null
+  /**
    * A re-route (or boat-change re-plan) is being worked out while the crew
    * keeps steering the current route. The card says "Re-routing…".
    */
@@ -326,6 +362,22 @@ export interface NavigationState {
   turnSlowAt: number | null
   /** Since when the filter has read the boat as stopped (ms), or null. Not persisted. */
   stillSince: number | null
+  /**
+   * How to steer on the last fix, worked out against the chart: the
+   * lookahead that keeps the course from pointing at land, the allowance
+   * for the set, and whether shallows, land or a hazard are near enough that
+   * losing the fix should slow the boat down. The card uses it for the fix
+   * it was worked for. Not persisted.
+   */
+  guide: SteerGuide | null
+  /** The set learnt so far (`updateSet`). Not persisted. */
+  setEst: SetEstimate | null
+  /** How the helm has been holding the line (`updateHelm`). Not persisted. */
+  helm: HelmRecord | null
+  /** When the recent automatic re-routes were made (ms), for the back-off. Not persisted. */
+  rerouteLog: number[]
+  /** How fast this boat has been seen to come round (`updateTurnRate`). Not persisted. */
+  turnRec: TurnRecord | null
 
   /**
    * Plan to `place`, immediately. `origin` undefined keeps the current
@@ -493,6 +545,7 @@ const INITIAL = {
   speedKn: null,
   gpsPoor: false,
   shallowHere: null,
+  departure: null,
   rerouting: false,
   lastRerouteAt: null,
   lastFixAt: null,
@@ -507,6 +560,11 @@ const INITIAL = {
   turnSlow: false,
   turnSlowAt: null,
   stillSince: null,
+  guide: null,
+  setEst: null,
+  helm: null,
+  rerouteLog: [] as number[],
+  turnRec: null,
 } satisfies Partial<NavigationState>
 
 /** What survives a reload: the passage, not the moment-to-moment readings. */
@@ -524,6 +582,7 @@ export function partializeNav(s: NavigationState) {
     plannedFor: s.plannedFor,
     chartLoads: s.chartLoads,
     ownerId: s.ownerId,
+    departure: s.departure,
   }
 }
 type PersistedNav = ReturnType<typeof partializeNav>
@@ -615,14 +674,40 @@ let restoring = false
  * planned for.
  */
 function liveRequest(plan: RoutePlan, was: PlannedFor): LiveChartRequest {
+  const to = plan.points[plan.points.length - 1]
+  const dep = useNavigation.getState().departure
   return {
     features: useChartData.getState().features,
     from: plan.points[0],
-    to: plan.points[plan.points.length - 1],
+    to,
     safeDepthM: was.safeDepthM,
     clearanceM: was.clearanceM,
     approachM: APPROACH_M,
+    ...(dep ? { approachZones: approachZonesFor(dep, to) } : {}),
   }
+}
+
+/**
+ * The little a re-route may cross charted shallow-band water round the boat
+ * itself, metres, when the boat is in deep enough water: room to leave a
+ * channel's edge, not a new dock stretch (`RouteRequest.fromZoneM`). Where
+ * the chart puts the boat in water too shallow for it, or the boat is still
+ * within the approach stretch of the start or the destination, the full
+ * approach (`APPROACH_M`).
+ */
+const REROUTE_START_ZONE_M = 30
+
+/**
+ * The approach zones for a plan: round the passage's departure and its
+ * destination — never round wherever a re-route happens to start. (A boat
+ * the chart puts in a shallow patch gets a way out as well:
+ * `RouteRequest.fromShallowZoneM`.)
+ */
+function approachZonesFor(departure: LatLon, dest: LatLon): ApproachZone[] {
+  return [
+    { lat: departure.lat, lon: departure.lon, radiusM: APPROACH_M },
+    { lat: dest.lat, lon: dest.lon, radiusM: APPROACH_M },
+  ]
 }
 
 /**
@@ -718,6 +803,7 @@ function aimRound(
   was: PlannedFor | null,
   bufferM: number,
   speedKn: number | null,
+  turnModel: TurnModel = ASSUMED_TURN,
 ): { aim: LatLon; turning: boolean } | null {
   const t = plan.points[turn]
   const b = plan.points[idx]
@@ -730,7 +816,7 @@ function aimRound(
   // (the simulated voyages ran into the stand-off beyond the turn).
   const acc = fix.accuracy != null && Number.isFinite(fix.accuracy) ? fix.accuracy : Infinity
   if (acc > AIM_RELAX_ACC_M) return null
-  const early = turnEarly(plan, turn, idx, fix, was, speedKn)
+  const early = turnEarly(plan, turn, idx, fix, was, speedKn, turnModel)
   if (early) return { aim: early, turning: true }
   const cands = [
     ...ROUND_AIM_FRACTIONS.map((f) => f * len),
@@ -764,13 +850,21 @@ function aimRound(
 }
 
 /**
- * How long after the card changes the helm has the boat turning, seconds:
- * the card is read once a second, and a helm answers it half a second to a
- * second later.
+ * How this boat turns: how long after the card changes the helm has the
+ * boat turning (the card is read once a second, and a brisk helm answers it
+ * half a second to a second later) and the rate it then turns at — assumed
+ * (`ASSUMED_TURN`) until the boat shows otherwise (`updateTurnRate`).
  */
-const TURN_REACT_S = 1.5
-/** The rate a boat is assumed to turn at, degrees a second — a firm, not a crash, turn. */
-const TURN_RATE_DPS = 12
+interface TurnModel {
+  dps: number
+  reactS: number
+}
+const ASSUMED_TURN: TurnModel = { dps: TURN_ASSUMED_DPS, reactS: TURN_ASSUMED_REACT_S }
+/**
+ * The rate a boat is assumed to turn at, degrees a second — a firm, not a
+ * crash, turn — until it shows it turns slower (`turnRateDps`).
+ */
+const TURN_RATE_DPS = TURN_ASSUMED_DPS
 /** Turns gentler than this need no leading, degrees; sharper than this are hairpins, rounded at the mark. */
 const LEAD_MIN_DEG = 10
 const LEAD_MAX_DEG = 120
@@ -780,7 +874,8 @@ const LEAD_MAX_DEG = 120
  * at the mark. At `v` m/s, turning at `TURN_RATE_DPS`, its turning circle has
  * radius R = v / ω, and to come out of a turn of Δ onto the leg out — not
  * beyond it — the turn must start R·tan(Δ/2) short of the mark, plus the run
- * while the helm answers the card (`TURN_REACT_S`). Within that of the turn
+ * while the helm answers the card (`TURN_ASSUMED_REACT_S`, or what
+ * the boat has shown — `TurnModel`). Within that of the turn
  * point the card steers for where that arc meets the leg out: "turn now".
  *
  * Only where the chart allows it: the arc a boat swings cuts inside the
@@ -795,6 +890,7 @@ function turnEarly(
   fix: Fix,
   was: PlannedFor,
   speedKn: number | null,
+  turnModel: TurnModel = ASSUMED_TURN,
 ): LatLon | null {
   if (turn < 1) return null
   const a = plan.points[turn - 1]
@@ -826,9 +922,9 @@ function turnEarly(
   const inside = (turnBy >= 0 ? 1 : -1) * inb.crossM
   if (inside > Math.max(5, acc)) return null
   const toGo = inb.lengthM - inb.alongM
-  const radius = v / ((TURN_RATE_DPS * Math.PI) / 180)
+  const radius = v / ((turnModel.dps * Math.PI) / 180)
   const tangent = radius * Math.tan(((delta / 2) * Math.PI) / 180)
-  const lead = v * TURN_REACT_S + tangent
+  const lead = v * turnModel.reactS + tangent
   if (toGo > lead) return null
   let req: LiveChartRequest
   try {
@@ -841,7 +937,7 @@ function turnEarly(
   // `R(sec(Δ/2) − 1)` — meets the rules every planned leg meets. Where it
   // does not, the boat is sent on to the mark as before, and told to slow
   // down for the turn (`tooFastForTurn`).
-  if (!turnArcFits(req, a, t, b, v)) return null
+  if (!turnArcFits(req, a, t, b, v, 0, turnModel.dps)) return null
   return turnPoint(plan, turn, idx, tangent)
 }
 
@@ -934,14 +1030,15 @@ function tooFastForTurn(
   fix: Fix,
   was: PlannedFor | null,
   speedKn: number | null,
+  turnModel: TurnModel = ASSUMED_TURN,
 ): number | null {
   // This turn, and the one after it when that is close behind (a dog-leg:
   // slowing for the second turn has to start before the first).
-  if (tooFastAt(plan, idx, fix, was, speedKn, 0)) return idx
+  if (tooFastAt(plan, idx, fix, was, speedKn, 0, turnModel)) return idx
   if (idx < 1 || idx + 1 >= plan.points.length) return null
   const g = legGeometry(plan.points[idx - 1], plan.points[idx], fix)
   const extra = Math.max(0, g.lengthM - g.alongM)
-  return tooFastAt(plan, idx + 1, fix, was, speedKn, extra) ? idx + 1 : null
+  return tooFastAt(plan, idx + 1, fix, was, speedKn, extra, turnModel) ? idx + 1 : null
 }
 
 /**
@@ -955,6 +1052,7 @@ function tooFastAt(
   was: PlannedFor | null,
   speedKn: number | null,
   beforeM: number,
+  turnModel: TurnModel = ASSUMED_TURN,
 ): boolean {
   if (!was || idx < 1 || idx + 1 >= plan.points.length) return false
   const made =
@@ -983,8 +1081,8 @@ function tooFastAt(
       const inb = legGeometry(a, t, fix)
       return inb.lengthM - inb.alongM
     })()
-  const w = (TURN_RATE_DPS * Math.PI) / 180
-  const lead = v * TURN_REACT_S + (v / w) * Math.tan(((delta / 2) * Math.PI) / 180)
+  const w = (turnModel.dps * Math.PI) / 180
+  const lead = v * turnModel.reactS + (v / w) * Math.tan(((delta / 2) * Math.PI) / 180)
   if (toGo < -10 || toGo > lead + v * SLOW_WARN_S) return false
   let req: LiveChartRequest
   try {
@@ -997,11 +1095,66 @@ function tooFastAt(
   // v·δt·sin(Δ) further out, and at 25 kn on a dog-leg that is the bank.
   const slack = (speed: number) => speed * TURN_SLACK_S * Math.sin((delta * Math.PI) / 180)
   const slow = Math.max(SLOW_TURN_MPS, v / 3)
-  return (
-    !turnArcFits(req, a, t, b, v, slack(v)) &&
-    turnArcFits(req, a, t, b, slow, slack(slow))
+  const fits = turnArcFits(req, a, t, b, v, slack(v), turnModel.dps)
+  if (!fits && turnArcFits(req, a, t, b, slow, slack(slow), turnModel.dps)) return true
+  // And the plain geometry, whatever the arcs say: a boat that turns only
+  // at the mark — the card switches at the crew's 100–200 ft circle, later
+  // than a fast boat's turn must start, and a lost fix leaves it running
+  // straight on — runs on past the turn point by its reaction and its
+  // turning circle, R·sin Δ (R for a turn of 90° or more). Where the chart
+  // puts land, a hazard or water too shallow within that of the turn point,
+  // straight on, the boat is too fast for the turn. On a best-effort route
+  // at 25 kn a 90° turn with the bank 42 m beyond it had no warning at all
+  // — no arc met the route's rules, so none was tried (rc5 F3); at 28 kn a
+  // 119° turn with a shoal 40 m beyond it was taken at full speed into a
+  // GPS dropout (rc5 hc-67).
+  const r = v / w
+  const run = v * turnModel.reactS + r * (delta >= 90 ? 1 : Math.sin((delta * Math.PI) / 180))
+  try {
+    const ahead = liveRay(req, t, cin, run + TURN_ROOM_SLACK_M)
+    if (ahead && (ahead.land || ahead.shallow)) return true
+  } catch {
+    return false
+  }
+  // And the arc itself, for a boat that turns slower than assumed: run on
+  // past the turn point for the helm's reaction, then round at the rate it
+  // has shown. A helm that answered the card four seconds late and turned
+  // at 6°/s swung 100 m wide of a 73° turn at 22 kn, into water charted
+  // 0 m that the straight line on past the turn point just missed (rc6,
+  // sluggish helm). Water is "too shallow" here below the boat's need — or,
+  // on a best-effort route, below the least the legs round the turn
+  // themselves cross: the crew accepted that, not worse.
+  if (turnModel.dps >= TURN_ASSUMED_DPS && turnModel.reactS <= TURN_ASSUMED_REACT_S) return false
+  const floor = Math.min(
+    was.safeDepthM,
+    ...[plan.legs[idx - 1], plan.legs[idx]]
+      // Outside the dock stretches, where the leg says so.
+      .map((l) => (l && l.minDepthOutsideM !== undefined ? l.minDepthOutsideM : l?.minChartedDepthM))
+      .filter((d): d is number => d != null && Number.isFinite(d)),
   )
+  try {
+    const mLat = 111_320
+    const mLon = 111_320 * Math.cos((t.lat * Math.PI) / 180)
+    const reactM = v * turnModel.reactS
+    const th = (cin * Math.PI) / 180
+    const p1 = { lat: t.lat + (reactM * Math.cos(th)) / mLat, lon: t.lon + (reactM * Math.sin(th)) / mLon }
+    const path = [t, ...arcFrom(p1, cin, turnBy >= 0 ? 1 : -1, delta, r)]
+    for (let i = 0; i + 1 < path.length; i++) {
+      const q = path[i]
+      const e = path[i + 1]
+      const len = metres(q, e)
+      if (!(len > 0.5)) continue
+      const hit = liveRay(req, q, bearingDeg(q.lat, q.lon, e.lat, e.lon), len, floor)
+      if (hit && (hit.land || hit.shallow)) return true
+    }
+  } catch {
+    return false
+  }
+  return false
 }
+
+/** Room kept beyond a turn's run-on, metres (`tooFastAt`). */
+const TURN_ROOM_SLACK_M = 5
 
 /** How late a turn may start, seconds, that the water round it must allow for (`tooFastForTurn`). */
 const TURN_SLACK_S = 1.0
@@ -1019,13 +1172,14 @@ function turnArcFits(
   b: LatLon,
   speed: number,
   outsideM = 0,
+  rateDps: number = TURN_RATE_DPS,
 ): boolean {
   const cin = bearingDeg(a.lat, a.lon, t.lat, t.lon)
   const cout = bearingDeg(t.lat, t.lon, b.lat, b.lon)
   const turnBy = ((cout - cin + 540) % 360) - 180
   const sign = turnBy >= 0 ? 1 : -1
   const delta = Math.abs(turnBy)
-  const r = speed / ((TURN_RATE_DPS * Math.PI) / 180)
+  const r = speed / ((rateDps * Math.PI) / 180)
   const back = r * Math.tan(((delta / 2) * Math.PI) / 180)
   const f = Math.max(0, 1 - back / Math.max(metres(a, t), 1e-6))
   const on = { lat: a.lat + f * (t.lat - a.lat), lon: a.lon + f * (t.lon - a.lon) }
@@ -1067,6 +1221,147 @@ function behind(p: LatLon | undefined, fix: Fix): boolean {
 
 function sameAim(a: LatLon, b: LatLon): boolean {
   return a.lat === b.lat && a.lon === b.lon
+}
+
+/**
+ * The least time after the last automatic re-route before the next, ms,
+ * given when the recent ones were made: `REROUTE_MIN_GAP_MS`, or — with
+ * `REROUTE_MAX_IN_WINDOW` already in the last `REROUTE_WINDOW_MS` — until
+ * the oldest of them is more than that window (and a second) behind.
+ */
+export function rerouteGapMs(log: readonly number[], now: number): number {
+  const recent = log.filter((t) => now - t < REROUTE_WINDOW_MS + 1_000).sort((a, b) => a - b)
+  if (recent.length < REROUTE_MAX_IN_WINDOW) return REROUTE_MIN_GAP_MS
+  const last = recent[recent.length - 1]
+  const oldest = recent[recent.length - REROUTE_MAX_IN_WINDOW]
+  return Math.max(REROUTE_MIN_GAP_MS, oldest + REROUTE_WINDOW_MS + 1_000 - last)
+}
+
+/** How far along the course to steer its line is checked against the chart, metres (rc5 F8). */
+const STEER_RAY_M = 100
+
+/**
+ * The lookahead to steer point `idx` with on this fix (`SteerOptions`), or
+ * null for the speed's own (`speedLookaheadM`). The course that lookahead
+ * gives is checked against the chart for `STEER_RAY_M` along it (or to just
+ * past the point, when that is nearer): where it runs into land or a hazard,
+ * the nearest lookahead — longer, a shallower intercept, or shorter, a
+ * steeper one away from the bank — whose course does not is used instead.
+ * A 45° intercept from the far side of a line laid 15 m off a bank pointed
+ * the boat at the bank 30 m beyond the line (rc5 F8). With no chart, or no
+ * clear course, the speed's own.
+ */
+function steerLookahead(
+  plan: RoutePlan,
+  idx: number,
+  fix: Fix,
+  was: PlannedFor | null,
+  setDeg: number,
+  factor = 1,
+  hazardNear = false,
+): number | null {
+  if (idx < 1 || idx >= plan.points.length) return null
+  const pref = speedLookaheadM(fix) * Math.max(1, factor)
+  // The speed's own (null) unless the helm's swinging stretched it.
+  const own = factor > 1.01 ? pref : null
+  // Well off the checked line with shallows or land near: back onto it
+  // sooner — a shorter lookahead first (never for a helm seen swinging
+  // across the line, whose lookahead was stretched for that).
+  const g = legGeometry(plan.points[idx - 1], plan.points[idx], fix)
+  const hurry = hazardNear && factor <= 1.01 && Math.abs(g.crossM) >= HURRY_XTE_M
+  const factors = hurry ? [0.67, 0.5, 1, 1.5, 2, 3, 5] : [1, 1.5, 0.67, 2, 0.5, 3, 5]
+  if (!was) return own
+  const target = plan.points[idx]
+  const reach = Math.min(STEER_RAY_M, metres(fix, target) + 10)
+  if (!(reach > 5)) return own
+  let req: LiveChartRequest
+  try {
+    req = liveRequest(plan, was)
+  } catch {
+    return own
+  }
+  const tried = new Set<number>()
+  for (const f of factors) {
+    const want = Math.max(LOOKAHEAD_MIN_M, f * pref)
+    const c = steerCourse(plan, idx, fix, { lookaheadM: want, setDeg })
+    if (!c) return own
+    const key = Math.round(c.lookaheadM)
+    if (tried.has(key)) continue
+    tried.add(key)
+    let clear: boolean | null
+    try {
+      clear = liveRayClear(req, fix, c.bearingDeg, reach)
+    } catch {
+      return own
+    }
+    if (clear === null) return own
+    if (clear) return f === 1 ? own : want
+  }
+  return own
+}
+
+/** Off the line by this much near shallows or land, the lookahead is shortened first (`steerLookahead`), metres. */
+const HURRY_XTE_M = 8
+
+/** Off the course to steer by more than this, degrees, the boat's own heading is checked ahead. */
+const HEADING_OFF_DEG = 30
+/** …for this many seconds of its run (40–250 m). */
+const HEADING_AHEAD_S = 10
+/** …and passing within this share of the stand-off of land counts as running into it. */
+const HEADING_CLOSE_FRACTION = 0.5
+
+/**
+ * Is the boat — making way, its course over the ground well off the course
+ * to steer (`HEADING_OFF_DEG`) — running into land, a hazard or water too
+ * shallow for it within `HEADING_AHEAD_S` of its run? Then the card says
+ * slow down and come round. A boat leaving the dock pointed the wrong way,
+ * or a helm that answers slowly swinging wide of a turn, ran aground at
+ * speed before it had come round to the card's course (rc5 sluggish helm).
+ */
+function dangerOnHeading(
+  plan: RoutePlan,
+  fix: Fix,
+  was: PlannedFor | null,
+  steerDeg: number | null,
+): boolean {
+  if (!was || steerDeg == null || fix.settling || fix.estimate) return false
+  const v = fix.speed
+  const cog = fix.heading
+  if (v == null || !Number.isFinite(v) || v < 2 || cog == null || !Number.isFinite(cog)) return false
+  if (Math.abs(((cog - steerDeg + 540) % 360) - 180) <= HEADING_OFF_DEG) return false
+  const run = Math.min(250, Math.max(40, HEADING_AHEAD_S * v))
+  try {
+    // Into it, or within half the stand-off of land: a slow helm swinging
+    // wide leaving the dock at 25 kn passed 3 m from the bank, on a line
+    // that never touched it (rc6, sluggish helm).
+    const r = liveRay(liveRequest(plan, was), fix, cog, run, null, HEADING_CLOSE_FRACTION * was.clearanceM)
+    return !!r && (r.land || r.shallow || !!r.close)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Are charted shallows, land or a hazard within the boat's run of the fix —
+ * 10 s of it, 50–150 m? If the fix is lost now, the card says "Slow down —
+ * GPS lost" (`navCardView`). Assumed so when no chart can say.
+ */
+function hazardNearFix(plan: RoutePlan, fix: Fix, was: PlannedFor | null, speedKn: number | null): boolean {
+  if (!was) return true
+  const v =
+    fix.speed != null && Number.isFinite(fix.speed) && fix.speed > 0
+      ? fix.speed
+      : speedKn != null && Number.isFinite(speedKn)
+        ? speedKn / MPS_TO_KNOTS
+        : 0
+  const radius = Math.min(150, Math.max(50, 10 * v))
+  try {
+    const near = liveChartNear(liveRequest(plan, was), fix, radius)
+    if (!near) return true
+    return !!(near.here || near.near)
+  } catch {
+    return true
+  }
 }
 
 /**
@@ -1304,7 +1599,11 @@ export const useNavigation = create<NavigationState>()(
           set({
             rerouting: true,
             ...(reason === 'reroute'
-              ? { lastRerouteAt: now, reroutes: s.reroutes + 1 }
+              ? {
+                  lastRerouteAt: now,
+                  reroutes: s.reroutes + 1,
+                  rerouteLog: [...s.rerouteLog.filter((t) => now - t < REROUTE_WINDOW_MS + 1_000), now],
+                }
               : {}),
           })
         } else {
@@ -1357,6 +1656,18 @@ export const useNavigation = create<NavigationState>()(
           if (bad) throw bad
 
           const forBoat = plannedForBoat(boat)
+          // A re-route keeps the passage's own approach zones; a new plan
+          // sets out from here.
+          const departure = live && s.departure ? s.departure : from
+          if (!live) set({ departure: from })
+          const zones = live && s.departure ? approachZonesFor(departure, to) : undefined
+          // Still in the dock stretch at either end: the boat has not left
+          // the start (or has reached the end), and its re-route is planned
+          // like one from there — the full approach round it.
+          const inEndZone =
+            live && s.departure
+              ? metres(from, departure) <= APPROACH_M || metres(from, to) <= APPROACH_M
+              : false
           const request = (f: ChartFeatures) => ({
             from,
             to,
@@ -1365,6 +1676,13 @@ export const useNavigation = create<NavigationState>()(
             speedKn: forBoat.speedKn,
             features: f,
             arrivalFt: arrivalOpts().arrivalFt,
+            ...(zones
+              ? {
+                  approachZones: zones,
+                  fromShallowZoneM: APPROACH_M,
+                  fromZoneM: inEndZone ? APPROACH_M : REROUTE_START_ZONE_M,
+                }
+              : {}),
           })
 
           // Paint "Re-routing…" / "Finding a safe route…" before the search.
@@ -1696,6 +2014,9 @@ export const useNavigation = create<NavigationState>()(
             gpsSlow: false,
             turnSlow: false,
             turnSlowAt: null,
+            guide: null,
+            rerouteLog: [],
+            turnRec: null,
             stillSince: null,
             progressLog: [],
           })
@@ -1810,6 +2131,9 @@ export const useNavigation = create<NavigationState>()(
             gpsSlow: false,
             turnSlow: false,
             turnSlowAt: null,
+            guide: null,
+            rerouteLog: [],
+            turnRec: null,
             progressLog: [],
           })
         },
@@ -1905,6 +2229,7 @@ export const useNavigation = create<NavigationState>()(
               gpsSlow: false,
               turnSlow: false,
               turnSlowAt: null,
+              guide: null,
               progressLog: [],
               offCourseSince: null,
               rerouting: false,
@@ -2000,12 +2325,14 @@ export const useNavigation = create<NavigationState>()(
             ;({ roundIdx, clearRun } = judge(idx, true, null))
           }
           const shown: number = roundIdx ?? idx
+          // How fast this boat comes round, as seen so far (`updateTurnRate`).
+          const turnModel: TurnModel = { dps: turnRateDps(s.turnRec), reactS: turnReactS(s.turnRec) }
           const turningOn = roundIdx != null && s.roundIdx === roundIdx && s.roundTurning
           const aimed =
             roundIdx != null
               ? turningOn
                 ? { aim: s.roundAim ?? plan.points[idx], turning: true }
-                : aimRound(plan, roundIdx, idx, fix, s.plannedFor, buffer, speedKn)
+                : aimRound(plan, roundIdx, idx, fix, s.plannedFor, buffer, speedKn, turnModel)
               : null
           const roundAim = aimed?.aim ?? null
           const roundTurning = !!aimed?.turning
@@ -2049,8 +2376,56 @@ export const useNavigation = create<NavigationState>()(
           // for it would otherwise be told it may speed up again before it.
           const heldSlow =
             s.turnSlowAt != null && s.plan === plan && shown <= s.turnSlowAt ? s.turnSlowAt : null
-          const turnSlowAt = heldSlow ?? tooFastForTurn(plan, shown, fix, s.plannedFor, speedKn)
+          const turnSlowAt =
+            heldSlow ?? tooFastForTurn(plan, shown, fix, s.plannedFor, speedKn, turnModel)
           const turnSlow = turnSlowAt != null
+
+          // How the card is to steer on this fix (`guide`): the set learnt
+          // from the cross-track error while the boat runs a leg — not in a
+          // turn, not rounding, not on a position still settling — the
+          // lookahead checked against the chart, and whether shallows or
+          // land lie near enough that losing the fix should slow the boat.
+          const steadyLeg = roundIdx == null && !switched && !settling && !resuming && s.roundIdx == null
+          const setEst = updateSet(
+            s.setEst,
+            plan,
+            steadyLeg ? shown : 0,
+            fix,
+            dtS,
+            s.guide?.lookaheadM ?? speedLookaheadM(fix),
+          )
+          const setDeg = roundIdx == null ? setAllowanceDeg(setEst, plan, shown, fix) : 0
+          // A helm swinging across the line gets a longer lookahead.
+          const onLeg =
+            steadyLeg && shown >= 1
+              ? legGeometry(plan.points[shown - 1], plan.points[shown], fix)
+              : null
+          const helm = updateHelm(
+            s.helm,
+            shown,
+            onLeg && onLeg.alongM >= 0 && onLeg.alongM <= onLeg.lengthM ? onLeg.crossM : null,
+            fix.accuracy,
+            now,
+          )
+          const hazardNear = hazardNearFix(plan, fix, s.plannedFor, speedKn)
+          const lookaheadM =
+            roundIdx == null
+              ? steerLookahead(plan, shown, fix, s.plannedFor, setDeg, helm.factor, hazardNear)
+              : null
+          const steerDeg =
+            roundIdx != null
+              ? roundAim
+                ? bearingDeg(fix.lat, fix.lon, roundAim.lat, roundAim.lon)
+                : null
+              : (steerCourse(plan, shown, fix, { lookaheadM, setDeg })?.bearingDeg ?? null)
+          const guide: SteerGuide = {
+            fixAt: fix.timestamp,
+            lookaheadM,
+            setDeg,
+            hazardNear,
+            dangerAhead: dangerOnHeading(plan, fix, s.plannedFor, steerDeg),
+          }
+          const turnRec = updateTurnRate(s.turnRec, fix, steerDeg, now)
 
           // Distance to go, logged for the speed made good along the route.
           const prog = navProgress(plan, shown, fix)
@@ -2073,6 +2448,10 @@ export const useNavigation = create<NavigationState>()(
             ...(gpsSlow !== s.gpsSlow ? { gpsSlow } : {}),
             ...(turnSlow !== s.turnSlow ? { turnSlow } : {}),
             turnSlowAt,
+            guide,
+            setEst,
+            helm,
+            turnRec,
             progressLog,
             offCourseSince,
             // Back on the route: an old "could not re-route" is no longer
@@ -2081,12 +2460,15 @@ export const useNavigation = create<NavigationState>()(
             ...(sameShallow(s.shallowHere, shallowHere) ? {} : { shallowHere }),
           })
 
+          // Re-routes back off: no more than two in any two minutes
+          // (`rerouteGapMs`).
+          const gap = rerouteGapMs(s.rerouteLog, now)
           if (
             off &&
             !s.rerouting &&
             !s.pendingPlan &&
             now - offCourseSince! >= hold &&
-            (s.lastRerouteAt == null || now - s.lastRerouteAt >= REROUTE_MIN_GAP_MS)
+            (s.lastRerouteAt == null || now - s.lastRerouteAt >= gap)
           ) {
             void runPlan('reroute', fix)
           }

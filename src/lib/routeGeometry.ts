@@ -1372,6 +1372,31 @@ export interface SegmentCheckOptions {
   depthMarginM?: number
   /** Is this point inside a charted dredged area or fairway? */
   inChannel?: (x: number, y: number) => boolean
+  /**
+   * The lateral depth margin INSIDE a marked channel (see `ChannelMargin`).
+   * Absent: none — the old rule, under which a leg could run 3 m from the
+   * edge of a dredged cut (rc5 F2).
+   */
+  channelMargin?: ChannelMargin | null
+}
+
+/**
+ * How far a leg inside a marked channel must keep from water too shallow for
+ * the boat — the dredged cut's own edges.
+ *
+ * A dredged cut is shallow bank either side by design, so the margin kept
+ * outside channels (10–15 m) would close every narrow one. None at all let a
+ * route run 3 m from the edge of the Intracoastal cut, where a boat's own
+ * wander puts it on the bank. So inside a channel the leg keeps `maxM` from
+ * the edge, or — in a channel too narrow for that — a `fraction` of the
+ * channel's width (measured across, from the leg to the shoal on the far
+ * side), and never less than `minM`: in a narrow cut the leg keeps to the
+ * middle of it. Only a cut too narrow for `minM` either side fails.
+ */
+export interface ChannelMargin {
+  minM: number
+  maxM: number
+  fraction: number
 }
 
 export interface SegmentCheck {
@@ -1477,6 +1502,33 @@ function intervalState(
 }
 
 /**
+ * Does segment a–b cross the edge of water deep enough for the boat — a
+ * boundary piece with land, unsurveyed or too-shallow water on either side?
+ * Used to measure a channel's width across from a leg (`ChannelMargin`).
+ * Uses no stamps, so it may be called from inside a stamped walk.
+ */
+function edgeAcross(ix: ChartIndex, ax: number, ay: number, bx: number, by: number, safeDepthM: number): boolean {
+  const P = ix.px
+  const pb = ix.pieceB
+  let hit = false
+  forBucketsNear(ix, ax, ay, bx, by, 0, (b) => {
+    if (hit) return
+    for (let k = pb.start[b]; k < pb.start[b + 1]; k++) {
+      const p = pb.items[k]
+      const l = ix.pLeft[p]
+      const r = ix.pRight[p]
+      if (l >= safeDepthM && r >= safeDepthM) continue
+      const o = p * 4
+      if (segSegDist2(ax, ay, bx, by, P[o], P[o + 1], P[o + 2], P[o + 3]) <= 1e-6) {
+        hit = true
+        return
+      }
+    }
+  })
+  return hit
+}
+
+/**
  * Water charted shallower than `safeDepthM` within `margin` of segment s–e,
  * judged from the effective boundary: the track itself is in deep enough
  * water, so shallow water within the margin means a boundary piece with a
@@ -1491,6 +1543,7 @@ function shoalBeside(
   margin: number,
   safeDepthM: number,
   inChannel: ((x: number, y: number) => boolean) | undefined,
+  channel: ChannelMargin | null = null,
 ): { depthM: number; distM: number } | null {
   let best: { depthM: number; distM: number } | null = null
   const stamp = nextStamp(ix)
@@ -1526,6 +1579,8 @@ function shoalBeside(
       // segments that do not cross has an endpoint of one of them in it.
       let bx = sx
       let by = sy
+      let px = qax
+      let py = qay
       let bd = Infinity
       const tryPair = (tx: number, ty: number, ux: number, uy: number) => {
         const d = (tx - ux) * (tx - ux) + (ty - uy) * (ty - uy)
@@ -1533,6 +1588,8 @@ function shoalBeside(
           bd = d
           bx = tx
           by = ty
+          px = ux
+          py = uy
         }
       }
       for (const [qx, qy] of [[qax, qay], [qbx, qby]] as const) {
@@ -1546,9 +1603,21 @@ function shoalBeside(
         const u = q2 === 0 ? 0 : Math.min(1, Math.max(0, ((tx - qax) * qdx + (ty - qay) * qdy) / q2))
         tryPair(tx, ty, qax + u * qdx, qay + u * qdy)
       }
-      if (inChannel && inChannel(bx, by)) continue
-      const depthM = Math.max(0, Math.min(shoalL ? l : Infinity, shoalR ? r : Infinity))
       const distM = Math.sqrt(d2)
+      if (inChannel && inChannel(bx, by)) {
+        // Inside a channel: its own, smaller margin (see `ChannelMargin`).
+        if (!channel || distM >= channel.maxM) continue
+        if (distM >= channel.minM && distM > 1e-6) {
+          // Far enough from this edge for the channel's width? Look across
+          // it: shoal water within (1/f − 1)·d on the far side makes the
+          // channel narrow enough that d is its fair share.
+          const reach = distM * (1 / channel.fraction - 1)
+          const ux = (bx - px) / distM
+          const uy = (by - py) / distM
+          if (edgeAcross(ix, bx, by, bx + ux * reach, by + uy * reach, safeDepthM)) continue
+        }
+      }
+      const depthM = Math.max(0, Math.min(shoalL ? l : Infinity, shoalR ? r : Infinity))
       if (!best) best = { depthM, distM }
       else {
         best.depthM = Math.min(best.depthM, depthM)
@@ -1703,7 +1772,7 @@ export function checkSegment(
       const hit = shoalBeside(
         ix,
         ax + ta * rx, ay + ta * ry, ax + tb * rx, ay + tb * ry,
-        margin, opts.safeDepthM, opts.inChannel,
+        margin, opts.safeDepthM, opts.inChannel, opts.channelMargin ?? null,
       )
       if (!hit) continue
       nearShoal = true

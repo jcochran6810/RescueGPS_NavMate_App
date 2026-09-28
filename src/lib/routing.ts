@@ -83,6 +83,7 @@ import {
   toXY,
   traverseCells,
   type Bounds,
+  type ChannelMargin,
   type ChartIndex,
   type SegmentCheck,
   type Zone,
@@ -228,10 +229,43 @@ export interface RouteRequest {
    */
   approachM?: number
   /**
+   * The approach zones themselves, when they are not the two circles of
+   * `approachM` round `from` and `to`. A re-route underway plans from the
+   * boat, and the boat is not the start: the shallow-band allowance stays
+   * round the passage's real departure and destination — "shallow bands only
+   * near the start and the end" — instead of following the boat to wherever
+   * it strayed (rc6: a boat 90 m off the line near the dock was re-routed
+   * through a fresh 120 m "approach" of charted 0 m water round itself).
+   * An empty list: no zones at all.
+   */
+  approachZones?: ApproachZone[]
+  /**
+   * With `approachZones`: a zone of this radius round `from` as well, but
+   * only when the chart puts `from` itself in water too shallow for the boat
+   * (or unsurveyed) — a re-route from a boat already in a shallow patch has
+   * to cross it to get out, and that leg is drawn dotted, "check depth
+   * here", like the dock stretch. A boat in deep water gets none.
+   */
+  fromShallowZoneM?: number
+  /**
+   * With `approachZones`: a small zone round `from` whatever the water there
+   * (metres) — a boat re-routed from a few metres off a channel's edge is
+   * inside the depth margin before it has moved, and a leg off it is not
+   * the crew's to confirm.
+   */
+  fromZoneM?: number
+  /**
    * Lateral depth margin outside channels, metres. Default
    * `depthMarginFor(clearanceM)`; 0 turns it off.
    */
   depthMarginM?: number
+  /**
+   * Lateral depth margin INSIDE marked channels, metres: the most kept from
+   * a dredged cut's own edges (less in a cut too narrow for it — see
+   * `channelMarginFor`). Default the smaller of `CHANNEL_MARGIN_MAX_M` and
+   * the depth margin; 0 turns it off (the old rule).
+   */
+  channelMarginM?: number
   /**
    * Room planned beyond the stand-off, metres, where it fits. Default
    * max(3 m, 10 % of the stand-off); 0 plans on the stand-off itself.
@@ -252,6 +286,43 @@ export const MAX_DEPTH_MARGIN_M = 15
 export function depthMarginFor(clearanceM: number): number {
   const c = Number.isFinite(clearanceM) ? Math.max(0, clearanceM) : 0
   return Math.min(MAX_DEPTH_MARGIN_M, Math.max(MIN_DEPTH_MARGIN_M, 0.25 * c))
+}
+
+/** A circle within which a route may use shallow-band or unsurveyed water (`RouteRequest.approachZones`). */
+export interface ApproachZone {
+  lat: number
+  lon: number
+  radiusM: number
+}
+
+/**
+ * The margin a leg keeps from the edges of a marked channel, metres: the
+ * most (`CHANNEL_MARGIN_MAX_M`), the least (`CHANNEL_MARGIN_MIN_M`) and, in
+ * between, the share of the channel's width across the leg
+ * (`CHANNEL_MARGIN_FRACTION` — in a narrow cut the leg keeps to its middle
+ * half). A route used to be allowed right to the edge of a dredged cut: one
+ * ran 3 m from the 2 m shelf of the Intracoastal Waterway, and a boat's own
+ * wander put it aground there (rc5 F2). 8 m rather than 10: the same
+ * margin holds for the live "round waypoint N first" check, and a boat on
+ * the line at the switch in the Intracoastal cut had its corner line refused
+ * at 10 m — "round first" on every turn of a charted channel route.
+ */
+export const CHANNEL_MARGIN_MAX_M = 8
+export const CHANNEL_MARGIN_MIN_M = 3
+export const CHANNEL_MARGIN_FRACTION = 0.25
+
+/** The channel margin for a request (see `RouteRequest.channelMarginM`); null = off. */
+export function channelMarginFor(depthMarginM: number, channelMarginM?: number | null): ChannelMargin | null {
+  const want =
+    channelMarginM != null && Number.isFinite(channelMarginM)
+      ? Math.max(0, channelMarginM)
+      : Math.min(CHANNEL_MARGIN_MAX_M, Math.max(0, depthMarginM))
+  if (!(want > 0)) return null
+  return {
+    maxM: want,
+    minM: Math.min(want, CHANNEL_MARGIN_MIN_M),
+    fraction: CHANNEL_MARGIN_FRACTION,
+  }
 }
 
 /**
@@ -810,18 +881,26 @@ function chartExtent(f: ChartFeatures): Bounds | null {
  * narrower in one direction than `cellM` says would make every distance
  * measured in cells an overestimate — the unsafe direction.
  */
+/** The cell size, metres, `makeGridFor` gives a box. */
+function gridCellM(b: Bounds, cellM?: number, maxCells: number = MAX_CELLS): number {
+  const mpd = metersPerDegree((b.minLat + b.maxLat) / 2)
+  const spanLatM = Math.max(1, (b.maxLat - b.minLat) * mpd.lat)
+  const spanLonM = Math.max(1, (b.maxLon - b.minLon) * mpd.lon)
+  return Math.max(
+    cellM ?? MIN_CELL_M,
+    Math.sqrt((spanLatM * spanLonM) / maxCells),
+    spanLatM / MAX_SIDE,
+    spanLonM / MAX_SIDE,
+  )
+}
+
 export function makeGridFor(b: Bounds, cellM?: number, maxCells: number = MAX_CELLS): RouteGrid {
   const midLat = (b.minLat + b.maxLat) / 2
   const midLon = (b.minLon + b.maxLon) / 2
   const mpd = metersPerDegree(midLat)
   const spanLatM = Math.max(1, (b.maxLat - b.minLat) * mpd.lat)
   const spanLonM = Math.max(1, (b.maxLon - b.minLon) * mpd.lon)
-  const cell = Math.max(
-    cellM ?? MIN_CELL_M,
-    Math.sqrt((spanLatM * spanLonM) / maxCells),
-    spanLatM / MAX_SIDE,
-    spanLonM / MAX_SIDE,
-  )
+  const cell = gridCellM(b, cellM, maxCells)
   const rows = Math.max(2, Math.ceil(spanLatM / cell - 1e-9))
   const cols = Math.max(2, Math.ceil(spanLonM / cell - 1e-9))
   const latPerRow = cell / mpd.lat
@@ -2082,6 +2161,18 @@ export function formatDepth(m: number): string {
   return `${Math.round(m * M_TO_FT)} ft (${m.toFixed(1)} m)`
 }
 
+/**
+ * A charted depth as a crew reads it: "3 ft (0.9 m)", and for a drying
+ * height — a negative sounding — "ground that dries 1 ft (0.3 m)", or
+ * "0 ft (dries)" when that rounds to nothing. "Crosses -1 ft (-0.3 m)" read
+ * as nonsense (rc5 F3).
+ */
+export function chartedDepthText(m: number): string {
+  if (!(m < 0)) return formatDepth(m)
+  const ft = Math.round(-m * M_TO_FT)
+  return ft === 0 ? '0 ft (dries)' : `ground that dries ${ft} ft (${(-m).toFixed(1)} m)`
+}
+
 /** A distance for a crew: feet below a tenth of a mile, else miles. */
 export function formatLength(m: number): string {
   if (m < 0.1 * NM_TO_METERS) {
@@ -2135,6 +2226,8 @@ interface Ctx {
   lim: { x0: number; y0: number; x1: number; y1: number }
   /** Lateral depth margin outside channels, metres (0 = off). */
   depthMarginM: number
+  /** …and inside them (null = off). See `channelMarginFor`. */
+  channelMargin: ChannelMargin | null
   /** Is this point (index metres) inside a charted channel? */
   inChannel: (x: number, y: number) => boolean
 }
@@ -2160,6 +2253,7 @@ function check(ctx: Ctx, clearanceM: number, a: XY, b: XY): SegmentCheck {
     zones: ctx.zones,
     depthMarginM: ctx.depthMarginM,
     inChannel: ctx.inChannel,
+    channelMargin: ctx.channelMargin,
   })
 }
 
@@ -2240,7 +2334,9 @@ function zoneRaster(g: RouteGrid, ctx: Ctx): Uint8Array | null {
 }
 
 function gridFor(ctx: Ctx, b: Bounds, cellM?: number, maxCells?: number): RouteGrid {
-  const key = `${b.minLat},${b.minLon},${b.maxLat},${b.maxLon},${cellM ?? ''}`
+  // Keyed by the cell it comes out at: a small box reaches the finest cell
+  // (`MIN_CELL_M`) on the ordinary budget, and its "fine" grid is the same one.
+  const key = `${b.minLat},${b.minLon},${b.maxLat},${b.maxLon},${gridCellM(b, cellM, maxCells)}`
   const hit = ctx.grids.get(key)
   if (hit) return hit
   const g = makeGridFor(b, cellM, maxCells)
@@ -2571,9 +2667,21 @@ function lineMeet(a: XY, p: XY, q: XY, b: XY): XY | null {
   return { x: a.x + t * d1x, y: a.y + t * d1y }
 }
 
+/**
+ * Most cells in a fine grid (`planRoute`'s second look at a box before it
+ * bends a rule, and before it says there is no route): the side cap
+ * (`MAX_SIDE`) squared — about 10 m cells over a 12 km box.
+ */
+const FINE_MAX_CELLS = MAX_SIDE * MAX_SIDE
+
+/** Is the fine grid over this box finer than the ordinary one at all? */
+function finerGrid(box: Bounds): boolean {
+  return gridCellM(box, undefined, FINE_MAX_CELLS) < 0.9 * gridCellM(box)
+}
+
 /** Plan in one mode over one box: route, repair, tidy. */
-function attempt(ctx: Ctx, box: Bounds, mode: Mode): Built | Failure {
-  const g = gridFor(ctx, box)
+function attempt(ctx: Ctx, box: Bounds, mode: Mode, maxCells?: number): Built | Failure {
+  const g = gridFor(ctx, box, undefined, maxCells)
   const found = route(ctx, g, mode, ctx.from, ctx.to, ctx.fromBlocked, ctx.toBlocked, SNAP_RADIUS_M)
   if (typeof found === 'string') return found
   let pts = found.pts
@@ -2787,14 +2895,36 @@ function makeCtx(req: RouteRequest, box?: Bounds): Ctx {
   const to = toXY(ix.proj, req.to)
   const blocked = (p: XY) =>
     stateNear(ix, p.x, p.y) === LAND || hazardDistance(ix, p.x, p.y, p.x, p.y, 0) <= 0
+  // Water too shallow for the boat, or unsurveyed, at p (not land).
+  const shoalAt = (p: XY) => {
+    const st = stateNear(ix, p.x, p.y)
+    return st !== LAND && (Number.isNaN(st) || st < safeDepthM)
+  }
+  const depthMarginM =
+    req.depthMarginM != null && Number.isFinite(req.depthMarginM)
+      ? Math.max(0, req.depthMarginM)
+      : depthMarginFor(clearanceM)
   return {
     req,
     ix,
     safeDepthM,
     clearanceM,
-    zones: approachM > 0
-      ? [{ x: from.x, y: from.y, r: approachM }, { x: to.x, y: to.y, r: approachM }]
-      : [],
+    zones: req.approachZones
+      ? [
+          ...req.approachZones
+            .filter((z) => Number.isFinite(z?.lat) && Number.isFinite(z?.lon) && z.radiusM > 0)
+            .map((z) => ({ ...toXY(ix.proj, z), r: z.radiusM })),
+          ...((() => {
+            const r = Math.max(
+              req.fromZoneM != null && req.fromZoneM > 0 ? req.fromZoneM : 0,
+              req.fromShallowZoneM != null && req.fromShallowZoneM > 0 && shoalAt(from) ? req.fromShallowZoneM : 0,
+            )
+            return r > 0 ? [{ x: from.x, y: from.y, r }] : []
+          })()),
+        ]
+      : approachM > 0
+        ? [{ x: from.x, y: from.y, r: approachM }, { x: to.x, y: to.y, r: approachM }]
+        : [],
     from,
     to,
     fromBlocked: blocked(from),
@@ -2802,10 +2932,8 @@ function makeCtx(req: RouteRequest, box?: Bounds): Ctx {
     grids: new Map(),
     budget: REPAIR_BUDGET,
     lim: { x0: limSW.x, y0: limSW.y, x1: limNE.x, y1: limNE.y },
-    depthMarginM:
-      req.depthMarginM != null && Number.isFinite(req.depthMarginM)
-        ? Math.max(0, req.depthMarginM)
-        : depthMarginFor(clearanceM),
+    depthMarginM,
+    channelMargin: channelMarginFor(depthMarginM, req.channelMarginM),
     inChannel: channelTest(features.channels, ix),
   }
 }
@@ -2860,8 +2988,8 @@ export function planRoute(req: RouteRequest): RoutePlan {
 
   const strict: Mode = { clearanceM, wantClearanceM: clearanceM, allowShallow: false, optimistic: false }
   let lastFailure: Failure = 'path'
-  const tryMode = (c: Ctx, box: Bounds, mode: Mode): Built | null => {
-    const b = attempt(c, box, mode)
+  const tryMode = (c: Ctx, box: Bounds, mode: Mode, maxCells?: number): Built | null => {
+    const b = attempt(c, box, mode, maxCells)
     if (typeof b === 'string') {
       lastFailure = b
       return null
@@ -2920,23 +3048,47 @@ export function planRoute(req: RouteRequest): RoutePlan {
   }
 
   // 3: every rule intact, further afield — a wider box, as far as the chart
-  // that is loaded reaches, before any rule is bent.
+  // that is loaded reaches, before any rule is bent. Then the same on a
+  // fine grid (`FINE_MAX_CELLS`): over a wide box the ordinary grid's cells
+  // grow past 20 m, and a conservative grid that coarse closes a 30 m-wide
+  // gut that keeps every rule — the planner offered a best-effort route
+  // through the shallows with a compliant one a mile to the east (rc5 F4).
   let use = ctx
   if (!built) {
     const wide = clipTo(widePlanningBounds(req.from, req.to), chartExtent(features), planBox)
-    if (wide) {
-      const wideCtx = makeCtx(req, wide)
-      const got = tryBox(wideCtx, wide, strict)
-      if (got) {
-        built = got
-        use = wideCtx
+    const fineBox = wide ?? planBox
+    const fineCtx = wide ? makeCtx(req, wide) : ctx
+    if (wide) built = tryBox(fineCtx, wide, strict)
+    if (!built && finerGrid(fineBox)) {
+      fineCtx.budget = REPAIR_BUDGET
+      const fine = attempt(fineCtx, fineBox, strict, FINE_MAX_CELLS)
+      if (typeof fine === 'string') lastFailure = fine
+      else if (accepted(fineCtx, fine)) built = fine
+      // The optimistic read of the fine grid only when the conservative one
+      // joined the ends (and could not make the legs good): where it found
+      // no water path at all, one or two cells' worth of rounding will not
+      // open one, and the search costs as much again.
+      if (!built && fine !== 'path') {
+        built = tryMode(fineCtx, fineBox, { ...strict, optimistic: true }, FINE_MAX_CELLS)
       }
     }
+    if (built) use = fineCtx
+  }
+
+  // 3b: a marked channel too narrow for its edge margin (`channelMarginFor`)
+  // — even keeping to the middle of it, closer than a few metres to its
+  // edge. Every other rule intact; the plan is best-effort, the legs that
+  // run that close to the edge flagged (`finish` measures them against the
+  // full margin) and the crew told to keep to the middle.
+  if (!built && ctx.channelMargin && (features.channels?.length ?? 0) > 0) {
+    const loose: Ctx = { ...ctx, channelMargin: null, budget: REPAIR_BUDGET }
+    built = tryBox(loose, planBox, strict)
   }
 
   // Is there any water path at all? The most relaxed mode answers in one
   // sweep (per view of the grid), and saves climbing down a ladder that ends
-  // nowhere.
+  // nowhere. A coarse grid that finds none is asked again at the fine
+  // resolution: "no route" is only said when there is truly no water path.
   const shallowMode: Mode = {
     clearanceM: Math.min(clearanceM, CLEARANCE_FLOOR_M),
     wantClearanceM: clearanceM,
@@ -2944,39 +3096,63 @@ export function planRoute(req: RouteRequest): RoutePlan {
     optimistic: false,
   }
   if (!built) {
-    const g = gridFor(ctx, planBox)
     let reason: Failure | null = null
-    for (const optimistic of [false, true]) {
-      const pass = passability(g, shallowMode.clearanceM, safeDepthM, {
-        allowShallow: true,
-        optimistic,
-        zone: zoneRaster(g, ctx),
-        wantClearanceM: clearanceM,
-      })
-      const ends = pickEnds(g, costField(g, pass), req.from, req.to, SNAP_RADIUS_M)
-      if (typeof ends !== 'string') {
-        reason = null
-        break
+    const sizes = finerGrid(planBox) ? [undefined, FINE_MAX_CELLS] : [undefined]
+    for (const maxCells of sizes) {
+      const g = gridFor(ctx, planBox, undefined, maxCells)
+      for (const optimistic of [false, true]) {
+        const pass = passability(g, shallowMode.clearanceM, safeDepthM, {
+          allowShallow: true,
+          optimistic,
+          zone: zoneRaster(g, ctx),
+          wantClearanceM: clearanceM,
+        })
+        const ends = pickEnds(g, costField(g, pass), req.from, req.to, SNAP_RADIUS_M)
+        if (typeof ends !== 'string') {
+          reason = null
+          break
+        }
+        reason = ends
       }
-      reason = ends
+      if (reason === null || reason !== 'path') break
     }
     if (reason) return nonePlan(req, failureText(reason, ctx), baseWarnings)
   }
 
-  // 4: the stand-off, a step at a time.
+  // 4: the stand-off, a step at a time. Each rung gets the whole repair
+  // budget: rungs sharing one had spent it before the last was tried, and
+  // whether a route was found at all turned on where the start was to within
+  // a few metres (rc5 F5, rand-78).
   if (!built && clearanceM > CLEARANCE_FLOOR_M) {
     const rungs = [...new Set(
       [...LADDER_FRACTIONS.map((f) => clearanceM * f), CLEARANCE_FLOOR_M]
         .map((c) => Math.max(CLEARANCE_FLOOR_M, c)),
     )]
     for (const c of rungs) {
+      ctx.budget = REPAIR_BUDGET
       built = tryBox(ctx, planBox, { clearanceM: c, wantClearanceM: clearanceM, allowShallow: false, optimistic: false })
       if (built) break
     }
   }
 
-  // 5: shallow water, at a price.
-  if (!built) built = tryBox(ctx, planBox, shallowMode)
+  // 5: shallow water, at a price — on the ordinary grid, then the fine one:
+  // where the only way out of a pocket of shoal water is a winding gut, a
+  // 20 m grid put the route across the spit beside it, and with no repair
+  // possible the planner said "no route" with water all the way (rc5 F5).
+  if (!built) {
+    ctx.budget = REPAIR_BUDGET
+    built = tryBox(ctx, planBox, shallowMode)
+  }
+  if (!built) {
+    for (const box of [routeBounds(req.from, req.to), planBox]) {
+      if (!finerGrid(box)) continue
+      ctx.budget = REPAIR_BUDGET
+      built =
+        tryMode(ctx, box, shallowMode, FINE_MAX_CELLS) ??
+        tryMode(ctx, box, { ...shallowMode, optimistic: true }, FINE_MAX_CELLS)
+      if (built) break
+    }
+  }
   if (!built) return nonePlan(req, failureText(lastFailure, ctx), baseWarnings)
 
   return finish(use, built, arrivalReq, baseWarnings)
@@ -3159,7 +3335,12 @@ function legCautions(
   checks: SegmentCheck[],
   snapLeg: (i: number) => boolean,
 ): LegCaution[] {
-  const approachM = ctx.zones.length > 0 ? ctx.zones[0].r : 0
+  // The dock hop is judged by the approach length itself, whether or not a
+  // zone lies round this end (a re-route from a fix the chart puts ashore
+  // has none round the boat, and must not need the crew's OK for the hop).
+  const approachM = Number.isFinite(ctx.req.approachM)
+    ? Math.max(0, ctx.req.approachM as number)
+    : DEFAULT_APPROACH_M
   return checks.map((r, i): LegCaution => {
     // The hop off (or onto) a dock the chart draws as land: nothing about it
     // can be checked, but it is the dock, not the passage — flagged "by
@@ -3216,7 +3397,7 @@ function shortfallWarnings(
   if (shoalLeg >= 0) {
     out.push(
       `No route keeps ${safe} of water the whole way. The safest route crosses ` +
-        `${formatDepth(shoal)} near leg ${legs[shoalLeg].n}.`,
+        `${chartedDepthText(shoal)} near leg ${legs[shoalLeg].n}.`,
     )
   } else if (unsurveyedLeg >= 0) {
     out.push(
@@ -3236,11 +3417,25 @@ function shortfallWarnings(
       }
     }
     if (nearLeg >= 0) {
-      out.push(
-        `No route keeps ${formatLength(ctx.depthMarginM)} clear of water shallower than ${safe} ` +
-          `the whole way outside the marked channels. The safest route passes ${formatLength(nearDist)} ` +
-          `from ${formatDepth(checks[nearLeg].nearShoalDepthM ?? 0)} water near leg ${legs[nearLeg].n}.`,
-      )
+      const d = checks[nearLeg].nearShoalDepthM ?? 0
+      const water = d < 0 ? chartedDepthText(d) : `${formatDepth(d)} water`
+      const a = legs[nearLeg].from
+      const b = legs[nearLeg].to
+      const mid = { lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 }
+      const m = toXY(ctx.ix.proj, mid)
+      if (ctx.channelMargin && ctx.inChannel(m.x, m.y)) {
+        out.push(
+          `The marked channel near leg ${legs[nearLeg].n} is too narrow to keep ` +
+            `${formatLength(ctx.channelMargin.minM)} from its edges: the route passes ` +
+            `${formatLength(nearDist)} from ${water}. Keep to the middle of the channel.`,
+        )
+      } else {
+        out.push(
+          `No route keeps ${formatLength(ctx.depthMarginM)} clear of water shallower than ${safe} ` +
+            `the whole way outside the marked channels. The safest route passes ${formatLength(nearDist)} ` +
+            `from ${water} near leg ${legs[nearLeg].n}.`,
+        )
+      }
     }
   }
 
@@ -3437,6 +3632,14 @@ export interface LiveChartRequest {
   clearanceM: number
   approachM?: number
   depthMarginM?: number
+  /** See `RouteRequest.channelMarginM`. */
+  channelMarginM?: number
+  /** See `RouteRequest.approachZones`. */
+  approachZones?: ApproachZone[]
+  /** See `RouteRequest.fromShallowZoneM`. */
+  fromShallowZoneM?: number
+  /** See `RouteRequest.fromZoneM`. */
+  fromZoneM?: number
 }
 
 /**
@@ -3455,7 +3658,9 @@ function liveCtx(req: LiveChartRequest): Ctx | null {
   if (haversineNM(req.from.lat, req.from.lon, req.to.lat, req.to.lon) * NM_TO_METERS < 1) return null
   const key = [
     req.from.lat, req.from.lon, req.to.lat, req.to.lon,
-    req.safeDepthM, req.clearanceM, req.approachM ?? '', req.depthMarginM ?? '',
+    req.safeDepthM, req.clearanceM, req.approachM ?? '', req.depthMarginM ?? '', req.channelMarginM ?? '',
+    req.approachZones ? req.approachZones.map((z) => `${z.lat},${z.lon},${z.radiusM}`).join(';') : '-',
+    req.fromShallowZoneM ?? '', req.fromZoneM ?? '',
   ].join('|')
   if (liveCache && liveCache.features === f && liveCache.key === key) return liveCache.ctx
   const ctx = makeCtx({ ...req, speedKn: 0 })
@@ -3540,6 +3745,10 @@ export function liveShortcut(
     zones: ctx.zones,
     depthMarginM: ctx.depthMarginM + acc,
     inChannel: ctx.inChannel,
+    // The channel margin is not widened by the fix's error: inside a dredged
+    // cut it is already the room for the boat's error and wander, and a line
+    // held to both refused every turn in a narrow channel.
+    channelMargin: ctx.channelMargin,
   }
   const line = checkSegment(ix, p.x, p.y, g.x, g.y, opts)
   if (line.ok) return 'clear'
@@ -3584,6 +3793,10 @@ export function livePathShortcut(
     zones: ctx.zones,
     depthMarginM: ctx.depthMarginM + acc,
     inChannel: ctx.inChannel,
+    // The channel margin is not widened by the fix's error: inside a dredged
+    // cut it is already the room for the boat's error and wander, and a line
+    // held to both refused every turn in a narrow channel.
+    channelMargin: ctx.channelMargin,
   }
   const p = pts[0]
   const g = pts[pts.length - 1]
@@ -3613,6 +3826,7 @@ export function livePathShortcut(
       ...opts,
       clearanceM: ctx.clearanceM + plainAcc,
       depthMarginM: ctx.depthMarginM + plainAcc,
+      channelMargin: ctx.channelMargin,
     })
     if (plain.ok) return 'clear'
   }
@@ -3641,6 +3855,66 @@ function worstOf(a: SegmentCheck, b: SegmentCheck): SegmentCheck {
     minDepthOutsideM: minN(a.minDepthOutsideM, b.minDepthOutsideM),
     minClearanceM: minN(a.minClearanceM, b.minClearanceM),
     clearanceOutsideM: Math.min(a.clearanceOutsideM, b.clearanceOutsideM),
+  }
+}
+
+/**
+ * Is the line `lengthM` metres from `from` on `courseDeg` (true) clear of
+ * land and hazard footprints? The course to steer is checked with it before
+ * the card gives it (`useNavigation`). Null when no chart covers the line.
+ */
+export function liveRayClear(
+  req: LiveChartRequest,
+  from: LatLon,
+  courseDeg: number,
+  lengthM: number,
+): boolean | null {
+  const r = liveRay(req, from, courseDeg, lengthM)
+  return r == null ? null : !r.land
+}
+
+/**
+ * What lies on the line `lengthM` metres from `from` on `courseDeg` (true):
+ * land or a hazard footprint anywhere on it; water charted too shallow for
+ * the boat on it outside the approach zones round the route's ends (below
+ * `floorDepthM` instead, when that is shallower); and, asked for with
+ * `closeM`, whether it passes within that of land or a hazard. Null when no
+ * chart covers the line.
+ */
+export function liveRay(
+  req: LiveChartRequest,
+  from: LatLon,
+  courseDeg: number,
+  lengthM: number,
+  floorDepthM?: number | null,
+  closeM?: number | null,
+): { land: boolean; shallow: boolean; close?: boolean } | null {
+  if (!Number.isFinite(from?.lat) || !Number.isFinite(from?.lon) || !(lengthM > 0)) return null
+  if (!Number.isFinite(courseDeg)) return null
+  const ctx = liveCtx(req)
+  if (!ctx) return null
+  const { ix } = ctx
+  const p = toXY(ix.proj, from)
+  const th = (courseDeg * Math.PI) / 180
+  const e = { x: p.x + lengthM * Math.sin(th), y: p.y + lengthM * Math.cos(th) }
+  if (!insideIndex(ix, p) || !insideIndex(ix, e)) return null
+  const r = checkSegment(ix, p.x, p.y, e.x, e.y, {
+    // "Shallow" below the floor asked for, when that is shallower than the
+    // boat needs: a best-effort route's own least depth.
+    safeDepthM:
+      floorDepthM != null && Number.isFinite(floorDepthM)
+        ? Math.min(ctx.safeDepthM, Math.max(0, floorDepthM))
+        : ctx.safeDepthM,
+    clearanceM: closeM != null && closeM > 0 ? closeM : 0,
+    zones: ctx.zones,
+    depthMarginM: 0,
+  })
+  const land = r.crossesLand || r.entersHazard
+  return {
+    land,
+    shallow: r.shallow,
+    // Within `closeM` of land or a hazard (outside the approach zones).
+    ...(closeM != null && closeM > 0 ? { close: land || r.clearanceOutsideM < closeM } : {}),
   }
 }
 
