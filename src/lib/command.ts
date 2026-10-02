@@ -558,6 +558,44 @@ export function liveSearchAreas(areas: SearchArea[]): SearchArea[] {
 }
 
 /* -------------------------------------------------------------------------
+ * Catch points (command's Narrow Water Search, NW5; table catch_points)
+ * ---------------------------------------------------------------------- */
+
+export type CatchPointKind =
+  | 'strainer' | 'log_jam' | 'eddy' | 'low_head_dam' | 'dam' | 'bridge' | 'confluence' | 'bend' | 'snag' | 'other'
+
+export interface CatchPoint {
+  id: string
+  incident_id: string
+  kind: CatchPointKind
+  label: string | null
+  notes: string | null
+  source: 'field' | 'command'
+  lat: number
+  lng: number
+  reported_by: string | null
+  created_at: string
+  deleted_at: string | null
+}
+
+/** What a crew can report (the database lists the same). */
+export const CATCH_POINT_KINDS: { value: CatchPointKind; label: string }[] = [
+  { value: 'strainer', label: 'Strainer' },
+  { value: 'log_jam', label: 'Log jam' },
+  { value: 'eddy', label: 'Eddy' },
+  { value: 'low_head_dam', label: 'Low-head dam' },
+  { value: 'snag', label: 'Snag' },
+  { value: 'other', label: 'Other' },
+]
+
+export const CATCH_POINT_LABEL: Record<string, string> = {
+  strainer: 'Strainer', log_jam: 'Log jam', eddy: 'Eddy', low_head_dam: 'Low-head dam',
+  dam: 'Dam', bridge: 'Bridge', confluence: 'Tributary joins', bend: 'Sharp bend', snag: 'Snag', other: 'Catch point',
+}
+
+export const CATCH_POINT_COLOR = '#f97316'
+
+/* -------------------------------------------------------------------------
  * River segments (command's Narrow Water Search, NW4)
  * ---------------------------------------------------------------------- */
 
@@ -732,6 +770,8 @@ export interface MapIncidentLayer {
     label: string
   }[]
   lkp: (LatLon & { label: string }) | null
+  /** Catch points (NW5): crews' and command's, drawn as diamonds. */
+  catchPoints?: { id: string; lat: number; lon: number; label: string }[]
 }
 
 /** A segment's label: title, then how to search it, in the units a crew uses. */
@@ -758,6 +798,7 @@ export function buildIncidentLayer(input: {
   userId: string | null
   unitId: string | null
   nowMs: number
+  catchPoints?: CatchPoint[]
 }): MapIncidentLayer {
   const areas: MapIncidentLayer['areas'] = []
   for (const a of liveSearchAreas(input.areas)) {
@@ -800,5 +841,13 @@ export function buildIncidentLayer(input: {
     areas,
     hazards,
     lkp: input.lkp ? { lat: input.lkp.lat, lon: input.lkp.lon, label: 'LKP (command)' } : null,
+    catchPoints: (input.catchPoints ?? [])
+      .filter((p) => !p.deleted_at && validPoint(p.lat, p.lng))
+      .map((p) => ({
+        id: p.id,
+        lat: p.lat,
+        lon: p.lng,
+        label: p.label?.trim() || CATCH_POINT_LABEL[p.kind] || 'Catch point',
+      })),
   }
 }

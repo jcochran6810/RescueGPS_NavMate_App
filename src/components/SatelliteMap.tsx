@@ -21,7 +21,7 @@ import {
   type TileSource,
 } from '@/lib/tiles'
 import type { PathMarker } from '@/components/TrackPath'
-import type { MapIncidentLayer } from '@/lib/command'
+import { CATCH_POINT_COLOR, type MapIncidentLayer } from '@/lib/command'
 import { formatPosition } from '@/lib/coords'
 import {
   alongForward,
@@ -1275,6 +1275,33 @@ export function SatelliteMap({
                 </g>
               )
             })}
+
+          {incident?.catchPoints?.map((cp) => {
+            // Catch points (NW5): a small orange diamond, labelled.
+            const p = project(cp.lat, cp.lon)
+            if (p.x < -200 || p.x > w + 200 || p.y < -200 || p.y > h + 200) return null
+            return (
+              <g key={`catch:${cp.id}`}>
+                <path
+                  d="M0,-5 L5,0 L0,5 L-5,0 Z"
+                  fill={CATCH_POINT_COLOR}
+                  stroke="#06131f"
+                  strokeWidth="1"
+                  transform={`translate(${p.x} ${p.y})`}
+                />
+                <text
+                  x={p.x + 8}
+                  y={p.y + 4}
+                  transform={rot === 0 ? undefined : `rotate(${rot} ${p.x + 8} ${p.y + 4})`}
+                  className="text-[10px] font-semibold"
+                  fill={CATCH_POINT_COLOR}
+                  style={{ paintOrder: 'stroke', stroke: '#06131f', strokeWidth: 3 }}
+                >
+                  {cp.label}
+                </text>
+              </g>
+            )
+          })}
 
           {incident?.lkp &&
             (() => {

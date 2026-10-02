@@ -43,6 +43,7 @@ import { shouldAdvance } from '@/lib/steer'
 import { IncidentCard } from '@/components/IncidentCard'
 import { AssignmentsCard } from '@/components/AssignmentsCard'
 import { RiverSegmentsCard } from '@/components/RiverSegmentsCard'
+import { CatchPointsCard } from '@/components/CatchPointsCard'
 import { MessagesCard } from '@/components/MessagesCard'
 import { HazardsCard } from '@/components/HazardsCard'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
@@ -260,6 +261,8 @@ export function SearchTab() {
       <AssignmentsCard />
 
       <RiverSegmentsCard />
+
+      <CatchPointsCard />
 
       <MessagesCard />
 

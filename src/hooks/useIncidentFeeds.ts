@@ -7,7 +7,8 @@ import { useAssignments, withPendingStatus } from '@/store/useAssignments'
 import { useMessages, visibleMessages } from '@/store/useMessages'
 import { useHazards, visibleHazards } from '@/store/useHazards'
 import { useSearchAreas } from '@/store/useSearchAreas'
-import type { FieldAssignment, FieldMessage, IncidentHazard, SearchArea } from '@/lib/command'
+import { useCatchPoints, visibleCatchPoints } from '@/store/useCatchPoints'
+import type { CatchPoint, FieldAssignment, FieldMessage, IncidentHazard, SearchArea } from '@/lib/command'
 import type { CommandLkp } from '@/store/useSearchAreas'
 
 /**
@@ -60,6 +61,16 @@ export function useIncidentHazards(incidentId: string | null): IncidentHazard[] 
   )
 }
 
+/** Catch points on this search (NW5): crews' and command's, plus any still to send. */
+export function useIncidentCatchPoints(incidentId: string | null): CatchPoint[] {
+  const cached = useCatchPoints((s) => (incidentId ? s.byIncident[incidentId] : undefined))
+  const outbox = useCatchPoints((s) => s.outbox)
+  return useMemo(
+    () => (incidentId ? visibleCatchPoints(cached ?? (EMPTY as CatchPoint[]), outbox, incidentId) : (EMPTY as CatchPoint[])),
+    [cached, outbox, incidentId],
+  )
+}
+
 export function useIncidentSearchPicture(incidentId: string | null): {
   areas: SearchArea[]
   lkp: CommandLkp | null
@@ -90,6 +101,7 @@ export function useIncidentFeeds(): void {
       void useMessages.getState().load(incidentId)
       void useHazards.getState().load(incidentId)
       void useSearchAreas.getState().load(incidentId)
+      void useCatchPoints.getState().load(incidentId)
     }
     loadAll()
     // A teammate on the team's search is put on it first (everything command
@@ -106,6 +118,7 @@ export function useIncidentFeeds(): void {
       useMessages.getState().subscribe(incidentId),
       useHazards.getState().subscribe(incidentId),
       useSearchAreas.getState().subscribe(incidentId),
+      useCatchPoints.getState().subscribe(incidentId),
       // Closed, suspended, a new IC or a moved LKP, from command.
       useIncidents.getState().subscribeIncident(incidentId),
     ]
@@ -117,6 +130,7 @@ export function useIncidentFeeds(): void {
       void useAssignments.getState().flush()
       void useMessages.getState().flush()
       void useHazards.getState().flush()
+      void useCatchPoints.getState().flush()
     }, LKP_REFRESH_MS)
     return () => {
       gone = true

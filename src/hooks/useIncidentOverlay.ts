@@ -3,6 +3,7 @@ import { buildIncidentLayer, type MapIncidentLayer } from '@/lib/command'
 import {
   useFieldIdentity,
   useIncidentAssignments,
+  useIncidentCatchPoints,
   useIncidentHazards,
   useIncidentSearchPicture,
 } from '@/hooks/useIncidentFeeds'
@@ -18,6 +19,7 @@ export function useIncidentOverlay(): MapIncidentLayer | null {
   const assignments = useIncidentAssignments(incidentId)
   const hazards = useIncidentHazards(incidentId)
   const { areas, lkp } = useIncidentSearchPicture(incidentId)
+  const catchPoints = useIncidentCatchPoints(incidentId)
   // A minute's resolution is plenty to drop an expired hazard.
   const now = useNow(60_000)
   const minute = Math.floor(now.getTime() / 60_000)
@@ -32,8 +34,9 @@ export function useIncidentOverlay(): MapIncidentLayer | null {
             userId,
             unitId,
             nowMs: minute * 60_000,
+            catchPoints,
           })
         : null,
-    [incidentId, assignments, areas, hazards, lkp, userId, unitId, minute],
+    [incidentId, assignments, areas, hazards, lkp, userId, unitId, minute, catchPoints],
   )
 }

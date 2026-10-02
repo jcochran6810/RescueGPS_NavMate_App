@@ -36,6 +36,7 @@ import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import { IncidentCard } from '@/components/IncidentCard'
 import { AssignmentsCard } from '@/components/AssignmentsCard'
 import { RiverSegmentsCard } from '@/components/RiverSegmentsCard'
+import { CatchPointsCard } from '@/components/CatchPointsCard'
 import { MessagesCard } from '@/components/MessagesCard'
 import { HazardsCard } from '@/components/HazardsCard'
 import { VictimCard } from '@/components/VictimCard'
@@ -149,6 +150,8 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
       <AssignmentsCard />
 
       <RiverSegmentsCard />
+
+      <CatchPointsCard />
 
       <MessagesCard />
 
