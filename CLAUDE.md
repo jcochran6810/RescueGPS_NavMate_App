@@ -376,7 +376,7 @@ list loads the newest 200 rather than the first 200. The GeoJSON/EWKB
 assignment-area fault was fixed there by a parallel session (`86747b9`) while
 this ran, so it was dropped from this branch rather than pushed twice.
 
-**Verification.** NavMate typecheck, lint, **1459** tests, build clean;
+**Verification.** NavMate typecheck, lint, **1460** tests, build clean;
 RescueGPS frontend 1552/1552, backend 440/440, build clean; Supabase security
 advisors show nothing new. Router tests that time out at Vitest's default 5 s
 on a busy machine got explicit timeouts, assertions unchanged. Three checks in
