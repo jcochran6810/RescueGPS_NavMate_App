@@ -16,6 +16,7 @@ import {
   describeDriftLeg,
   MAX_PLAUSIBLE_DRIFT_KTS,
   DRIFT_SAMPLE_SECONDS,
+  observationPosition,
 } from './sar'
 import { haversineNM, bearingDeg } from './geo'
 
@@ -367,5 +368,32 @@ describe('a drift reading that cannot be believed', () => {
     expect(MAX_PLAUSIBLE_DRIFT_KTS).toBe(20)
     expect(describeDriftLeg(good, 19.9, 5).ok).toBe(true)
     expect(describeDriftLeg(good, 20.1, 5).ok).toBe(false)
+  })
+})
+
+describe('observationPosition — where a conditions reading was taken', () => {
+  const now = Date.parse('2026-10-02T12:00:00Z')
+  const fix = { lat: 29.6, lon: -94.9, timestamp: now - 60_000 }
+
+  it('a reading from the boat is at its recent fix', () => {
+    // The command fan-out needs a position for a conditions record and used to
+    // fall back to the incident's LKP; with neither, the reading never reached
+    // command (live database, 2026-10-02).
+    expect(observationPosition({ fix, nowMs: now })).toEqual({ lat: 29.6, lon: -94.9 })
+  })
+
+  it('a stale or missing fix gives no position rather than a wrong one', () => {
+    expect(observationPosition({ fix: { ...fix, timestamp: now - 11 * 60_000 }, nowMs: now })).toBeNull()
+    expect(observationPosition({ fix: null, nowMs: now })).toBeNull()
+  })
+
+  it('a reading off a drift marker is at the marker: retrieve, else its newest sample, else deploy', () => {
+    const deploy = { lat: 29.5, lon: -94.8, time: '2026-10-02T11:00:00Z' }
+    const sample = { lat: 29.51, lon: -94.79, time: '2026-10-02T11:05:00Z' }
+    expect(observationPosition({ fix, nowMs: now, marker: { deploy } })).toEqual({ lat: 29.5, lon: -94.8 })
+    expect(observationPosition({ fix, nowMs: now, marker: { deploy, samples: [sample] } })).toEqual({ lat: 29.51, lon: -94.79 })
+    expect(
+      observationPosition({ fix, nowMs: now, marker: { deploy, samples: [sample], retrieve: { lat: 29.52, lon: -94.78, time: '2026-10-02T11:30:00Z' } } }),
+    ).toEqual({ lat: 29.52, lon: -94.78 })
   })
 })

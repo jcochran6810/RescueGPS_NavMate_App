@@ -293,6 +293,24 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   does not. The first version measured how far the readings moved and called a
   hard turn a fault — the browser drive is what caught it.
 
+- **Four things about the shared tables that have each broken a two-way
+  feature once** (integration audit, 2026-10-02):
+  1. `incidents.client_id` is **not** a NavMate marker: the command wizard
+     writes its own save key there. NavMate's is the incident's own id
+     (`isFieldCreated`), and the incident list says whose incidents it wants
+     (`incidentScopeFilter`) — RLS lets every signed-in user read every
+     incident, so "whatever comes back" is everyone's.
+  2. Command data is read by **participation**. A teammate on the team's
+     search must be a participant (`ensureParticipant` →
+     `navmate_join_incident`), or every assignment, message, area and unit
+     reads empty for them.
+  3. `geography` columns (`search_areas.polygon`, `field_assignments.segment_geom`)
+     **arrive as EWKB hex** and **accept EWKT, not GeoJSON** — on both apps.
+  4. A refused UPDATE comes back as **success with 0 rows**. Before writing a
+     row another app owns, check the write can land (`canUpdateIncident`), and
+     never `upsert` without `ignoreDuplicates` into a table with no UPDATE
+     policy (`asset_tracks`, `field_messages`, `incident_hazards`) — a replay
+     fails RLS and takes the batch with it.
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.

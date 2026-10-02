@@ -77,7 +77,7 @@ export function useIncidentTelemetry(): void {
   const refreshUnits = useIncidentShare((s) => s.refreshUnits)
   const subscribeUnits = useIncidentShare((s) => s.subscribeUnits)
   const registerUnit = useIncidentShare((s) => s.registerUnit)
-  const clearLocal = useIncidentShare((s) => s.clearLocal)
+  const clearUnits = useIncidentShare((s) => s.clearUnits)
   const incidentId = incident?.id ?? null
   // The boat this phone is on, if one is set up — the unit is registered as
   // that vessel so command sees its name, not just a call sign.
@@ -91,7 +91,13 @@ export function useIncidentTelemetry(): void {
    * retried by the fallback tick below and never holds up tracking.
    */
   useEffect(() => {
-    if (incidentId && online) void registerUnit(incidentId, vesselId)
+    if (!incidentId || !online) return
+    // On the team's search first: registration is refused to anyone who is
+    // not a participant, which every teammate but its creator used to be.
+    void useIncidents
+      .getState()
+      .ensureParticipant(incidentId)
+      .then(() => registerUnit(incidentId, vesselId))
   }, [incidentId, vesselId, online, registerUnit])
 
   // Every fix is offered; the store decides how often one is actually sent.
@@ -108,8 +114,10 @@ export function useIncidentTelemetry(): void {
     if (!incidentId) {
       // Off a search, there are no other units — and leaving the last lot on
       // screen would draw boats that are no longer anything to do with this
-      // crew.
-      clearLocal()
+      // crew. This crew's own unsent fixes stay: they belong to the search
+      // that just ended (closed by command, perhaps, while out of signal)
+      // and are still its track. They go with the next flush.
+      clearUnits()
       return
     }
     void refreshUnits(incidentId)
@@ -121,15 +129,20 @@ export function useIncidentTelemetry(): void {
       }
       if (!share.unitIds[incidentId]) {
         const team = useTeams.getState().activeTeamId
-        void share.registerUnit(
-          incidentId,
-          useVessels.getState().active(team)?.id ?? null,
-        )
+        void useIncidents
+          .getState()
+          .ensureParticipant(incidentId)
+          .then(() =>
+            share.registerUnit(incidentId, useVessels.getState().active(team)?.id ?? null),
+          )
       }
+      // Fixes held while out of signal go as soon as it is back, even if the
+      // tracker has stopped producing new ones.
+      void share.flush()
     }, UNITS_REFRESH_MS)
     return () => {
       clearInterval(timer)
       unsubscribe()
     }
-  }, [incidentId, refreshUnits, subscribeUnits, clearLocal])
+  }, [incidentId, refreshUnits, subscribeUnits, clearUnits])
 }

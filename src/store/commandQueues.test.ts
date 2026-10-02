@@ -193,4 +193,45 @@ describe('unit registration (N4)', () => {
     const [rows] = up.args as [Record<string, unknown>[]]
     expect(rows[0]).toMatchObject({ asset_id: 'unit-1', user_id: 'u1' })
   })
+
+  it('skips a fix that already landed instead of rewriting it (asset_tracks has no UPDATE policy)', async () => {
+    // Verified against the live database as a real crew account: merging a
+    // duplicate client_id is refused with 42501, and the whole batch with it.
+    // ON CONFLICT DO NOTHING is accepted, so a resend after a lost answer
+    // clears the buffer instead of holding every later fix back.
+    useIncidentShare.setState({
+      queue: [
+        {
+          client_id: 'u1:1', incident_id: 'inc', lat: 29.5, lng: -94.8,
+          heading_deg: null, speed_mps: null, accuracy_m: null, altitude_m: null,
+          recorded_at: '2026-09-24T10:00:00Z', provider: 'navmate',
+        },
+      ],
+    })
+    await useIncidentShare.getState().flush()
+    const up = calls.find((c) => c.table === 'asset_tracks' && c.op === 'upsert')!
+    expect(up.args[1]).toEqual({ onConflict: 'client_id', ignoreDuplicates: true })
+    expect(useIncidentShare.getState().queue).toEqual([])
+  })
+
+  it('never uploads another account\'s buffered fixes as this one\'s', async () => {
+    // A phone handed to another crew member before its buffer drained.
+    const base = {
+      incident_id: 'inc', lat: 29.5, lng: -94.8,
+      heading_deg: null, speed_mps: null, accuracy_m: null, altitude_m: null,
+      recorded_at: '2026-09-24T10:00:00Z', provider: 'navmate',
+    }
+    useIncidentShare.setState({
+      queue: [
+        { ...base, client_id: 'other:1', user_id: 'other' },
+        { ...base, client_id: 'u1:2', user_id: 'u1' },
+      ],
+    })
+    await useIncidentShare.getState().flush()
+    const up = calls.find((c) => c.table === 'asset_tracks' && c.op === 'upsert')!
+    const [rows] = up.args as [Record<string, unknown>[]]
+    expect(rows.map((r) => r.client_id)).toEqual(['u1:2'])
+    // The other account's fix waits for them; it is not dropped or misfiled.
+    expect(useIncidentShare.getState().queue.map((q) => q.client_id)).toEqual(['other:1'])
+  })
 })

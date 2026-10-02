@@ -67,10 +67,10 @@ function isTerminal(e: unknown): boolean {
  * Put a row into the list, keeping what the list already knew about its
  * outline if this copy cannot be read.
  *
- * PostgREST returns the polygon as GeoJSON, but a Realtime change carries the
- * raw column, which for a geography is EWKB hex. Dropping a readable outline
- * for an unreadable one would erase the segment from the map on the first
- * status change.
+ * `segment_geom` is a geography, which PostgREST and Realtime both send as
+ * EWKB hex (`parsePolygon` reads it). Should a copy ever arrive unreadable,
+ * dropping a readable outline for it would erase the segment from the map on
+ * the first status change.
  */
 function mergeRow(list: FieldAssignment[], row: FieldAssignment): FieldAssignment[] {
   const i = list.findIndex((a) => a.id === row.id)

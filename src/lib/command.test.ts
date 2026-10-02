@@ -11,6 +11,8 @@ import {
   pendingEmergency,
   activeHazards,
   latestLkp,
+  commandLkp,
+  messageRecipient,
   applyTrackRow,
   buildIncidentLayer,
   assignmentLabel,
@@ -109,8 +111,57 @@ describe('parsePolygon', () => {
     ).toHaveLength(4)
   })
 
-  it('leaves EWKB hex undrawn rather than crashing or guessing', () => {
+  /*
+   * The vectors below are what the live database (PostGIS, project
+   * ekhvfypxuxskjglwwoqh) returned for `to_json(<geography>)` — which is what
+   * PostgREST and Realtime send for `search_areas.polygon` and
+   * `field_assignments.segment_geom`. A geography column has no JSON cast, so
+   * it never arrives as GeoJSON.
+   */
+  const POLY_GEOG =
+    '0103000020E610000001000000050000009A99999999B957C00000000000803D403333333333B357C00000000000803D403333333333B357C09A99999999993D409A99999999B957C09A99999999993D409A99999999B957C00000000000803D40'
+
+  it('reads a geography polygon as PostgREST sends it (EWKB hex), lat and lon the right way round', () => {
+    const ring = parsePolygon(POLY_GEOG)!
+    expect(ring).toHaveLength(4)
+    expect(ring[0].lat).toBeCloseTo(29.5, 9)
+    expect(ring[0].lon).toBeCloseTo(-94.9, 9)
+    expect(ring[2].lat).toBeCloseTo(29.6, 9)
+    expect(ring[2].lon).toBeCloseTo(-94.8, 9)
+    // Lower case, as some clients re-encode it.
+    expect(parsePolygon(POLY_GEOG.toLowerCase())).toHaveLength(4)
+  })
+
+  it('reads a multipolygon (first polygon), a Z polygon, big-endian WKB, and keeps only the outer ring', () => {
+    const multi = parsePolygon(
+      '0106000020E610000002000000010300000001000000040000009A99999999B957C00000000000803D403333333333B357C00000000000803D403333333333B357C09A99999999993D409A99999999B957C00000000000803D40010300000001000000040000000000000000C057C00000000000003D40CDCCCCCCCCBC57C00000000000003D40CDCCCCCCCCBC57C0CDCCCCCCCC0C3D400000000000C057C00000000000003D40',
+    )!
+    expect(multi).toHaveLength(3)
+    expect(multi[0].lon).toBeCloseTo(-94.9, 9)
+    const z = parsePolygon(
+      '01030000A0E610000001000000040000009A99999999B957C00000000000803D40000000000000F03F3333333333B357C00000000000803D40000000000000F03F3333333333B357C09A99999999993D40000000000000F03F9A99999999B957C00000000000803D40000000000000F03F',
+    )!
+    expect(z).toHaveLength(3)
+    expect(z[1].lat).toBeCloseTo(29.5, 9)
+    expect(z[1].lon).toBeCloseTo(-94.8, 9)
+    const xdr = parsePolygon(
+      '0020000003000010e60000000100000004c057b9999999999a403d800000000000c057b33333333333403d800000000000c057b33333333333403d99999999999ac057b9999999999a403d800000000000',
+    )!
+    expect(xdr).toHaveLength(3)
+    expect(xdr[2].lat).toBeCloseTo(29.6, 9)
+    const holed = parsePolygon(
+      '0103000020E610000002000000040000009A99999999B957C00000000000803D403333333333B357C00000000000803D403333333333B357C09A99999999993D409A99999999B957C00000000000803D4004000000B81E85EB51B857C085EB51B81E853D406666666666B657C085EB51B81E853D406666666666B657C0CDCCCCCCCC8C3D40B81E85EB51B857C085EB51B81E853D40',
+    )!
+    expect(holed).toHaveLength(3)
+    expect(Math.min(...holed.map((p) => p.lat))).toBeCloseTo(29.5, 9)
+  })
+
+  it('leaves a truncated or non-polygon EWKB undrawn rather than crashing or guessing', () => {
     expect(parsePolygon('0103000020E6100000010000000500000000')).toBeNull()
+    expect(parsePolygon(POLY_GEOG.slice(0, -16))).toBeNull()
+    // A point is not an area.
+    expect(parsePolygon('0101000020E61000009A99999999B957C00000000000803D40')).toBeNull()
+    expect(parsePolygon('not hex at all')).toBeNull()
     expect(parsePolygon('{not json')).toBeNull()
     expect(parsePolygon(null)).toBeNull()
     expect(parsePolygon(42)).toBeNull()
@@ -314,5 +365,48 @@ describe('buildIncidentLayer', () => {
     expect(layer.hazards.map((h) => h.id)).toEqual(['h1'])
     expect(layer.hazards[0]).toMatchObject({ lat: 29.5, lon: -94.8, radiusM: 50, label: 'Debris' })
     expect(layer.lkp).toMatchObject({ lat: 29.55, lon: -94.75 })
+  })
+})
+
+describe('commandLkp — the LKP command is working to', () => {
+  const history = [
+    { incident_id: 'inc', lat: 29.4, lng: -94.7, time: '2026-10-02T09:00:00Z', source: 'navmate', confidence: null },
+  ]
+
+  it('is the incident row\'s LKP — what the IC moves — not the field LKP echoed back', () => {
+    // Live 2026-10-02: every lkp_history row on the database is NavMate's own
+    // fan-out; the command app moves incidents.lkp_lat/lng. Numeric columns
+    // may arrive as text.
+    const lkp = commandLkp(
+      { lkp_lat: '29.5584800', lkp_lng: '-94.9544590', lkp_time: '2026-10-01T21:00:00Z', lkp_source: 'map_pick' },
+      history,
+    )
+    expect(lkp).toMatchObject({ lat: 29.55848, lon: -94.954459, source: 'map_pick' })
+  })
+
+  it('falls back to the history only when the incident has no LKP', () => {
+    expect(commandLkp({ lkp_lat: null, lkp_lng: null, lkp_time: null, lkp_source: null }, history)).toMatchObject({
+      lat: 29.4,
+      lon: -94.7,
+    })
+    expect(commandLkp(null, [])).toBeNull()
+    // An impossible row is not an LKP.
+    expect(commandLkp({ lkp_lat: 95, lkp_lng: 10, lkp_time: null, lkp_source: null }, [])).toBeNull()
+  })
+})
+
+describe('messageRecipient — who a field message is for', () => {
+  it('a reply goes back to its sender', () => {
+    expect(messageRecipient({ replyTo: { sender_id: 'ic-2' }, to: 'everyone', icId: 'ic-1', userId: 'me' })).toBe('ic-2')
+  })
+
+  it('to command is to the incident commander, which is what raises their unread badge', () => {
+    expect(messageRecipient({ replyTo: null, to: 'command', icId: 'ic-1', userId: 'me' })).toBe('ic-1')
+  })
+
+  it('to everyone, no IC known yet, or the sender is the IC: the whole incident', () => {
+    expect(messageRecipient({ replyTo: null, to: 'everyone', icId: 'ic-1', userId: 'me' })).toBeNull()
+    expect(messageRecipient({ replyTo: null, to: 'command', icId: null, userId: 'me' })).toBeNull()
+    expect(messageRecipient({ replyTo: null, to: 'command', icId: 'me', userId: 'me' })).toBeNull()
   })
 })

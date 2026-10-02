@@ -4,10 +4,13 @@ import { supabase, errorMessage } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
 import {
   isIncoming,
+  messageRecipient,
   replyFields,
   type FieldMessage,
   type MessagePriority,
+  type MessageTarget,
 } from '@/lib/command'
+import { useIncidents } from '@/store/useIncidents'
 
 /**
  * Messages between command and the field (`field_messages`, contract N6).
@@ -58,13 +61,15 @@ interface MessageState {
   subscribe: (incidentId: string) => () => void
   /**
    * Send a message. A reply goes back to its sender in the same thread;
-   * anything else goes to the whole incident.
+   * anything else to the incident commander (the default) or to everyone on
+   * the search — see `messageRecipient`.
    */
   send: (
     incidentId: string,
     body: string,
     priority?: MessagePriority,
     replyTo?: FieldMessage | null,
+    to?: MessageTarget,
   ) => Promise<boolean>
   /** Mark messages addressed to this crew as delivered (on receipt). */
   markDelivered: (incidentId: string, userId: string | null, unitId: string | null) => void
@@ -287,11 +292,13 @@ export const useMessages = create<MessageState>()(
         return () => void supabase.removeChannel(channel)
       },
 
-      send: async (incidentId, body, priority = 'normal', replyTo = null) => {
+      send: async (incidentId, body, priority = 'normal', replyTo = null, to = 'command') => {
         const text = body.trim()
         if (!text) return false
         const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return false
+        const ic =
+          useIncidents.getState().visible().find((i) => i.id === incidentId)?.current_ic_id ?? null
         const clientId = newId()
         const thread = replyTo && !replyTo.id.startsWith(LOCAL_PREFIX)
           ? replyFields(replyTo)
@@ -302,8 +309,8 @@ export const useMessages = create<MessageState>()(
           incident_id: incidentId,
           sender_id: uid,
           // A reply goes to whoever sent the original; a new message to the
-          // whole incident, which is where command reads field traffic.
-          recipient_id: replyTo ? replyTo.sender_id : null,
+          // incident commander or to everyone (`messageRecipient`).
+          recipient_id: messageRecipient({ replyTo, to, icId: ic, userId: uid }),
           recipient_asset_id: null,
           body: text,
           priority,

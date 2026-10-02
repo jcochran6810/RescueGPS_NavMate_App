@@ -196,6 +196,39 @@ export function victimRow(
   }
 }
 
+/**
+ * What a field save changes on a victim row that already exists.
+ *
+ * The row is shared: the command wizard writes the same table, often the
+ * name, age and build while the crew is still typing clothing colours on a
+ * boat out of signal. The full row from `victimRow` carries a null for every
+ * box this phone left empty, and writing it would erase what command had
+ * entered — an empty box here means "not filled in on this phone", not
+ * "remove it". So only what the crew actually has is sent: text and numbers
+ * that are filled in, a yes on a checkbox (with its "estimated" flag riding
+ * along with the number it qualifies), and a status other than the default.
+ * Corrections still land; nothing command typed is blanked.
+ */
+export function victimUpdatePatch(
+  v: VictimDraft,
+  incidentId: string,
+): Record<string, unknown> {
+  const full = victimRow(v, incidentId)
+  const out: Record<string, unknown> = {}
+  for (const [k, val] of Object.entries(full)) {
+    if (k === 'incident_id') continue
+    if (val === null || val === undefined || val === false) continue
+    if (k === 'status' && val === 'missing') continue
+    out[k] = val
+  }
+  // An "estimated" flag belongs to its number: sent with it, never alone.
+  if (full.height_ft != null || full.height_in != null) out.height_estimated = full.height_estimated
+  else delete out.height_estimated
+  if (full.weight_lbs != null) out.weight_estimated = full.weight_estimated
+  else delete out.weight_estimated
+  return out
+}
+
 /** One line for the card: what a crew would say over the radio. */
 export function victimSummary(v: VictimDraft): string {
   const bits: string[] = []

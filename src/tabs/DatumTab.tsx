@@ -10,7 +10,8 @@ import { useNow } from '@/hooks/useNow'
 import { useGoTo } from '@/store/useGoTo'
 import type { TabId } from '@/components/NavMenu'
 import { toast } from '@/store/useToast'
-import { recordsForSearch } from '@/lib/incident'
+import { canUpdateIncident, recordsForSearch } from '@/lib/incident'
+import { useAuth } from '@/store/useAuth'
 import { toDD, toDMS } from '@/lib/coords'
 import { CoordInput } from '@/components/CoordInput'
 import { TEMP_SUFFIX, tempIn, tempToCelsius } from '@/lib/units'
@@ -28,6 +29,7 @@ import {
   DRIFT_SAMPLE_SECONDS,
   lastMarkerPoint,
   describeDriftLeg,
+  observationPosition,
   type LkpSource,
 } from '@/lib/sar'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
@@ -70,6 +72,7 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
   } = useSarRecords()
   const online = useOnline()
   const incident = useIncidents((s) => s.activeIncident(activeTeamId))
+  const me = useAuth((s) => s.user?.id ?? null)
 
   useEffect(() => {
     void load()
@@ -168,7 +171,13 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
           // handoff row is always current. incident_time is only set once —
           // it means "went into the water", and a corrected LKP later must
           // not restart the drift clock.
-          if (created && incident) {
+          //
+          // Only on an incident this crew may change: on a search they joined
+          // the row is command's, the write would be refused as "0 rows" and
+          // the phone would show an LKP command never got. Their LKP still
+          // reaches command — as the record just saved, which command reads
+          // and copies into its LKP history.
+          if (created && incident && canUpdateIncident(incident, me, activeTeamId)) {
             await useIncidents.getState().updateIncident(incident.id, {
               lkp_lat: input.lat,
               lkp_lng: input.lon,
@@ -207,10 +216,12 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
       <ConditionsCard
         environment={environment}
         onSave={async (payload, note) => {
+          // Where it was taken — see `observationPosition`.
+          const at = observationPosition({ fix: useTracker.getState().fix, nowMs: Date.now() })
           const created = await createRecord({
             kind: 'environment',
-            lat: null,
-            lon: null,
+            lat: at?.lat ?? null,
+            lon: at?.lon ?? null,
             recorded_at: new Date().toISOString(),
             payload,
             note,
@@ -343,10 +354,16 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
             current_toward_deg: p.set_deg ?? null,
             current_kts: p.drift_kts ?? null,
           }
+          // Measured at the marker, so that is where the reading belongs.
+          const at = observationPosition({
+            fix: useTracker.getState().fix,
+            nowMs: Date.now(),
+            marker: p,
+          })
           const created = await createRecord({
             kind: 'environment',
-            lat: null,
-            lon: null,
+            lat: at?.lat ?? null,
+            lon: at?.lon ?? null,
             recorded_at: new Date().toISOString(),
             payload,
             note: 'From drift marker observation',

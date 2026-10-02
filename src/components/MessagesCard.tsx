@@ -11,8 +11,9 @@ import {
   pendingEmergency,
   type FieldMessage,
   type MessagePriority,
+  type MessageTarget,
 } from '@/lib/command'
-import { Button, Card, Input, Label } from '@/components/ui'
+import { Button, Card, Input, Label, Segmented } from '@/components/ui'
 
 const AUDIENCE_LABEL = { me: 'To you', unit: 'To your unit', all: 'To everyone' } as const
 
@@ -42,6 +43,7 @@ export function MessagesCard() {
   const [openId, setOpenId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [priority, setPriority] = useState<MessagePriority>('normal')
+  const [to, setTo] = useState<MessageTarget>('command')
 
   const list = useMemo(() => inbox(all, userId, unitId), [all, userId, unitId])
   const unread = list.filter((m) => isIncoming(m, userId, unitId) && !m.read_at).length
@@ -51,7 +53,13 @@ export function MessagesCard() {
 
   async function submit() {
     if (!incidentId) return
-    const ok = await send(incidentId, draft, priority, open && isIncoming(open, userId, unitId) ? open : null)
+    const ok = await send(
+      incidentId,
+      draft,
+      priority,
+      open && isIncoming(open, userId, unitId) ? open : null,
+      to,
+    )
     if (!ok) {
       toast('Could not queue the message', 'error')
       return
@@ -148,13 +156,31 @@ export function MessagesCard() {
       )}
 
       <div className="mt-3 space-y-2">
-        {open && isIncoming(open, userId, unitId) && (
+        {open && isIncoming(open, userId, unitId) ? (
           <p className="text-xs text-sky-300">Replying to the message above.</p>
+        ) : (
+          /* Command is the default: a message addressed to the IC is the
+             one their dashboard flags as unread and can mark read. */
+          <Segmented
+            label="Send to"
+            value={to}
+            onChange={setTo}
+            options={[
+              { id: 'command', label: 'To command', hint: 'The incident commander' },
+              { id: 'everyone', label: 'To everyone', hint: 'Every unit on the search, and command' },
+            ]}
+          />
         )}
         <Input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={open && isIncoming(open, userId, unitId) ? 'Reply…' : 'Message to the incident…'}
+          placeholder={
+            open && isIncoming(open, userId, unitId)
+              ? 'Reply…'
+              : to === 'command'
+                ? 'Message to command…'
+                : 'Message to everyone on the search…'
+          }
           aria-label="Message"
         />
         <div className="flex gap-2">

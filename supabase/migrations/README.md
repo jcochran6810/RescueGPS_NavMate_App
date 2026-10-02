@@ -65,3 +65,19 @@ What they do differently, and why:
   validated against the tables it names at creation time.
 
 `anon` has no policy on any NavMate table, here as everywhere.
+
+## `20260924*` and later — the integration contract with RescueGPS
+
+`20260924*_integ_nav_*` are NavMate's half of the integration contract
+(waypoint `incident_id`, soft deletes, command read policies, clue-photo
+read). The command system's half lives in its own repository
+(`rescuegps-navigator-pro/database/integration/integ_rgps_*.sql`); both are
+applied here.
+
+`20261002000000_navmate_integ_team_join_rejoin` (applied 2026-10-02) changes
+two NavMate functions found wrong by running the two-way flows as real
+accounts: a team member now joins their own team's incident directly
+(everything command sends is read by participation, and only the creator was
+a participant), re-joining after leaving works (the old re-activation tripped
+the command system's participant guard), and `is_field_created` no longer
+reads `client_id is not null`, which the command wizard now also writes.

@@ -48,6 +48,13 @@ export const UNIT_STALE_MS = 5 * 60_000
 
 interface Queued {
   client_id: string
+  /**
+   * Who recorded the fix. Stamped when it is taken, not when it is sent: a
+   * phone handed to another crew member before its buffer drained would
+   * otherwise upload the first person's track as the second's. Optional only
+   * for buffers written by an older build, which have no owner to check.
+   */
+  user_id?: string
   incident_id: string
   /**
    * The unit this fix belongs to (`resources.id`, contract C3). Null when the
@@ -100,6 +107,9 @@ interface ShareState {
   unitId: (incidentId: string | null) => string | null
   /** Follow the other units live. Returns the unsubscribe. */
   subscribeUnits: (incidentId: string) => () => void
+  /** Forget the other units (off a search). This crew's own unsent fixes stay. */
+  clearUnits: () => void
+  /** Everything, own fixes included — for a sign-out. */
   clearLocal: () => void
 }
 
@@ -130,6 +140,7 @@ export const useIncidentShare = create<ShareState>()(
         const row: Queued = {
           // Unique per user per fix, which is what makes a retry safe.
           client_id: `${uid}:${fix.timestamp}`,
+          user_id: uid,
           incident_id: incidentId,
           asset_id:
             get().unitOwner === uid ? (get().unitIds[incidentId] ?? null) : null,
@@ -156,25 +167,38 @@ export const useIncidentShare = create<ShareState>()(
         const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return
 
+        // Only this account's fixes: anyone else's would be refused by RLS
+        // (and take the whole batch with them) or, worse, be filed as ours.
+        const mine = queue.filter((q) => (q.user_id ?? uid) === uid)
+        if (mine.length === 0) return
         set({ sending: true })
         const unitIds = get().unitOwner === uid ? get().unitIds : {}
         try {
           const { error } = await supabase
             .from('asset_tracks')
             .upsert(
-              queue.map((q) => ({
+              mine.map((q) => ({
                 ...q,
                 // A fix buffered before the unit was registered picks the id
                 // up here, so a backlog uploads already attributed.
                 asset_id: q.asset_id ?? unitIds[q.incident_id] ?? null,
                 user_id: uid,
               })),
-              { onConflict: 'client_id' },
+              /*
+               * A fix that already landed (the answer was lost to a dropped
+               * signal, so it is still in the buffer) is skipped, never
+               * rewritten. `asset_tracks` has no UPDATE policy — a track
+               * point is a record, not a draft — so merging a duplicate is
+               * refused by RLS, and because the batch goes in one request
+               * that one refusal would hold back every fix behind it until
+               * the duplicate aged out of the buffer two hours later.
+               */
+              { onConflict: 'client_id', ignoreDuplicates: true },
             )
           if (error) throw error
           // Only what was sent leaves the buffer — a fix recorded while this
           // was in flight is still waiting afterwards.
-          const sent = new Set(queue.map((q) => q.client_id))
+          const sent = new Set(mine.map((q) => q.client_id))
           set({
             queue: get().queue.filter((q) => !sent.has(q.client_id)),
             lastError: null,
@@ -268,6 +292,8 @@ export const useIncidentShare = create<ShareState>()(
           void supabase.removeChannel(channel)
         }
       },
+
+      clearUnits: () => set({ units: [], live: false }),
 
       clearLocal: () => set({ queue: [], units: [], lastError: null }),
     }),

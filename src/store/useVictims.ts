@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
-import { victimRow, type VictimDraft } from '@/lib/victim'
+import { victimRow, victimUpdatePatch, type VictimDraft } from '@/lib/victim'
 
 /**
  * The description of who is being looked for, on its way to the command
@@ -67,6 +67,10 @@ export const useVictims = create<VictimState>()(
             'name, age, gender, height_ft, height_in, height_estimated, weight_lbs, weight_estimated, body_type, hair_color, upper_clothing, upper_clothing_color, lower_clothing, lower_clothing_color, clothing_type, has_life_jacket, life_jacket_color, life_jacket_has_reflective, swimming_ability, intoxication_level, injuries, status',
           )
           .eq('incident_id', incidentId)
+          // The first person entered — the same row the save below corrects.
+          // Command can add more than one; without an order "the" victim was
+          // whichever row the database happened to return first.
+          .order('created_at', { ascending: true })
           .limit(1)
           .maybeSingle()
         if (error || !data) return
@@ -118,7 +122,6 @@ export const useVictims = create<VictimState>()(
               done.push(incidentId)
               continue
             }
-            const row = victimRow(draft, incidentId)
             // One description per incident from the field: look for the row
             // first so a second save corrects it rather than adding a second
             // person to the search.
@@ -126,13 +129,27 @@ export const useVictims = create<VictimState>()(
               .from('victims')
               .select('id')
               .eq('incident_id', incidentId)
+              .order('created_at', { ascending: true })
               .limit(1)
               .maybeSingle()
             if (existing.error) throw existing.error
-            const written = existing.data?.id
-              ? await supabase.from('victims').update(row).eq('id', existing.data.id)
-              : await supabase.from('victims').insert(row)
-            if (written.error) throw written.error
+            if (existing.data?.id) {
+              // Shared with the command wizard: correct, never blank out
+              // (`victimUpdatePatch`).
+              const patch = victimUpdatePatch(draft, incidentId)
+              if (Object.keys(patch).length > 0) {
+                const written = await supabase
+                  .from('victims')
+                  .update(patch)
+                  .eq('id', existing.data.id)
+                if (written.error) throw written.error
+              }
+            } else {
+              const written = await supabase
+                .from('victims')
+                .insert(victimRow(draft, incidentId))
+              if (written.error) throw written.error
+            }
             done.push(incidentId)
           }
           set({ lastError: null })

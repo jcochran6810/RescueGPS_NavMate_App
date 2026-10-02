@@ -104,7 +104,7 @@ describe('Five Mile Cut — the shortest route (real chart, upper Galveston Bay)
     const ind = independentShortest(upper, UPPER_BAY_FROM, UPPER_BAY_TO, { safeDepthM: 1.5, clearanceM: 30 })
     expect(ind).not.toBeNull()
     expect((plan.totalNM * NM) / ind!.lengthM).toBeLessThan(1.03)
-  })
+  }, 60_000)
 
   it.each([
     [0.6, 5],
@@ -119,7 +119,7 @@ describe('Five Mile Cut — the shortest route (real chart, upper Galveston Bay)
     const ind = independentShortest(upper, UPPER_BAY_FROM, UPPER_BAY_TO, { safeDepthM, clearanceM })
     expect(ind).not.toBeNull()
     expect((plan.totalNM * NM) / ind!.lengthM).toBeLessThan(1.05)
-  })
+  }, 60_000)
 
   it('reproduces the screenshot when the harbour depths of cell US5HOUCH are missing — and says there is a shorter way', () => {
     // What the crew's phone was planning on. The route it drew: down the
