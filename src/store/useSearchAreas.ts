@@ -3,7 +3,9 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
 import {
   commandLkp,
+  riverSegmentPatch,
   searchAreaRing,
+  type RiverSegmentStatus,
   type IncidentLkpRow,
   type LatLon,
   type LkpHistoryRow,
@@ -33,6 +35,8 @@ interface SearchAreaState {
   /** Just the LKP — one row, cheap enough to re-read on a timer. */
   loadLkp: (incidentId: string) => Promise<void>
   subscribe: (incidentId: string) => () => void
+  /** A crew's mark on a river segment (status, who, when — nothing else). */
+  markSegment: (area: SearchArea, status: RiverSegmentStatus) => Promise<{ ok: boolean; reason?: string }>
   clearLocal: () => void
 }
 
@@ -40,6 +44,10 @@ const online = () => typeof navigator === 'undefined' || navigator.onLine
 
 const AREA_COLUMNS =
   'id, incident_id, name, area_type, polygon, coordinates, status, priority' as const
+// River segment columns (RescueGPS NW4). A database without them answers
+// 42703 (undefined column); the base columns are read instead.
+const SEGMENT_COLUMNS =
+  `${AREA_COLUMNS}, segment_number, along_start_m, along_end_m, poc, pod, source, searched_at, searched_by, deleted_at` as const
 
 function upsertArea(list: SearchArea[], row: SearchArea): SearchArea[] {
   const i = list.findIndex((a) => a.id === row.id)
@@ -68,10 +76,14 @@ export const useSearchAreas = create<SearchAreaState>()(
         if (uid && get().ownerId && get().ownerId !== uid) get().clearLocal()
         if (uid) set({ ownerId: uid })
         if (!online()) return
-        const { data, error } = await supabase
+        const full = await supabase
           .from('search_areas')
-          .select(AREA_COLUMNS)
+          .select(SEGMENT_COLUMNS)
           .eq('incident_id', incidentId)
+        const { data, error } =
+          full.error && (full.error as { code?: string }).code === '42703'
+            ? await supabase.from('search_areas').select(AREA_COLUMNS).eq('incident_id', incidentId)
+            : full
         if (error) console.warn('search areas load failed', errorMessage(error))
         else {
           set({
@@ -157,6 +169,22 @@ export const useSearchAreas = create<SearchAreaState>()(
             if (status === 'SUBSCRIBED') void get().load(incidentId)
           })
         return () => void supabase.removeChannel(channel)
+      },
+
+      markSegment: async (area, status) => {
+        if (!online()) return { ok: false, reason: 'offline — try again with signal' }
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id ?? null
+        const patch = riverSegmentPatch(status, uid, new Date().toISOString())
+        const { error } = await supabase.from('search_areas').update(patch).eq('id', area.id)
+        if (error) return { ok: false, reason: errorMessage(error) }
+        const list = get().byIncident[area.incident_id] ?? []
+        set({
+          byIncident: {
+            ...get().byIncident,
+            [area.incident_id]: upsertArea(list, { ...area, ...patch }),
+          },
+        })
+        return { ok: true }
       },
 
       clearLocal: () => set({ byIncident: {}, lkpByIncident: {}, ownerId: null }),

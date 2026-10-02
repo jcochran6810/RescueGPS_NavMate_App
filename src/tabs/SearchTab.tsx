@@ -42,6 +42,7 @@ import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
 import { IncidentCard } from '@/components/IncidentCard'
 import { AssignmentsCard } from '@/components/AssignmentsCard'
+import { RiverSegmentsCard } from '@/components/RiverSegmentsCard'
 import { MessagesCard } from '@/components/MessagesCard'
 import { HazardsCard } from '@/components/HazardsCard'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
@@ -257,6 +258,8 @@ export function SearchTab() {
           renders nothing off an incident. */}
 
       <AssignmentsCard />
+
+      <RiverSegmentsCard />
 
       <MessagesCard />
 

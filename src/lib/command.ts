@@ -538,6 +538,64 @@ export interface SearchArea {
   coordinates: unknown
   status: string | null
   priority: string | number | null
+  // River segments (RescueGPS Narrow Water Search NW4,
+  // database/integration/nw4_river_segments.sql there). Absent on a
+  // database without those columns.
+  segment_number?: number | null
+  along_start_m?: number | null
+  along_end_m?: number | null
+  poc?: number | null
+  pod?: number | null
+  source?: string | null
+  searched_at?: string | null
+  searched_by?: string | null
+  deleted_at?: string | null
+}
+
+/** A row command soft-deleted (a re-cut of the river) is not shown. */
+export function liveSearchAreas(areas: SearchArea[]): SearchArea[] {
+  return areas.filter((a) => !a.deleted_at)
+}
+
+/* -------------------------------------------------------------------------
+ * River segments (command's Narrow Water Search, NW4)
+ * ---------------------------------------------------------------------- */
+
+export const RIVER_SEGMENT_SOURCE = 'narrow_water'
+
+export type RiverSegmentStatus = 'pending' | 'in_progress' | 'completed' | 'negative' | 'suspended'
+
+export const RIVER_SEGMENT_STATUS_LABEL: Record<string, string> = {
+  pending: 'Not searched',
+  in_progress: 'Searching',
+  completed: 'Searched',
+  negative: 'Negative',
+  suspended: 'Suspended',
+}
+
+/** The three marks a crew may make (the database refuses anything else). */
+export const RIVER_SEGMENT_FIELD_STEPS: { value: RiverSegmentStatus; label: string; hint: string }[] = [
+  { value: 'in_progress', label: 'Searching', hint: 'We are on this segment now' },
+  { value: 'completed', label: 'Searched', hint: 'Searched — command decides what it counts for' },
+  { value: 'negative', label: 'Negative', hint: 'Searched, not found — command applies it with the POD' },
+]
+
+/** Command's river segments, upstream first. */
+export function riverSegments(areas: SearchArea[]): SearchArea[] {
+  return liveSearchAreas(areas)
+    .filter((a) => a.source === RIVER_SEGMENT_SOURCE && Number.isFinite(a.segment_number as number))
+    .sort((a, b) => (a.along_start_m ?? 0) - (b.along_start_m ?? 0))
+}
+
+/** The row change a crew sends for a mark: status, who and when only. */
+export function riverSegmentPatch(
+  status: RiverSegmentStatus,
+  userId: string | null,
+  nowIso: string,
+): Partial<SearchArea> {
+  return status === 'in_progress'
+    ? { status }
+    : { status, searched_at: nowIso, ...(userId ? { searched_by: userId } : {}) }
 }
 
 /** A search area's outline: the polygon column first, the jsonb as fallback. */
@@ -702,7 +760,7 @@ export function buildIncidentLayer(input: {
   nowMs: number
 }): MapIncidentLayer {
   const areas: MapIncidentLayer['areas'] = []
-  for (const a of input.areas) {
+  for (const a of liveSearchAreas(input.areas)) {
     const ring = searchAreaRing(a)
     if (ring) {
       areas.push({
@@ -710,7 +768,11 @@ export function buildIncidentLayer(input: {
         ring,
         kind: 'search_area',
         mine: false,
-        label: a.name?.trim() || 'Search area',
+        label:
+          (a.name?.trim() || 'Search area') +
+          (a.source === RIVER_SEGMENT_SOURCE && a.status && a.status !== 'pending'
+            ? ` · ${RIVER_SEGMENT_STATUS_LABEL[a.status] ?? a.status}`
+            : ''),
       })
     }
   }
