@@ -3,6 +3,7 @@ import {
   EMPTY_VICTIM,
   victimIsEmpty,
   victimRow,
+  victimUpdatePatch,
   victimSummary,
   GENDERS,
   BODY_TYPES,
@@ -118,5 +119,44 @@ describe('victimSummary', () => {
    */
   it('says plainly when no life jacket has been reported', () => {
     expect(victimSummary(EMPTY_VICTIM)).toContain('no life jacket recorded')
+  })
+})
+
+describe('victimUpdatePatch (the row is shared with the command wizard)', () => {
+  it('sends only what the crew has: an empty box never blanks what command entered', () => {
+    // The crew typed clothing offline; meanwhile the IC wrote the name, age
+    // and build on the dashboard. The crew's save must not null those out.
+    const patch = victimUpdatePatch(
+      { ...EMPTY_VICTIM, upper_clothing: 'jacket', upper_clothing_color: 'red' },
+      'inc-1',
+    )
+    expect(patch).toEqual({ upper_clothing: 'jacket', upper_clothing_color: 'red' })
+    expect('name' in patch).toBe(false)
+    expect('status' in patch).toBe(false)
+    expect('has_life_jacket' in patch).toBe(false)
+  })
+
+  it('still corrects: a filled box, a yes, and a status the crew set all go', () => {
+    const patch = victimUpdatePatch(
+      { ...EMPTY_VICTIM, name: 'J. Doe', has_life_jacket: true, status: 'located' },
+      'inc-1',
+    )
+    expect(patch).toMatchObject({ name: 'J. Doe', has_life_jacket: true, status: 'located' })
+  })
+
+  it('sends an "estimated" flag only with the number it qualifies', () => {
+    expect('height_estimated' in victimUpdatePatch({ ...EMPTY_VICTIM, height_estimated: true }, 'i')).toBe(false)
+    expect(victimUpdatePatch({ ...EMPTY_VICTIM, height_ft: '5', height_estimated: false }, 'i')).toMatchObject({
+      height_ft: 5,
+      height_estimated: false,
+    })
+    expect(victimUpdatePatch({ ...EMPTY_VICTIM, weight_lbs: '180', weight_estimated: true }, 'i')).toMatchObject({
+      weight_lbs: 180,
+      weight_estimated: true,
+    })
+  })
+
+  it('an untouched form changes nothing', () => {
+    expect(victimUpdatePatch(EMPTY_VICTIM, 'inc-1')).toEqual({})
   })
 })

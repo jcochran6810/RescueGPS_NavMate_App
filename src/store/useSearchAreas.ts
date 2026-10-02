@@ -2,8 +2,9 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
 import {
-  latestLkp,
+  commandLkp,
   searchAreaRing,
+  type IncidentLkpRow,
   type LatLon,
   type LkpHistoryRow,
   type SearchArea,
@@ -11,10 +12,11 @@ import {
 
 /**
  * The search picture as command holds it (contract N8): the areas drawn on
- * the incident (`search_areas`) and the incident's current LKP (the newest
- * row of `lkp_history`). Read-only — the field has no business redrawing a
- * search area — and cached per incident so the picture stays on the chart
- * once the signal has gone.
+ * the incident (`search_areas`) and the incident's current LKP — the
+ * incident row's own `lkp_lat`/`lkp_lng`, which is what command moves, with
+ * the newest `lkp_history` row as the fallback (`commandLkp`). Read-only —
+ * the field has no business redrawing a search area — and cached per
+ * incident so the picture stays on the chart once the signal has gone.
  */
 
 export interface CommandLkp extends LatLon {
@@ -44,7 +46,8 @@ function upsertArea(list: SearchArea[], row: SearchArea): SearchArea[] {
   if (i < 0) return [...list, row]
   const prev = list[i]
   const next = [...list]
-  // Realtime carries a geography as EWKB hex; keep the outline already read.
+  // A geography arrives as EWKB hex (read by `parsePolygon`); should a copy
+  // ever be unreadable, keep the outline already read rather than erase it.
   next[i] =
     searchAreaRing(row) === null && searchAreaRing(prev) !== null
       ? { ...row, polygon: prev.polygon, coordinates: prev.coordinates }
@@ -83,21 +86,33 @@ export const useSearchAreas = create<SearchAreaState>()(
 
       loadLkp: async (incidentId) => {
         if (!online()) return
-        const { data, error } = await supabase
-          .from('lkp_history')
-          .select('incident_id, lat, lng, time, source, confidence, deleted_at')
-          .eq('incident_id', incidentId)
-          .is('deleted_at', null)
-          .order('time', { ascending: false })
-          .limit(5)
-        if (error) {
-          console.warn('lkp load failed', errorMessage(error))
+        // The incident row is command's LKP (`commandLkp`); the history is
+        // only read for an incident whose row has none.
+        const [row, history] = await Promise.all([
+          supabase
+            .from('incidents')
+            .select('lkp_lat, lkp_lng, lkp_time, lkp_source, updated_at')
+            .eq('id', incidentId)
+            .maybeSingle(),
+          supabase
+            .from('lkp_history')
+            .select('incident_id, lat, lng, time, source, confidence, deleted_at')
+            .eq('incident_id', incidentId)
+            .is('deleted_at', null)
+            .order('time', { ascending: false })
+            .limit(5),
+        ])
+        if (row.error && history.error) {
+          console.warn('lkp load failed', errorMessage(row.error))
           return
         }
         set({
           lkpByIncident: {
             ...get().lkpByIncident,
-            [incidentId]: latestLkp((data ?? []) as LkpHistoryRow[]),
+            [incidentId]: commandLkp(
+              (row.data ?? null) as IncidentLkpRow | null,
+              (history.data ?? []) as LkpHistoryRow[],
+            ),
           },
         })
       },
@@ -133,8 +148,8 @@ export const useSearchAreas = create<SearchAreaState>()(
               set({
                 byIncident: { ...get().byIncident, [incidentId]: upsertArea(list, row) },
               })
-              // A new area whose outline came as hex: re-read through
-              // PostgREST, which returns it as GeoJSON.
+              // A new area whose outline could not be read from the change:
+              // read the table again rather than draw nothing.
               if (!known && searchAreaRing(row) === null) void get().load(incidentId)
             },
           )

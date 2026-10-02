@@ -211,6 +211,45 @@ export function lastMarkerPoint(p: {
   return { lat: last.lat, lon: last.lon, time: new Date(last.time).getTime() }
 }
 
+/** A position fix older than this is not "where the reading was taken". */
+export const OBSERVATION_FIX_MAX_AGE_MS = 10 * 60_000
+
+/**
+ * Where a conditions reading was taken, for the record that carries it.
+ *
+ * A reading off a drift marker was taken at the marker: its newest point.
+ * Anything else was taken from the boat, at its latest fix — if that fix is
+ * recent. Null when neither is known; the reading is still kept.
+ *
+ * It matters beyond the record: the command system copies a conditions
+ * record into its own `environmental_data`, which needs a position, and
+ * falls back to the incident's LKP. A reading with no position recorded
+ * before the incident had an LKP was therefore never copied at all — every
+ * condition a crew logged in the first minutes of a search stayed off
+ * command's picture (found by running the flow against the live database).
+ */
+export function observationPosition(input: {
+  fix: { lat: number; lon: number; timestamp: number } | null
+  nowMs: number
+  marker?: {
+    deploy: { lat: number; lon: number; time: string }
+    retrieve?: { lat: number; lon: number; time: string }
+    samples?: { lat: number; lon: number; time: string }[]
+  } | null
+}): { lat: number; lon: number } | null {
+  const ok = (lat: number, lon: number) =>
+    Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+  if (input.marker) {
+    const m = input.marker.retrieve ?? lastMarkerPoint(input.marker)
+    if (ok(m.lat, m.lon)) return { lat: m.lat, lon: m.lon }
+  }
+  const f = input.fix
+  if (f && ok(f.lat, f.lon) && input.nowMs - f.timestamp <= OBSERVATION_FIX_MAX_AGE_MS) {
+    return { lat: f.lat, lon: f.lon }
+  }
+  return null
+}
+
 /**
  * Is this leg long enough to be a measurement rather than receiver noise?
  *

@@ -136,6 +136,68 @@ export function normalizeIncident<T extends Incident>(i: T): T {
   return next
 }
 
+/* -------------------------------------------------------------------------
+ * Whose incident is it
+ *
+ * `incidents` is the command system's table, shared, and its transitional
+ * read policy lets every signed-in user read every incident that has no
+ * organisation — which is every incident on this database. So "what RLS lets
+ * me read" is not "my incidents", and NavMate must say which ones it means.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Opened in NavMate rather than in the command system.
+ *
+ * NavMate sets `client_id` to the incident's own id, and a team incident
+ * carries `team_id`, which only NavMate writes. "client_id is not null" used
+ * to be enough, until the command wizard started using `client_id` as its own
+ * retry-safe save key (a random UUID, never equal to the id) on 2026-09-30 —
+ * after which every command incident looked field-created.
+ */
+export function isFieldCreated(i: {
+  id: string
+  client_id: string | null
+  team_id: string | null
+}): boolean {
+  return i.team_id != null || (i.client_id != null && i.client_id === i.id)
+}
+
+/**
+ * The PostgREST filter for the incidents this crew works: the ones they
+ * opened themselves, and their teams'. A command incident they have joined is
+ * fetched separately by id. Ids only ever come from the session and the
+ * crew's own team rows, but anything that is not a UUID is dropped anyway —
+ * this string is spliced into a query.
+ */
+export function incidentScopeFilter(uid: string, teamIds: readonly string[]): string {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const teams = teamIds.filter((t) => uuid.test(t))
+  if (!uuid.test(uid)) throw new Error('incidentScopeFilter: not a user id')
+  return teams.length > 0
+    ? `created_by.eq.${uid},team_id.in.(${teams.join(',')})`
+    : `created_by.eq.${uid}`
+}
+
+/**
+ * Whether this crew's write to the incident row would land.
+ *
+ * The incident is the command system's row: its creator, its current IC and
+ * (for a NavMate team's search) the team can change it. Anyone else — a crew
+ * on a search they joined — is refused by RLS, and PostgREST reports a
+ * refused UPDATE as success with no rows, so the change would show on the
+ * phone and never reach command. What such a crew records goes in their own
+ * `sar_records`, which command reads and the fan-out carries into its tables.
+ */
+export function canUpdateIncident(
+  i: Pick<Incident, 'created_by' | 'team_id' | 'current_ic_id'>,
+  uid: string | null,
+  activeTeamId: string | null,
+): boolean {
+  if (!uid) return false
+  if (i.created_by === uid || i.current_ic_id === uid) return true
+  return i.team_id != null && i.team_id === activeTeamId
+}
+
 /** "Active", "Suspended", "Cancelled", or "Closed · Found alive". */
 export function incidentStatusLabel(i: Pick<Incident, 'status' | 'outcome'>): string {
   const n = normalizeIncident({ incident_type: '', ...i } as Incident)

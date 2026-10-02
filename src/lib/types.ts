@@ -244,6 +244,12 @@ export interface Incident {
   outcome_time?: string | null
   ended_at?: string | null
   created_by: string
+  /**
+   * Who is running the search now (set by the command system's trigger to the
+   * creator, and moved when command takes over). Read-only here; it is who a
+   * field message to command is addressed to.
+   */
+  current_ic_id?: string | null
   created_at: string
   updated_at: string
 }

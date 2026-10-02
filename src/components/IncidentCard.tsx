@@ -17,6 +17,7 @@ import { useNow } from '@/hooks/useNow'
 import { toast } from '@/store/useToast'
 import { download } from '@/lib/transfer'
 import {
+  canUpdateIncident,
   INCIDENT_TYPES,
   incidentTypeLabel,
   incidentStatusLabel,
@@ -61,8 +62,14 @@ export function IncidentCard() {
    * A search this crew walked into rather than started. They are not the
    * incident commander of it, so closing it is not theirs to do — the way out
    * is to leave, and the search carries on without them.
+   *
+   * Their own team's search is not one of those, whoever on the team opened
+   * it: the team reads it, updates it and closes it, and it is the search the
+   * team scope puts them on — "leaving" it would last until the next screen.
+   * Nor is a search command has handed them as IC. The same rule decides
+   * whether the incident row will take their writes at all.
    */
-  const joined = !!incident && incident.created_by !== me
+  const joined = !!incident && !canUpdateIncident(incident, me, activeTeamId)
   const units = useIncidentUnits()
   const fix = useTracker((s) => s.fix)
 

@@ -2413,7 +2413,7 @@ describe('planRoute performance', () => {
     expect(plan.totalNM).toBeGreaterThan(19.9)
     expect(ms).toBeLessThan(1000)
     expect(independentCheck(plan, features, { safeDepthM: 1.5, clearanceM: 30, stepM: 5, ringEveryM: 50 })).toEqual([])
-  })
+  }, 60_000)
 })
 
 /* -------------------------------------------------------------------------

@@ -8,6 +8,83 @@ Add new items at the top. Use the format:
 
 ## Open
 
+### 2026-10-02 — NavMate ⇄ RescueGPS integration audit
+
+A check of every feature meant to work in both directions, run against the
+live shared database as the three real accounts (rolled-back transactions):
+**56/56 checks pass** after the fixes below. What was broken, now fixed:
+
+- [x] **Command incidents were being taken for field incidents.** Since
+      2026-09-30 the RescueGPS wizard writes `incidents.client_id` (its own
+      save key), and NavMate used "has a client_id" to mean "opened in the
+      field" — so every phone pulled in every command incident, and a crew
+      with no team could adopt one as its own search (tagging its waypoints,
+      tracks and records to it). The load is now scoped to the crew's own and
+      their teams' field incidents (`incidentScopeFilter`, `isFieldCreated` in
+      `src/lib/incident.ts`); a command incident appears once joined.
+- [x] **Teammates were never on their own team's search.** Only an incident's
+      creator becomes a participant, and everything command sends is read by
+      participation — so for every teammate but the creator the unit was
+      refused (42501) and assignments, messages, search areas and the unit map
+      read empty, and a hazard report was refused. Team members now join their
+      team's incident directly (`navmate_join_incident`, migration
+      `20261002000000`, applied) and the app does it automatically
+      (`useIncidents.ensureParticipant`).
+- [x] **Leaving a search and coming back failed** (RescueGPS's participant
+      guard refused the re-activation). Fixed in the same migration.
+- [x] **The GPS track upload could jam for two hours.** A re-sent fix that had
+      already landed made the whole batch fail RLS (`asset_tracks` has no
+      UPDATE policy). Now `ignoreDuplicates`; fixes are also stamped with their
+      owner, kept when the search ends, and flushed on reconnect.
+- [x] **Search areas and assigned segments never drew.** `geography` columns
+      arrive as EWKB hex, not GeoJSON; NavMate now decodes it
+      (`polygonFromEwkbHex`).
+- [x] **Command's LKP never reached the field.** NavMate read `lkp_history`,
+      which only NavMate's own fan-out writes; it now reads the incident row
+      (`commandLkp`) and follows the incident live (closed / suspended / new IC
+      / moved LKP) — `useIncidents.subscribeIncident` + a 60 s re-read.
+- [x] **An LKP saved on a joined search silently diverged** (RLS refused the
+      incident update as "0 rows"); NavMate now only patches incidents it may
+      change (`canUpdateIncident`) — the LKP still reaches command as a record.
+- [x] **Victim edits could blank what command entered**; a correcting save now
+      sends only filled-in values (`victimUpdatePatch`), on the first victim.
+- [x] **Field messages never showed as unread to the IC and could never be
+      marked read.** New messages go "To command" (the incident's current IC)
+      by default, "To everyone" on request (`messageRecipient`).
+- [x] **Conditions logged before an incident had an LKP never reached
+      command** (its copy needs a position). Readings now carry where they
+      were taken (`observationPosition`). No past readings were lost.
+- [x] **On the RescueGPS side.** Assignment areas were sent as GeoJSON, which
+      a `geography` column refuses — the 2D "New Search Assignment" always
+      failed and the other two writers dropped the area (0 assignments had
+      ever landed). A parallel RescueGPS session fixed exactly this on its
+      `main` (`86747b9`, `utils/geoWire.js`: EWKT out, EWKB in) while this
+      audit ran, and it also added hazard reporting from the command map in
+      the shape NavMate reads (lat/lng + `active`). Two more, from branch
+      `claude/navmate-integration-audit` (`da02732`), **merged to RescueGPS
+      `main` as `6a8aafb` on 2026-10-02**: field check-in stored the incident
+      password in plain text, so NavMate could never join those incidents —
+      now hashed through `navmate_set_incident_password`; and the message list
+      loaded the oldest 200 messages, not the newest.
+
+Still open from the audit:
+
+- [x] 2026-10-02 — **Merge the RescueGPS branch** `claude/navmate-integration-audit`
+      into its `main` — done, fast-forward to `6a8aafb` (frontend 1552/1552,
+      backend 440/440, build PASS). Field check-in password incidents can be
+      joined from NavMate, and the command message list keeps the newest 200.
+- [ ] 2026-10-02 — **Run the two-app checklist in browsers and on a phone.** The
+      database level passes; the apps have never been driven together (the
+      sandbox blocks supabase.co and both sites). `integ_handshake.E2E` stays
+      `started` until then.
+- [ ] 2026-10-02 — **`search_areas` has no writer in the command app** — it draws
+      areas as assignment segments (which NavMate now shows). NavMate's area
+      layer stays empty until command writes that table.
+- [ ] 2026-10-02 — **Known limits, not bugs:** a broadcast's `read_at` is one
+      column, so the first unit to read it marks it read for everyone; Realtime
+      cannot filter DELETE events, so a row command deletes stays on the phone
+      until the next full load (command cancels rather than deletes today).
+
 - [ ] 2026-09-28 — **Merged mid-verification to save usage.** The safety-corridor
       planner (keep N ft from shallows, channel centreline, turn room) was merged
       after its previous iteration (v4) passed the full Galveston acceptance run
@@ -208,7 +285,9 @@ Add new items at the top. Use the format:
       email" is on, and whether the sender is custom SMTP rather than the
       rate-limited built-in. Full detail in `DEPLOYMENT.md`.
 - [ ] 2026-09-13 — **A NavMate incident is readable by every signed-in user on
-      the project.** The command system's `"Org-scoped incidents read
+      the project.** (NavMate no longer leans on it: since 2026-10-02 its
+      incident list says whose incidents it wants instead of taking whatever
+      RLS returns.) The command system's `"Org-scoped incidents read
       (transitional)"` policy returns true whenever `organization_id is null`,
       which is how NavMate creates one — so its team scoping is advisory on
       read, not enforced. Same shape as the `profiles` item above and the same
@@ -216,14 +295,11 @@ Add new items at the top. Use the format:
       (the name says "transitional"), NavMate does not rely on it, and
       tightening it would not break anything here. Worth doing before more than
       one department is on the database.
-- [ ] 2026-09-13 — **Command-created incidents are invisible to NavMate**, by
-      design for now: the load filters on `client_id is not null`
-      (`src/store/useIncidents.ts`) so the field app lists only incidents it
-      created and has a UI for. The reverse direction — a crew seeing an
-      incident command opened and joining it — needs a join flow NavMate does
-      not have, and the command system already has `join_requests` and
-      `incident_participants` for exactly that. The next piece of the tie-in,
-      when it is wanted.
+- [x] 2026-09-13 — **Command-created incidents are invisible to NavMate.**
+      *Closed: the join flow (2026-09-19) brings a command incident in once it
+      is joined, and since 2026-10-02 the load is scoped explicitly rather than
+      by `client_id is not null`, which stopped meaning "field-created" when
+      the command wizard began writing `client_id`.*
 - [ ] 2026-09-13 — **Not NavMate's, but worth telling whoever owns the command
       repo:** `frontend/src/config/config.js` defaults `SUPABASE_URL` to
       `https://grcsrldrkryrfjsildej.supabase.co`, a project ref that is not in
@@ -367,7 +443,10 @@ Add new items at the top. Use the format:
       wires a low span into the router as an obstruction. A boat with a real
       air draft can currently be routed under a bridge it does not fit under.
 
-- [ ] 2026-08-06 — **Incident handoff to RescueGPS is export-only for now.**
+- [x] 2026-08-06 — *Obsolete since the databases merged (2026-09-13) and the
+      integration contract (2026-09-24): the apps share the tables live; the
+      handoff export remains as a file for anyone without access.*
+      **Incident handoff to RescueGPS is export-only for now.**
       NavMate's `incidents` table mirrors rescuegps-navigator-pro's column
       names and CHECK lists (see the migration comment in
       `supabase/migrations/20260806150000_navmate_incidents.sql`), and the

@@ -25,6 +25,8 @@ import { initialTab, showNavBanner } from '@/lib/navView'
 import { useAssignments } from '@/store/useAssignments'
 import { useMessages } from '@/store/useMessages'
 import { useHazards } from '@/store/useHazards'
+import { useVictims } from '@/store/useVictims'
+import { useIncidentShare } from '@/store/useIncidentShare'
 import { EmergencyAlert } from '@/components/MessagesCard'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
@@ -93,6 +95,9 @@ export default function App() {
       void useAssignments.getState().flush()
       void useMessages.getState().flush()
       void useHazards.getState().flush()
+      // The victim description and the shared track wait for signal too.
+      void useVictims.getState().flush()
+      void useIncidentShare.getState().flush()
     }
     window.addEventListener('online', onOnline)
     return () => window.removeEventListener('online', onOnline)

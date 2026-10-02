@@ -10,6 +10,9 @@ import {
   closePatch,
   normalizeIncident,
   incidentStatusLabel,
+  isFieldCreated,
+  incidentScopeFilter,
+  canUpdateIncident,
 } from './incident'
 import type { Incident, SarRecord } from './types'
 
@@ -294,5 +297,52 @@ describe('recordsForSearch', () => {
   it('leaves the worksheet empty once the search is closed', () => {
     const all = [rec('t1', 'inc1', 'a'), rec('t1', 'inc1', 'b')]
     expect(recordsForSearch(all, 't1', null)).toEqual([])
+  })
+})
+
+describe('whose incident is it', () => {
+  it('tells a field incident from one the command wizard opened', () => {
+    // NavMate: client_id is the incident's own id.
+    expect(isFieldCreated(INCIDENT)).toBe(true)
+    // A team incident is NavMate's whatever its client_id says.
+    expect(isFieldCreated({ ...INCIDENT, client_id: null, team_id: 'b0000000-0000-4000-8000-000000000002' })).toBe(true)
+    // The command wizard since 2026-09-30: a random save key, never the id.
+    // Taken from a live row (INC-261001-TR3GE).
+    expect(
+      isFieldCreated({
+        id: '66048119-04ad-4be2-863b-e3ff01e3739c',
+        client_id: 'a21582a3-0195-4afd-b195-fc85838a3f4d',
+        team_id: null,
+      }),
+    ).toBe(false)
+    // And before it: no client_id at all.
+    expect(isFieldCreated({ ...INCIDENT, client_id: null })).toBe(false)
+  })
+
+  it('asks for the crew\'s own incidents and their teams\', and nothing spliced in', () => {
+    const uid = 'c0000000-0000-4000-8000-000000000003'
+    const team = 'b0000000-0000-4000-8000-000000000002'
+    expect(incidentScopeFilter(uid, [])).toBe(`created_by.eq.${uid}`)
+    expect(incidentScopeFilter(uid, [team])).toBe(`created_by.eq.${uid},team_id.in.(${team})`)
+    // Anything that is not a UUID never reaches the query string.
+    expect(incidentScopeFilter(uid, [team, 'x),created_by.neq.(y'])).toBe(
+      `created_by.eq.${uid},team_id.in.(${team})`,
+    )
+    expect(() => incidentScopeFilter('nobody', [team])).toThrow()
+  })
+})
+
+describe('canUpdateIncident — whose write the incident row takes', () => {
+  const TEAM = 'b0000000-0000-4000-8000-000000000002'
+  it('the creator, the current IC, and the team on its own search', () => {
+    expect(canUpdateIncident({ created_by: 'u1', team_id: null, current_ic_id: null }, 'u1', null)).toBe(true)
+    expect(canUpdateIncident({ created_by: 'cmd', team_id: null, current_ic_id: 'u1' }, 'u1', null)).toBe(true)
+    expect(canUpdateIncident({ created_by: 'mate', team_id: TEAM, current_ic_id: 'mate' }, 'u1', TEAM)).toBe(true)
+  })
+
+  it('not a crew on a search they joined — RLS would refuse it as "0 rows", which looks like success', () => {
+    expect(canUpdateIncident({ created_by: 'cmd', team_id: null, current_ic_id: 'cmd' }, 'u1', TEAM)).toBe(false)
+    expect(canUpdateIncident({ created_by: 'other', team_id: 'another-team', current_ic_id: 'other' }, 'u1', TEAM)).toBe(false)
+    expect(canUpdateIncident({ created_by: 'u1', team_id: null, current_ic_id: null }, null, null)).toBe(false)
   })
 })

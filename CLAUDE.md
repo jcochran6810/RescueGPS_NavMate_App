@@ -265,9 +265,12 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   subscribes to. Two rules follow: never `select('*')` from it — it carries
   ~50 columns including `incident_password_hash`, and NavMate's cache is
   persisted to localStorage, so the column list is named explicitly in
-  `src/store/useIncidents.ts`; and NavMate filters on `client_id is not null`,
-  because a command-created incident is not something the field app has a UI
-  for.
+  `src/store/useIncidents.ts`; and NavMate loads only the crew's own and their
+  teams' **field** incidents (`incidentScopeFilter` + `isFieldCreated` in
+  `src/lib/incident.ts`), plus a command incident once the crew has joined it.
+  `client_id is not null` stopped meaning "opened in the field" on 2026-09-30,
+  when the command wizard started writing its own save key there — see the
+  shared-tables bullet below.
 - **The compass reads true north, and that is not cosmetic.** `src/lib/geomag.ts`
   is the World Magnetic Model (WMM2025) evaluated on the device, checked against
   all 100 of NOAA's published test values in `geomag.test.ts`. Every bearing
@@ -293,6 +296,24 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   does not. The first version measured how far the readings moved and called a
   hard turn a fault — the browser drive is what caught it.
 
+- **Four things about the shared tables that have each broken a two-way
+  feature once** (integration audit, 2026-10-02):
+  1. `incidents.client_id` is **not** a NavMate marker: the command wizard
+     writes its own save key there. NavMate's is the incident's own id
+     (`isFieldCreated`), and the incident list says whose incidents it wants
+     (`incidentScopeFilter`) — RLS lets every signed-in user read every
+     incident, so "whatever comes back" is everyone's.
+  2. Command data is read by **participation**. A teammate on the team's
+     search must be a participant (`ensureParticipant` →
+     `navmate_join_incident`), or every assignment, message, area and unit
+     reads empty for them.
+  3. `geography` columns (`search_areas.polygon`, `field_assignments.segment_geom`)
+     **arrive as EWKB hex** and **accept EWKT, not GeoJSON** — on both apps.
+  4. A refused UPDATE comes back as **success with 0 rows**. Before writing a
+     row another app owns, check the write can land (`canUpdateIncident`), and
+     never `upsert` without `ignoreDuplicates` into a table with no UPDATE
+     policy (`asset_tracks`, `field_messages`, `incident_hazards`) — a replay
+     fails RLS and takes the batch with it.
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
@@ -309,6 +330,64 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
+
+### 2026-10-02 — ccr-853efca1-q1wq4q (the two-way audit: every NavMate ⇄ RescueGPS path checked)
+
+"Do a complete check on how NavMate interacts with RescueGPS and ensure that
+all features that are designed to work both ways are working correctly." Both
+repos were attached. Every touchpoint of the shared database was listed from
+both sides, then exercised against the live project as the three real
+accounts in rolled-back transactions: **56/56 checks pass** after the fixes.
+`fix_list.md` (2026-10-02 section) has each one in plain words.
+
+**Fixed in NavMate**
+- **Command incidents were taken for field incidents.** The command wizard
+  has written its own save key into `incidents.client_id` since 2026-09-30,
+  and NavMate read "has a client_id" as "opened in the field". The load is
+  now the crew's own and their teams' field incidents (`incidentScopeFilter`,
+  `isFieldCreated` in `src/lib/incident.ts`); a command incident appears once
+  joined; the no-team rule also requires the crew to have opened it.
+- **Teammates were never participants**, so for everyone but an incident's
+  creator command's assignments, messages, areas and units read empty and the
+  unit was refused (42501). Migration `20261002000000_navmate_integ_team_join_rejoin.sql`
+  (applied): a member of `incidents.team_id` joins directly, a removed
+  participant can rejoin, pending join requests are cancelled.
+  `useIncidents.ensureParticipant` does it automatically, only for the crew's
+  own team.
+- **Track upload could jam**: a re-sent fix failed RLS (`asset_tracks` has no
+  UPDATE policy) and took the batch with it. Now `ignoreDuplicates`; buffered
+  fixes carry their owner and are kept when a search ends.
+- **Search areas and assigned segments never drew** — `geography` arrives as
+  EWKB hex (`polygonFromEwkbHex` in `src/lib/command.ts`).
+- **Command's LKP never reached the field** — read from the incident row
+  (`commandLkp`) and followed live (`subscribeIncident` + a 60 s re-read; the
+  Realtime payload is never used because it carries the password hash).
+- **A refused incident update read as success** (0 rows): NavMate only patches
+  incidents it may change (`canUpdateIncident`).
+- **Victim edits could blank command's details** (`victimUpdatePatch` sends
+  only filled-in values); **field messages never reached the IC as unread**
+  ("To command" by default, `messageRecipient`); **conditions logged before an
+  LKP never fanned out** (`observationPosition` — no past readings lost);
+  victims and the track buffer now flush on reconnect.
+
+**Fixed in RescueGPS** (merged to its `main` as `6a8aafb`): field check-in
+hashes its incident password instead of storing plain text, and the message
+list loads the newest 200 rather than the first 200. The GeoJSON/EWKB
+assignment-area fault was fixed there by a parallel session (`86747b9`) while
+this ran, so it was dropped from this branch rather than pushed twice.
+
+**Verification.** NavMate typecheck, lint, **1460** tests, build clean;
+RescueGPS frontend 1552/1552, backend 440/440, build clean; Supabase security
+advisors show nothing new. Router tests that time out at Vitest's default 5 s
+on a busy machine got explicit timeouts, assertions unchanged. Three checks in
+the database run failed first: two were one real bug (the conditions fan-out
+above); the third was invalid — the second test account is a platform admin,
+so its "cannot see" check was re-run with the non-admin account and passed.
+
+**Still open** (`fix_list.md`): the two apps have never been driven together in
+browsers or on a phone (`integ_handshake.E2E` stays `started`); command has no
+writer for `search_areas`; a broadcast's `read_at` is one column for every
+unit, and Realtime cannot filter DELETEs.
 
 ### 2026-09-28 (later) — claude/brave-gates-xmu47k (shortest routes, alternates, Plan a course, save/share, safety corridor)
 - Long upper-bay route root cause: a failed chart sub-query was silently dropped (coarse 0–1.8 m data over Five Mile Cut); queries now retry and incomplete bands are never cached as loaded.

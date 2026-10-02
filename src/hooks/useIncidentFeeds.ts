@@ -10,7 +10,10 @@ import { useSearchAreas } from '@/store/useSearchAreas'
 import type { FieldAssignment, FieldMessage, IncidentHazard, SearchArea } from '@/lib/command'
 import type { CommandLkp } from '@/store/useSearchAreas'
 
-/** How often the LKP is re-read (it is not on the Realtime publication). */
+/**
+ * How often the incident row and the LKP are re-read, and queued writes
+ * retried — the fallback for a Realtime socket that has dropped or gone quiet.
+ */
 const LKP_REFRESH_MS = 60_000
 
 /** Who this crew is on the current search: the three keys everything filters by. */
@@ -81,17 +84,34 @@ export function useIncidentFeeds(): void {
 
   useEffect(() => {
     if (!incidentId) return
-    void useAssignments.getState().load(incidentId)
-    void useMessages.getState().load(incidentId)
-    void useHazards.getState().load(incidentId)
-    void useSearchAreas.getState().load(incidentId)
+    let gone = false
+    const loadAll = () => {
+      void useAssignments.getState().load(incidentId)
+      void useMessages.getState().load(incidentId)
+      void useHazards.getState().load(incidentId)
+      void useSearchAreas.getState().load(incidentId)
+    }
+    loadAll()
+    // A teammate on the team's search is put on it first (everything command
+    // sends is read by participation), then read again — the first reads
+    // above may have run before they were on it, and come back empty.
+    void useIncidents
+      .getState()
+      .ensureParticipant(incidentId)
+      .then((on) => {
+        if (on && !gone) loadAll()
+      })
     const off = [
       useAssignments.getState().subscribe(incidentId),
       useMessages.getState().subscribe(incidentId),
       useHazards.getState().subscribe(incidentId),
       useSearchAreas.getState().subscribe(incidentId),
+      // Closed, suspended, a new IC or a moved LKP, from command.
+      useIncidents.getState().subscribeIncident(incidentId),
     ]
     const timer = setInterval(() => {
+      void useIncidents.getState().ensureParticipant(incidentId)
+      void useIncidents.getState().refresh(incidentId)
       void useSearchAreas.getState().loadLkp(incidentId)
       // Anything queued while the socket was quiet goes now.
       void useAssignments.getState().flush()
@@ -99,6 +119,7 @@ export function useIncidentFeeds(): void {
       void useHazards.getState().flush()
     }, LKP_REFRESH_MS)
     return () => {
+      gone = true
       clearInterval(timer)
       for (const f of off) f()
     }

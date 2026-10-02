@@ -62,12 +62,130 @@ function closedRing(points: LatLon[]): LatLon[] | null {
   return pts.length >= 3 ? pts : null
 }
 
+/*
+ * EWKB — how PostGIS hands over a `geography` column.
+ *
+ * `search_areas.polygon` and `field_assignments.segment_geom` are geography,
+ * and geography has no JSON cast: PostgREST, Realtime and `to_json` all send it
+ * as a hex string of Extended Well-Known Binary. (A `geometry` column would
+ * come back as GeoJSON — that is the difference, and it is why every search
+ * area command drew had been arriving here unreadable and left off the chart.)
+ *
+ * Layout: a byte-order flag (1 = little-endian), a uint32 type whose low bits
+ * are the geometry type and whose high bits flag Z, M and an embedded SRID,
+ * the SRID if flagged, then the body. Only what this app draws is read —
+ * Polygon (3) and MultiPolygon (6), outer ring of the first polygon — and
+ * anything else, or anything that runs off the end of the buffer, is refused
+ * rather than guessed at.
+ */
+const EWKB_Z = 0x80000000
+const EWKB_M = 0x40000000
+const EWKB_SRID = 0x20000000
+
+class WkbReader {
+  private pos = 0
+  private readonly view: DataView
+  constructor(view: DataView) {
+    this.view = view
+  }
+
+  private need(n: number): void {
+    if (this.pos + n > this.view.byteLength) throw new RangeError('EWKB truncated')
+  }
+  byte(): number {
+    this.need(1)
+    return this.view.getUint8(this.pos++)
+  }
+  uint32(little: boolean): number {
+    this.need(4)
+    const v = this.view.getUint32(this.pos, little)
+    this.pos += 4
+    return v
+  }
+  double(little: boolean): number {
+    this.need(8)
+    const v = this.view.getFloat64(this.pos, little)
+    this.pos += 8
+    return v
+  }
+}
+
+/** One geometry header: byte order, base type and coordinate width. */
+function wkbHeader(r: WkbReader): { little: boolean; type: number; dims: number } {
+  const order = r.byte()
+  if (order !== 0 && order !== 1) throw new RangeError('EWKB byte order')
+  const little = order === 1
+  const raw = r.uint32(little)
+  if (raw & EWKB_SRID) r.uint32(little) // the SRID; geography is always 4326
+  // ISO WKB says Z/M in the thousands (1003, 2003, 3003); EWKB in the flags.
+  const iso = (raw & 0x0fffffff) % 1000
+  const isoDims = Math.floor((raw & 0x0fffffff) / 1000)
+  const z = (raw & EWKB_Z) !== 0 || isoDims === 1 || isoDims === 3
+  const m = (raw & EWKB_M) !== 0 || isoDims === 2 || isoDims === 3
+  return { little, type: iso, dims: 2 + (z ? 1 : 0) + (m ? 1 : 0) }
+}
+
+/** The rings of a polygon body (after its header), outer ring first. */
+function wkbPolygonRings(r: WkbReader, little: boolean, dims: number): LatLon[][] {
+  const rings: LatLon[][] = []
+  const nRings = r.uint32(little)
+  if (nRings > 10_000) throw new RangeError('EWKB ring count')
+  for (let i = 0; i < nRings; i++) {
+    const n = r.uint32(little)
+    if (n > 1_000_000) throw new RangeError('EWKB point count')
+    const ring: LatLon[] = []
+    for (let k = 0; k < n; k++) {
+      const x = r.double(little)
+      const y = r.double(little)
+      for (let d = 2; d < dims; d++) r.double(little)
+      const p = validPoint(y, x)
+      if (!p) throw new RangeError('EWKB point out of range')
+      ring.push(p)
+    }
+    rings.push(ring)
+  }
+  return rings
+}
+
+/**
+ * The outer ring of an EWKB/WKB hex polygon (or the first polygon of a
+ * multipolygon), or null when the string is not one.
+ */
+export function polygonFromEwkbHex(hex: string): LatLon[] | null {
+  const s = hex.trim()
+  if (s.length < 18 || s.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(s)) return null
+  const bytes = new Uint8Array(s.length / 2)
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16)
+  }
+  try {
+    const r = new WkbReader(new DataView(bytes.buffer))
+    const head = wkbHeader(r)
+    if (head.type === 3) {
+      const rings = wkbPolygonRings(r, head.little, head.dims)
+      return rings.length > 0 ? closedRing(rings[0]) : null
+    }
+    if (head.type === 6) {
+      const n = r.uint32(head.little)
+      if (n < 1) return null
+      const inner = wkbHeader(r)
+      if (inner.type !== 3) return null
+      const rings = wkbPolygonRings(r, inner.little, inner.dims)
+      return rings.length > 0 ? closedRing(rings[0]) : null
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 /**
  * The outer ring of a polygon column, as PostgREST hands it over.
  *
- * PostGIS geography comes back as GeoJSON from a plain select — but depending
- * on how it was selected it can also arrive as EWKB hex. Hex is not decoded
- * here: a polygon that cannot be read is left undrawn, and an undrawn search
+ * A `geometry` column arrives as GeoJSON; a `geography` column — which is
+ * what command's `search_areas.polygon` and `field_assignments.segment_geom`
+ * are — arrives as EWKB hex, from a select and over Realtime alike. Both are
+ * read. A polygon that cannot be read is left undrawn: an undrawn search
  * segment is far better than a crash or a guessed one. Holes are ignored —
  * the outer boundary is what a crew steers by.
  */
@@ -75,7 +193,7 @@ export function parsePolygon(geom: unknown): LatLon[] | null {
   if (geom == null) return null
   if (typeof geom === 'string') {
     const s = geom.trim()
-    if (!s.startsWith('{')) return null // EWKB hex, or anything else
+    if (!s.startsWith('{')) return polygonFromEwkbHex(s)
     try {
       return parsePolygon(JSON.parse(s))
     } catch {
@@ -138,7 +256,7 @@ export interface FieldAssignment {
   created_by: string | null
   title: string | null
   instructions: string | null
-  /** GeoJSON from PostgREST; possibly EWKB hex. Read with `parsePolygon`. */
+  /** geography: EWKB hex from PostgREST and Realtime. Read with `parsePolygon`. */
   segment_geom: unknown
   pattern_type: string | null
   track_spacing_m: number | null
@@ -270,6 +388,32 @@ export function inbox(
   return list
     .filter((m) => m.sender_id === userId || isIncoming(m, userId, unitId))
     .sort((a, b) => ms(b.created_at) - ms(a.created_at))
+}
+
+/** Who a new field message is for: command, or everyone on the search. */
+export type MessageTarget = 'command' | 'everyone'
+
+/**
+ * The `recipient_id` of a message sent from the field.
+ *
+ * A reply goes to whoever sent the original. A new message "to command" goes
+ * to the incident's current IC: the RescueGPS dashboard counts a message as
+ * unread — on its Comms tab and in the conversation — only when it is
+ * addressed to the person looking, and only the addressee may mark it read,
+ * so a message to "everyone" raised no badge on the IC's screen and could
+ * never come back as read. "Everyone" still goes to the whole incident (other
+ * crews included), and so does a message to command when no IC is known yet
+ * or this crew member is the IC.
+ */
+export function messageRecipient(input: {
+  replyTo: Pick<FieldMessage, 'sender_id'> | null
+  to: MessageTarget
+  icId: string | null
+  userId: string
+}): string | null {
+  if (input.replyTo) return input.replyTo.sender_id
+  if (input.to === 'command' && input.icId && input.icId !== input.userId) return input.icId
+  return null
 }
 
 /** A reply's threading fields: answer this one, stay in its thread. */
@@ -411,7 +555,7 @@ export interface LkpHistoryRow {
   deleted_at?: string | null
 }
 
-/** The current LKP as command holds it: newest non-deleted row, in `lon`. */
+/** The newest non-deleted `lkp_history` row, in `lon`. */
 export function latestLkp(
   rows: LkpHistoryRow[],
 ): (LatLon & { time: string; source: string | null }) | null {
@@ -419,6 +563,48 @@ export function latestLkp(
     .filter((r) => !r.deleted_at && validPoint(r.lat, r.lng))
     .sort((a, b) => ms(b.time) - ms(a.time))[0]
   return best ? { lat: best.lat, lon: best.lng, time: best.time, source: best.source } : null
+}
+
+/** The LKP columns of the incident row. Postgres `numeric` may arrive as text. */
+export interface IncidentLkpRow {
+  lkp_lat: number | string | null
+  lkp_lng: number | string | null
+  lkp_time: string | null
+  lkp_source: string | null
+  updated_at?: string | null
+}
+
+function asNumber(v: number | string | null | undefined): number | null {
+  if (v == null || v === '') return null
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * The LKP command is working to.
+ *
+ * That is the incident's own `lkp_lat`/`lkp_lng` — what the RescueGPS
+ * dashboard shows, and what its IC moves when the picture changes.
+ * `lkp_history` is only the fallback for an incident whose row has no LKP:
+ * on this database nothing but NavMate's own fan-out writes it (measured
+ * 2026-10-02: every row `source = 'navmate'`), so reading it alone showed a
+ * crew their own LKP labelled as command's, and never the one command moved.
+ */
+export function commandLkp(
+  incident: IncidentLkpRow | null,
+  history: LkpHistoryRow[],
+): (LatLon & { time: string; source: string | null }) | null {
+  if (incident) {
+    const p = validPoint(asNumber(incident.lkp_lat), asNumber(incident.lkp_lng))
+    if (p) {
+      return {
+        ...p,
+        time: incident.lkp_time ?? incident.updated_at ?? '',
+        source: incident.lkp_source,
+      }
+    }
+  }
+  return latestLkp(history)
 }
 
 /* -------------------------------------------------------------------------

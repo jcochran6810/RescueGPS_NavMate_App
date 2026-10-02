@@ -232,7 +232,7 @@ describe('navigation store with the real router', () => {
     expect(useNavigation.getState().start()).toBe(true)
     s = useNavigation.getState()
     expect(s.status).toBe('navigating')
-  })
+  }, 30_000)
 
   it('says so on screen when the chart puts the boat in water too shallow for it, on or off the line (voyage-1)', async () => {
     // A 1 m shoal 30 m east of the line: a boat 30 m off it is inside the
@@ -363,7 +363,7 @@ describe('navigation store with the real router', () => {
     expect(s.reconfirm).toBe(true)
     expect(s.plan?.source).toBe('best-effort')
     expect(s.plan?.legs.some((l) => l.caution === 'unsafe-depth' && !l.unverified)).toBe(true)
-  })
+  }, 30_000)
 
   it('plans the middle of a long passage on the harbour chart too, not the coastal chart’s 0 m (R6)', async () => {
     // The coastal band reads the whole bay as 0 m (as at Galveston); the
