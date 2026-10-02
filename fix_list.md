@@ -60,19 +60,19 @@ live shared database as the three real accounts (rolled-back transactions):
       ever landed). A parallel RescueGPS session fixed exactly this on its
       `main` (`86747b9`, `utils/geoWire.js`: EWKT out, EWKB in) while this
       audit ran, and it also added hazard reporting from the command map in
-      the shape NavMate reads (lat/lng + `active`). Two more, on branch
-      `claude/navmate-integration-audit` (`da02732`, one commit on top of that
-      `main`, **not yet merged**): field check-in stored the incident password
-      in plain text, so NavMate could never join those incidents — now hashed
-      through `navmate_set_incident_password`; and the message list loaded the
-      oldest 200 messages, not the newest.
+      the shape NavMate reads (lat/lng + `active`). Two more, from branch
+      `claude/navmate-integration-audit` (`da02732`), **merged to RescueGPS
+      `main` as `6a8aafb` on 2026-10-02**: field check-in stored the incident
+      password in plain text, so NavMate could never join those incidents —
+      now hashed through `navmate_set_incident_password`; and the message list
+      loaded the oldest 200 messages, not the newest.
 
 Still open from the audit:
 
-- [ ] 2026-10-02 — **Merge the RescueGPS branch** `claude/navmate-integration-audit`
-      (`da02732`) into its `main`; until then a field check-in incident with a
-      password cannot be joined from NavMate, and the command message list
-      loses everything after the 200th message on reload.
+- [x] 2026-10-02 — **Merge the RescueGPS branch** `claude/navmate-integration-audit`
+      into its `main` — done, fast-forward to `6a8aafb` (frontend 1552/1552,
+      backend 440/440, build PASS). Field check-in password incidents can be
+      joined from NavMate, and the command message list keeps the newest 200.
 - [ ] 2026-10-02 — **Run the two-app checklist in browsers and on a phone.** The
       database level passes; the apps have never been driven together (the
       sandbox blocks supabase.co and both sites). `integ_handshake.E2E` stays
