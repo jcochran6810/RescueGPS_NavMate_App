@@ -331,6 +331,17 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-10-03 — claude/happy-mendel-95ku00 (Narrow Water Search: river segments and catch points)
+
+Built from RescueGPS's Narrow Water plan (NW4, NW5), run from the RescueGPS
+session with this repo attached. Crews now see command's numbered river
+segments (from `search_areas`, source `narrow_water`) and can mark one
+searching / negative as themselves; they can add a catch point at their
+position and see command's. The database rules (RescueGPS-owned) were applied
+2026-10-03 and checked as the real accounts: 16/16 pass. 1466 tests,
+typecheck, lint and build pass. Still owed: a real two-phone check against
+command on a river incident.
+
 ### 2026-10-02 — ccr-853efca1-q1wq4q (the two-way audit: every NavMate ⇄ RescueGPS path checked)
 
 "Do a complete check on how NavMate interacts with RescueGPS and ensure that
