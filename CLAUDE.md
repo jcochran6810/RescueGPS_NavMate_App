@@ -331,6 +331,24 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-10-03 (later) — claude/happy-mendel-95ku00 (the new-incident wizard: command's questions, saved command's way)
+
+Run from the RescueGPS session with this repo attached. "Start New Search
+Incident" opens a step-by-step wizard with exactly the questions, order and
+choices of RescueGPS's incident wizard (`src/lib/wizard/wizardSchema.json`,
+copied from RescueGPS by its `frontend/scripts/sync-wizard-contract.sh` —
+never edit the copy here). `src/lib/wizard/rows.ts` is a TypeScript copy of
+RescueGPS's answers → rows mapping; `rows.test.ts` runs every case in
+`wizardContract.fixtures.json` (written by RescueGPS from its real save path)
+and must give the same incidents row, victims rows and missing list. Nothing
+blocks: what a crew does not know is listed, the incident opens anyway, and
+command completes it in RescueGPS (its wizard reopens on the incident).
+The create carries the wizard's columns and `details` (`WIZARD_ROW_COLUMNS`
+in useIncidents); people go to `victims` through `useWizardVictims` once the
+incident is on the server. 1478 tests, typecheck, lint and build pass; the
+wizard was driven in Chromium at iPhone size. To change a question: change
+RescueGPS first, rewrite its fixtures, sync, then make rows.ts pass.
+
 ### 2026-10-03 — claude/happy-mendel-95ku00 (Narrow Water Search: river segments and catch points)
 
 Built from RescueGPS's Narrow Water plan (NW4, NW5), run from the RescueGPS
