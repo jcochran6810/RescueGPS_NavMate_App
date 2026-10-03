@@ -1,3 +1,4 @@
+import { setAsideFor, takeUnsent, prependFrom } from '@/lib/accountStash'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
@@ -115,7 +116,15 @@ export const useAssignments = create<AssignmentState>()(
       load: async (incidentId) => {
         const uid =
           (await supabase.auth.getSession()).data.session?.user?.id ?? null
-        if (uid && get().ownerId && get().ownerId !== uid) get().clearLocal()
+        if (uid && get().ownerId && get().ownerId !== uid) {
+          // Another account: its unsent work is set aside under it, not lost.
+          if (!setAsideFor('assignments', get().ownerId, { pending: get().pending, failed: get().failed })) return
+          get().clearLocal()
+        }
+        if (uid) {
+          const back = takeUnsent('assignments', uid)
+          if (back) set({ ownerId: uid, pending: prependFrom(back, 'pending', get().pending), failed: prependFrom(back, 'failed', get().failed) })
+        }
         if (uid) set({ ownerId: uid })
         if (!online()) return
         await get().flush()

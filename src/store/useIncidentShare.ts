@@ -31,8 +31,11 @@ import type { Fix, IncidentUnit } from '@/lib/types'
 
 /** Seconds between published fixes. A boat at 20 kn moves ~150 m in 15 s. */
 const PUBLISH_EVERY_S = 15
-/** How many unsent fixes to hold. At one per 15 s this is about two hours. */
-const BUFFER_MAX = 480
+/**
+ * How many unsent fixes to hold. At one per 15 s this is twelve hours — a
+ * whole shift out of signal — before the oldest are dropped (~1 MB).
+ */
+const BUFFER_MAX = 2880
 /**
  * How often to ask where everyone else is when the live feed cannot be
  * trusted to say.

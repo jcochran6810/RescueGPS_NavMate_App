@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
+import { isOffline, isTransient, describeError } from '@/lib/retry'
 import { victimRow, victimUpdatePatch, type VictimDraft } from '@/lib/victim'
 
 /**
@@ -24,6 +25,10 @@ interface VictimState {
   drafts: Record<string, VictimDraft>
   /** Incident ids whose description has not reached the server. */
   pending: string[]
+  /** Refusals so far per incident (an outage does not count). */
+  attempts: Record<string, number>
+  /** Descriptions the server kept refusing: kept, with the reason, for Retry. */
+  failed: { incidentId: string; reason: string; failedAt: string }[]
   syncing: boolean
   lastError: string | null
 
@@ -31,16 +36,47 @@ interface VictimState {
   save: (incidentId: string, draft: VictimDraft) => Promise<void>
   load: (incidentId: string) => Promise<void>
   flush: () => Promise<void>
+  retryFailed: () => Promise<void>
   clearLocal: () => void
 }
 
+const MAX_ATTEMPTS = 3
+
 const online = () => typeof navigator === 'undefined' || navigator.onLine
+
+/** Write one incident's description: correct the first person, or add them. */
+async function writeDescription(incidentId: string, draft: VictimDraft): Promise<void> {
+  // One description per incident from the field: look for the row first so a
+  // second save corrects it rather than adding a second person to the search.
+  const existing = await supabase
+    .from('victims')
+    .select('id')
+    .eq('incident_id', incidentId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (existing.error) throw existing.error
+  if (existing.data?.id) {
+    // Shared with the command wizard: correct, never blank out
+    // (`victimUpdatePatch`).
+    const patch = victimUpdatePatch(draft, incidentId)
+    if (Object.keys(patch).length > 0) {
+      const written = await supabase.from('victims').update(patch).eq('id', existing.data.id)
+      if (written.error) throw written.error
+    }
+  } else {
+    const written = await supabase.from('victims').insert(victimRow(draft, incidentId))
+    if (written.error) throw written.error
+  }
+}
 
 export const useVictims = create<VictimState>()(
   persist(
     (set, get) => ({
       drafts: {},
       pending: [],
+      attempts: {},
+      failed: [],
       syncing: false,
       lastError: null,
 
@@ -115,6 +151,9 @@ export const useVictims = create<VictimState>()(
         if (queue.length === 0 || !online() || get().syncing) return
         set({ syncing: true })
         const done: string[] = []
+        const gaveUp: { incidentId: string; reason: string; failedAt: string }[] = []
+        const attempts = { ...get().attempts }
+        let lastError: string | null = null
         try {
           for (const incidentId of queue) {
             const draft = get().drafts[incidentId]
@@ -122,53 +161,52 @@ export const useVictims = create<VictimState>()(
               done.push(incidentId)
               continue
             }
-            // One description per incident from the field: look for the row
-            // first so a second save corrects it rather than adding a second
-            // person to the search.
-            const existing = await supabase
-              .from('victims')
-              .select('id')
-              .eq('incident_id', incidentId)
-              .order('created_at', { ascending: true })
-              .limit(1)
-              .maybeSingle()
-            if (existing.error) throw existing.error
-            if (existing.data?.id) {
-              // Shared with the command wizard: correct, never blank out
-              // (`victimUpdatePatch`).
-              const patch = victimUpdatePatch(draft, incidentId)
-              if (Object.keys(patch).length > 0) {
-                const written = await supabase
-                  .from('victims')
-                  .update(patch)
-                  .eq('id', existing.data.id)
-                if (written.error) throw written.error
+            try {
+              await writeDescription(incidentId, draft)
+              done.push(incidentId)
+              delete attempts[incidentId]
+            } catch (e) {
+              lastError = errorMessage(e)
+              // No signal: stop and keep everything for the next pass.
+              if (isOffline(e) || isTransient(e)) break
+              // A refusal: try a few times, then set it aside so it does not
+              // hold up the other incidents' descriptions behind it.
+              attempts[incidentId] = (attempts[incidentId] ?? 0) + 1
+              if (attempts[incidentId] >= MAX_ATTEMPTS) {
+                gaveUp.push({ incidentId, reason: describeError(e), failedAt: new Date().toISOString() })
+                delete attempts[incidentId]
+                done.push(incidentId)
               }
-            } else {
-              const written = await supabase
-                .from('victims')
-                .insert(victimRow(draft, incidentId))
-              if (written.error) throw written.error
             }
-            done.push(incidentId)
           }
-          set({ lastError: null })
-        } catch (e) {
-          set({ lastError: errorMessage(e) })
+          if (!lastError) set({ lastError: null })
+          else set({ lastError })
         } finally {
           set({
             pending: get().pending.filter((id) => !done.includes(id)),
+            attempts,
+            failed: [...get().failed.filter((f) => !gaveUp.some((g) => g.incidentId === f.incidentId)), ...gaveUp],
             syncing: false,
           })
         }
       },
 
-      clearLocal: () => set({ drafts: {}, pending: [], lastError: null }),
+      retryFailed: async () => {
+        const ids = get().failed.map((f) => f.incidentId)
+        if (ids.length === 0) return
+        set({
+          failed: [],
+          pending: [...ids.filter((id) => !get().pending.includes(id)), ...get().pending],
+        })
+        await get().flush()
+      },
+
+      clearLocal: () => set({ drafts: {}, pending: [], attempts: {}, failed: [], lastError: null }),
     }),
     {
       name: 'navmate.victims.v1',
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ drafts: s.drafts, pending: s.pending }),
+      partialize: (s) => ({ drafts: s.drafts, pending: s.pending, attempts: s.attempts, failed: s.failed }),
     },
   ),
 )

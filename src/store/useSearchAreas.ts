@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
+import { isOffline, isTransient } from '@/lib/retry'
 import {
   commandLkp,
   riverSegmentPatch,
@@ -36,9 +37,22 @@ interface SearchAreaState {
   loadLkp: (incidentId: string) => Promise<void>
   subscribe: (incidentId: string) => () => void
   /** A crew's mark on a river segment (status, who, when — nothing else). */
-  markSegment: (area: SearchArea, status: RiverSegmentStatus) => Promise<{ ok: boolean; reason?: string }>
+  markSegment: (area: SearchArea, status: RiverSegmentStatus) => Promise<{ ok: boolean; queued?: boolean; reason?: string }>
+  /** Marks made out of signal (or refused for now), sent by `flushMarks`. */
+  pendingMarks: PendingMark[]
+  flushMarks: () => Promise<void>
   clearLocal: () => void
 }
+
+interface PendingMark {
+  areaId: string
+  incidentId: string
+  patch: Record<string, unknown>
+  ownerId: string | null
+  attempts: number
+}
+
+const MAX_MARK_ATTEMPTS = 3
 
 const online = () => typeof navigator === 'undefined' || navigator.onLine
 
@@ -69,6 +83,7 @@ export const useSearchAreas = create<SearchAreaState>()(
       byIncident: {},
       lkpByIncident: {},
       ownerId: null,
+      pendingMarks: [],
 
       load: async (incidentId) => {
         const uid =
@@ -172,21 +187,54 @@ export const useSearchAreas = create<SearchAreaState>()(
       },
 
       markSegment: async (area, status) => {
-        if (!online()) return { ok: false, reason: 'offline — try again with signal' }
         const uid = (await supabase.auth.getSession()).data.session?.user?.id ?? null
         const patch = riverSegmentPatch(status, uid, new Date().toISOString())
-        const { error } = await supabase.from('search_areas').update(patch).eq('id', area.id)
-        if (error) return { ok: false, reason: errorMessage(error) }
+        // Shown at once and kept on the phone; sent now or on the next sync
+        // pass, so a mark made out of signal is never lost.
         const list = get().byIncident[area.incident_id] ?? []
         set({
           byIncident: {
             ...get().byIncident,
             [area.incident_id]: upsertArea(list, { ...area, ...patch }),
           },
+          pendingMarks: [
+            ...get().pendingMarks.filter((m) => m.areaId !== area.id),
+            { areaId: area.id, incidentId: area.incident_id, patch, ownerId: uid, attempts: 0 },
+          ],
         })
-        return { ok: true }
+        await get().flushMarks()
+        const stillQueued = get().pendingMarks.some((m) => m.areaId === area.id)
+        return { ok: true, queued: stillQueued }
       },
 
+      flushMarks: async () => {
+        const marks = get().pendingMarks
+        if (marks.length === 0 || !online()) return
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id ?? null
+        if (!uid) return
+        const keep: PendingMark[] = []
+        for (const m of marks) {
+          // Only under the sign-in that made it.
+          if (m.ownerId && m.ownerId !== uid) {
+            keep.push(m)
+            continue
+          }
+          const { error } = await supabase.from('search_areas').update(m.patch).eq('id', m.areaId)
+          if (!error) continue
+          if (isOffline(error) || isTransient(error)) {
+            keep.push(m)
+          } else if (m.attempts + 1 < MAX_MARK_ATTEMPTS) {
+            keep.push({ ...m, attempts: m.attempts + 1 })
+          } else {
+            console.warn('segment mark refused', errorMessage(error))
+          }
+        }
+        // Marks added while this pass ran are kept too.
+        const added = get().pendingMarks.filter((m) => !marks.includes(m))
+        set({ pendingMarks: [...keep.filter((k) => !added.some((a) => a.areaId === k.areaId)), ...added] })
+      },
+
+      // Unsent marks are kept: each carries its owner and only goes under them.
       clearLocal: () => set({ byIncident: {}, lkpByIncident: {}, ownerId: null }),
     }),
     {
@@ -196,6 +244,7 @@ export const useSearchAreas = create<SearchAreaState>()(
         byIncident: s.byIncident,
         lkpByIncident: s.lkpByIncident,
         ownerId: s.ownerId,
+        pendingMarks: s.pendingMarks,
       }),
     },
   ),

@@ -1,3 +1,4 @@
+import { setAsideFor, takeUnsent, prependFrom } from '@/lib/accountStash'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
@@ -253,7 +254,15 @@ export const useVessels = create<VesselState>()(
         const uid =
           (await supabase.auth.getSession()).data.session?.user?.id ?? null
         if (uid) {
-          if (get().ownerId && get().ownerId !== uid) get().clearLocal()
+          if (get().ownerId && get().ownerId !== uid) {
+            // Another account: its unsent work is set aside under it, not lost.
+            if (!setAsideFor('vessels', get().ownerId, { pending: get().pending, failed: get().failed })) return
+            get().clearLocal()
+          }
+          if (uid) {
+            const back = takeUnsent('vessels', uid)
+            if (back) set({ ownerId: uid, pending: prependFrom(back, 'pending', get().pending), failed: prependFrom(back, 'failed', get().failed) })
+          }
           set({ ownerId: uid })
         }
 

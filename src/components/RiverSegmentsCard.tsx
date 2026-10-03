@@ -35,7 +35,12 @@ export function RiverSegmentsCard() {
     setBusy(id)
     const r = await markSegment(area, status)
     setBusy(null)
-    toast(r.ok ? `${area.name ?? 'Segment'}: ${RIVER_SEGMENT_STATUS_LABEL[status]}` : `Not sent — ${r.reason}`, r.ok ? 'success' : 'error')
+    toast(
+      r.ok
+        ? `${area.name ?? 'Segment'}: ${RIVER_SEGMENT_STATUS_LABEL[status]}${r.queued ? ' — kept on this phone, sends when there is signal' : ''}`
+        : `Not sent — ${r.reason}`,
+      r.ok ? 'success' : 'error',
+    )
   }
 
   return (

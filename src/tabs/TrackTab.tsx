@@ -1,3 +1,5 @@
+import { useIncidents } from '@/store/useIncidents'
+import { useTeams } from '@/store/useTeams'
 import { useMemo, useState } from 'react'
 import { useFormat } from '@/hooks/useFormat'
 import { useTracker, INTERVAL_CHOICES } from '@/store/useTracker'
@@ -60,13 +62,17 @@ export function TrackTab() {
     derived,
     screenAwake,
     start,
-    stop,
+    stopByCrew,
     clearTrail,
     setIntervalS,
     setGateM,
     arrivalFt,
     setArrivalFt,
   } = useTracker()
+  // On an incident tracking starts by itself; Stop here is remembered for it.
+  const activeTeamId = useTeams((s) => s.activeTeamId)
+  const incidentId = useIncidents((s) => s.activeIncident(activeTeamId)?.id ?? null)
+  const stop = () => stopByCrew(incidentId)
   const fmt = useFormat()
   const waypoints = useWaypoints((s) => s.visible())
   // Everyone else on this search, drawn on the map below.

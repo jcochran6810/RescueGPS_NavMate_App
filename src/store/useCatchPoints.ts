@@ -1,3 +1,4 @@
+import { setAsideFor, takeUnsent, prependFrom } from '@/lib/accountStash'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage } from '@/lib/supabase'
@@ -104,7 +105,15 @@ export const useCatchPoints = create<CatchPointState>()(
       load: async (incidentId) => {
         const uid =
           (await supabase.auth.getSession()).data.session?.user?.id ?? null
-        if (uid && get().ownerId && get().ownerId !== uid) get().clearLocal()
+        if (uid && get().ownerId && get().ownerId !== uid) {
+          // Another account: its unsent work is set aside under it, not lost.
+          if (!setAsideFor('catchpoints', get().ownerId, { outbox: get().outbox, failed: get().failed })) return
+          get().clearLocal()
+        }
+        if (uid) {
+          const back = takeUnsent('catchpoints', uid)
+          if (back) set({ ownerId: uid, outbox: prependFrom(back, 'outbox', get().outbox), failed: prependFrom(back, 'failed', get().failed) })
+        }
         if (uid) set({ ownerId: uid })
         if (!online()) return
         await get().flush()

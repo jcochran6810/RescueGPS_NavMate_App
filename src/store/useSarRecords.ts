@@ -1,8 +1,10 @@
+import { setAsideFor, takeUnsent, prependFrom } from '@/lib/accountStash'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage, PHOTO_BUCKET } from '@/lib/supabase'
 import { isOffline, isTransient, describeError } from '@/lib/retry'
 import type { NewSarRecord, SarRecord } from '@/lib/types'
+import { stashPhotos } from '@/lib/photoStash'
 
 /**
  * SAR datum records, offline-first.
@@ -50,12 +52,17 @@ interface SarState {
   removeRecord: (id: string) => Promise<void>
   /**
    * Upload a photograph for a record and put its path in the payload as
-   * `photo_path` (the clue → evidence contract). Needs a connection; returns
-   * the path, or null when it could not be uploaded.
+   * `photo_path` (the clue → evidence contract). Returns the path when it
+   * went up now, 'queued' when it was kept on the phone (no signal, or the
+   * upload failed) to go automatically later, or null when it can't be taken.
    */
-  attachPhoto: (id: string, file: File) => Promise<string | null>
+  attachPhoto: (id: string, file: File) => Promise<string | 'queued' | null>
+  /** Upload now (needs a connection); the path, or null. */
+  uploadRecordPhoto: (id: string, file: File) => Promise<string | null>
   retryFailed: () => Promise<void>
   discardFailed: () => void
+  /** A row another device wrote or changed (live feed); removed when deleted. */
+  applyRemote: (row: SarRecord, removed?: boolean) => void
   clearLocal: () => void
 }
 
@@ -146,7 +153,15 @@ export const useSarRecords = create<SarState>()(
         const uid =
           (await supabase.auth.getSession()).data.session?.user?.id ?? null
         if (uid) {
-          if (get().ownerId && get().ownerId !== uid) get().clearLocal()
+          if (get().ownerId && get().ownerId !== uid) {
+            // Another account: its unsent work is set aside under it, not lost.
+            if (!setAsideFor('sar', get().ownerId, { pending: get().pending, failed: get().failed })) return
+            get().clearLocal()
+          }
+          if (uid) {
+            const back = takeUnsent('sar', uid)
+            if (back) set({ ownerId: uid, pending: prependFrom(back, 'pending', get().pending), failed: prependFrom(back, 'failed', get().failed) })
+          }
           set({ ownerId: uid })
         }
 
@@ -297,6 +312,18 @@ export const useSarRecords = create<SarState>()(
       },
 
       attachPhoto: async (id, file) => {
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id
+        if (!uid) return null
+        if (!get().visible().some((r) => r.id === id)) return null
+        const path = online() ? await get().uploadRecordPhoto(id, file) : null
+        if (path) return path
+        // No signal or a failed upload: keep it on the phone, it goes on the
+        // next sync pass (lib/syncAll).
+        await stashPhotos('sar', id, uid, [file])
+        return 'queued'
+      },
+
+      uploadRecordPhoto: async (id, file) => {
         if (!online()) return null
         const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return null
@@ -333,6 +360,12 @@ export const useSarRecords = create<SarState>()(
       },
 
       discardFailed: () => set({ failed: [] }),
+
+      applyRemote: (row, removed = false) => {
+        if (!row?.id) return
+        const rest = get().cache.filter((x) => x.id !== row.id)
+        set({ cache: removed || row.deleted_at ? rest : [row, ...rest] })
+      },
 
       clearLocal: () =>
         set({ cache: [], pending: [], failed: [], ownerId: null }),

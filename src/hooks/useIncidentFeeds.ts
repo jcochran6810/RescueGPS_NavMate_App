@@ -1,3 +1,4 @@
+import { subscribeIncidentRecords } from '@/lib/liveRecords'
 import { useEffect, useMemo } from 'react'
 import { useAuth } from '@/store/useAuth'
 import { useIncidents } from '@/store/useIncidents'
@@ -121,16 +122,15 @@ export function useIncidentFeeds(): void {
       useCatchPoints.getState().subscribe(incidentId),
       // Closed, suspended, a new IC or a moved LKP, from command.
       useIncidents.getState().subscribeIncident(incidentId),
+      // Teammates' waypoints and clues and the subject description, live.
+      subscribeIncidentRecords(incidentId),
     ]
     const timer = setInterval(() => {
       void useIncidents.getState().ensureParticipant(incidentId)
       void useIncidents.getState().refresh(incidentId)
       void useSearchAreas.getState().loadLkp(incidentId)
       // Anything queued while the socket was quiet goes now.
-      void useAssignments.getState().flush()
-      void useMessages.getState().flush()
-      void useHazards.getState().flush()
-      void useCatchPoints.getState().flush()
+      // (Queued writes go through the app-wide sync loop, lib/syncAll.)
     }, LKP_REFRESH_MS)
     return () => {
       gone = true

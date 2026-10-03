@@ -99,20 +99,20 @@ export function StampWaypoint() {
   async function attach(files: File[]) {
     if (!stamped || files.length === 0) return
     if (!online) {
-      // The bytes stay in memory (localStorage is not sized for photographs)
-      // and upload automatically the moment the connection returns — as long
-      // as the app stays open. The message says exactly that.
-      stagePhotos(stamped.id, files)
-      toast(
-        'No signal — photos upload automatically when it returns. Keep the app open.',
-        'info',
-      )
+      // Kept on the phone (IndexedDB, survives closing the app) and sent on
+      // the next sync pass once there is signal.
+      await stagePhotos(stamped.id, files)
+      toast('No signal — photos kept on this phone, they send when signal returns.', 'info')
       return
     }
     setUploading(true)
     try {
       const n = await addPhotos(stamped.id, files)
-      toast(`${n} photo${n === 1 ? '' : 's'} added`, 'success')
+      const kept = files.length - n
+      toast(
+        `${n} photo${n === 1 ? '' : 's'} added${kept > 0 ? ` — ${kept} kept on this phone to retry` : ''}`,
+        'success',
+      )
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Photo upload failed', 'error')
     } finally {
@@ -238,8 +238,8 @@ export function StampWaypoint() {
               </div>
               <p className="mt-1.5 text-xs text-amber-300">
                 {previews.length} photo{previews.length === 1 ? '' : 's'} waiting
-                for a connection. They upload automatically when signal comes
-                back — keep the app open, they are not saved anywhere yet.
+                for a connection. They are kept on this phone and upload
+                automatically when signal comes back, even after the app is closed.
               </p>
             </>
           )}

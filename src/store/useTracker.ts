@@ -44,8 +44,16 @@ interface TrackerState {
   /** The screen is being held awake while tracking. */
   screenAwake: boolean
 
+  /**
+   * The incident the crew switched tracking off for by hand. On an incident
+   * the track starts by itself (and again after a reload or the phone killing
+   * the app) so command always has it — unless the crew turned it off there.
+   */
+  stoppedFor: string | null
   start: () => void
   stop: () => void
+  /** The crew's own Stop button: remembered for this incident. */
+  stopByCrew: (incidentId: string | null) => void
   clearTrail: () => void
   setIntervalS: (seconds: number) => void
   setGateM: (meters: number) => void
@@ -179,6 +187,7 @@ export const useTracker = create<TrackerState>()(
       lastReject: null,
       derived: { speed: false, heading: false },
       screenAwake: false,
+      stoppedFor: null,
 
       start: () => {
         if (!navigator.geolocation) {
@@ -186,6 +195,7 @@ export const useTracker = create<TrackerState>()(
           return
         }
         if (watchId !== null) return
+        set({ stoppedFor: null })
 
         filter.reset()
         filter.setMaxAccuracy(get().gateM)
@@ -252,6 +262,11 @@ export const useTracker = create<TrackerState>()(
         set({ watching: false })
       },
 
+      stopByCrew: (incidentId) => {
+        get().stop()
+        set({ stoppedFor: incidentId })
+      },
+
       clearTrail: () => set({ trail: [] }),
 
       setIntervalS: (seconds) => {
@@ -311,6 +326,7 @@ export const useTracker = create<TrackerState>()(
       // `arrivalFt` needs no version bump: a v2 payload simply lacks the key,
       // and persist merges it back to the default above.
       partialize: (s) => ({
+        stoppedFor: s.stoppedFor,
         intervalS: s.intervalS,
         gateM: s.gateM,
         arrivalFt: s.arrivalFt,

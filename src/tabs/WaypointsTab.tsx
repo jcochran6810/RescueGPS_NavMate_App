@@ -207,7 +207,7 @@ export function WaypointsTab() {
           </Button>
           {!online && photos.length > 0 && (
             <p className="mt-1.5 text-xs text-amber-300">
-              Photos need a connection — this waypoint will save without them.
+              No signal — the photos are kept on this phone and attach when signal returns.
             </p>
           )}
           {previews.length > 0 && (

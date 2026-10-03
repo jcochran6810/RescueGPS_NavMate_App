@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { flushAll, unsentCounts } from '@/lib/syncAll'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useTeams } from '@/store/useTeams'
 import { useOnline } from '@/hooks/useOnline'
@@ -22,7 +23,6 @@ export function DataTab() {
     pendingCount,
     lastSyncedAt,
     syncing,
-    flush,
     failed,
     retryFailed,
     discardFailed,
@@ -35,7 +35,14 @@ export function DataTab() {
   const [scopeAll, setScopeAll] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const queued = pendingCount()
+  // Everything still on this phone (all kinds), refreshed every 2 s.
+  const [unsent, setUnsent] = useState<Record<string, number>>(() => unsentCounts())
+  useEffect(() => {
+    const t = setInterval(() => setUnsent(unsentCounts()), 2000)
+    return () => clearInterval(t)
+  }, [])
+  const unsentTotal = Object.values(unsent).reduce((a, b) => a + b, 0)
+  void pendingCount
   const team = activeTeam()
   const all = visible()
 
@@ -66,12 +73,15 @@ export function DataTab() {
         <Label>Sync</Label>
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm text-slate-300">
-            {queued > 0 ? (
+            {unsentTotal > 0 ? (
               <span className="text-sky-300">
-                {queued} change{queued === 1 ? '' : 's'} waiting
+                Still on this phone:{' '}
+                {Object.entries(unsent)
+                  .map(([kind, n]) => `${n} ${kind}`)
+                  .join(', ')}
               </span>
             ) : (
-              <span className="text-emerald-300">Everything synced</span>
+              <span className="text-emerald-300">Everything on this phone has reached the server</span>
             )}
             <div className="text-xs text-slate-400">
               {lastSyncedAt
@@ -82,8 +92,9 @@ export function DataTab() {
           </div>
           <Button
             onClick={async () => {
-              await flush()
+              await flushAll()
               await load()
+              setUnsent(unsentCounts())
               toast(online ? 'Synced' : 'Still offline', online ? 'success' : 'error')
             }}
             disabled={syncing || !online}

@@ -418,7 +418,12 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
           let photoNote = ''
           if (created && photo) {
             const path = await useSarRecords.getState().attachPhoto(created.id, photo)
-            photoNote = path ? ' and photo' : ' — photo not uploaded (needs a connection)'
+            photoNote =
+              path === 'queued'
+                ? ' — photo kept on this phone, it sends when there is signal'
+                : path
+                  ? ' and photo'
+                  : ' — photo could not be kept'
           }
           toast(
             created

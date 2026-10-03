@@ -100,6 +100,17 @@ export function useIncidentTelemetry(): void {
       .then(() => registerUnit(incidentId, vesselId))
   }, [incidentId, vesselId, online, registerUnit])
 
+  /*
+   * On an incident the track runs by itself: command must have every boat's
+   * track even if the crew forgot to press Start, and after the phone killed
+   * the app in a pocket. Not if the crew stopped it by hand on this incident.
+   */
+  useEffect(() => {
+    if (!incidentId) return
+    const t = useTracker.getState()
+    if (!t.watching && t.stoppedFor !== incidentId) t.start()
+  }, [incidentId])
+
   // Every fix is offered; the store decides how often one is actually sent.
   useEffect(() => {
     if (fix && incidentId) void publish(fix, incidentId)

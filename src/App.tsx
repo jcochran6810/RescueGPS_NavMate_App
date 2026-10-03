@@ -1,3 +1,4 @@
+import { startSyncLoop } from '@/lib/syncAll'
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
@@ -22,12 +23,6 @@ import { useNavigationEngine } from '@/hooks/useNavigationEngine'
 import { useNavigation } from '@/store/useNavigation'
 import { useNavUi } from '@/store/useNavUi'
 import { initialTab, showNavBanner } from '@/lib/navView'
-import { useAssignments } from '@/store/useAssignments'
-import { useMessages } from '@/store/useMessages'
-import { useHazards } from '@/store/useHazards'
-import { useVictims } from '@/store/useVictims'
-import { useWizardVictims } from '@/store/useWizardVictims'
-import { useIncidentShare } from '@/store/useIncidentShare'
 import { EmergencyAlert } from '@/components/MessagesCard'
 import { type TabId } from '@/components/NavMenu'
 import { StampWaypoint } from '@/components/StampWaypoint'
@@ -84,26 +79,13 @@ export default function App() {
   // Runtime errors feed the admin dashboard's health numbers.
   useEffect(() => installErrorReporting(), [])
 
-  // Retry queued writes — and any photos staged offline — as soon as the
-  // network comes back.
+  // Everything held on this phone — queued writes, photos taken out of
+  // signal, the shared track — goes in one ordered pass (lib/syncAll): every
+  // 20 s, when the signal returns and when the app comes back to the front.
   useEffect(() => {
-    const onOnline = () => {
-      const wp = useWaypoints.getState()
-      void wp.flush().then(() => wp.drainStagedPhotos())
-      void useSarRecords.getState().flush()
-      // The wizard's people go once their incident has reached the server.
-      void useIncidents.getState().flush().then(() => useWizardVictims.getState().flush())
-      void useVessels.getState().flush()
-      void useAssignments.getState().flush()
-      void useMessages.getState().flush()
-      void useHazards.getState().flush()
-      // The victim description and the shared track wait for signal too.
-      void useVictims.getState().flush()
-      void useIncidentShare.getState().flush()
-    }
-    window.addEventListener('online', onOnline)
-    return () => window.removeEventListener('online', onOnline)
-  }, [])
+    if (!ready || !session) return
+    return startSyncLoop()
+  }, [ready, session])
 
   useEffect(() => {
     /*

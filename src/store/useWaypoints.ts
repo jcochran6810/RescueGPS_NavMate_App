@@ -1,3 +1,5 @@
+import { setAsideFor, takeUnsent, prependFrom } from '@/lib/accountStash'
+import { stashPhotos, listStashed, removeStashed, asFile } from '@/lib/photoStash'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { supabase, errorMessage, PHOTO_BUCKET } from '@/lib/supabase'
@@ -76,15 +78,19 @@ interface WaypointState {
   importMany: (inputs: NewWaypoint[], teamId: string | null) => Promise<number>
   /** Attach photos to a waypoint that already exists. Needs a connection. */
   addPhotos: (id: string, files: File[]) => Promise<number>
-  /** Hold photos in memory for a waypoint until a connection comes back.
-   *  Memory only — they do not survive an app reload, and the UI says so. */
-  stagePhotos: (id: string, files: File[]) => void
+  /** Upload now; which files went up and which did not (nothing is kept). */
+  addPhotosDetailed: (id: string, files: File[]) => Promise<{ sent: number; notSent: File[] }>
+  /** Keep photos on the phone for a waypoint until they can be uploaded.
+   *  Written to IndexedDB, so they survive the app being closed. */
+  stagePhotos: (id: string, files: File[]) => Promise<void>
   stagedFor: (id: string) => File[]
   /** Upload everything staged. Called on reconnect. Returns photos uploaded. */
   drainStagedPhotos: () => Promise<number>
   /** Put the failed ops back at the head of the queue for another try. */
   retryFailed: () => Promise<void>
   discardFailed: () => void
+  /** A row another device wrote or changed (live feed); removed when deleted. */
+  applyRemote: (row: Waypoint, removed?: boolean) => void
   clearLocal: () => void
   photoUrl: (path: string) => Promise<string | null>
 }
@@ -185,15 +191,38 @@ function currentIncidentId(): string | null {
  *  tell its server snapshot may already be stale. */
 let flushSeq = 0
 
-/** Photos held in memory for waypoints stamped without signal. Deliberately
- *  not persisted: localStorage is not sized for image bytes (fix_list has the
- *  IndexedDB item), so the promise the UI makes is "keep the app open". */
-const stagedFiles = new Map<string, File[]>()
+/** Photos for waypoints taken without signal (or whose upload failed). Each
+ *  is also written to the phone's IndexedDB (lib/photoStash), so it survives
+ *  the app being closed; the in-memory list is rebuilt from there on start. */
+interface Staged {
+  file: File
+  stashId: string | null
+  /** Who took it: only uploaded under that sign-in. */
+  ownerId: string | null
+}
+const stagedFiles = new Map<string, Staged[]>()
 
 function stagedCounts(): Record<string, number> {
   const out: Record<string, number> = {}
   for (const [id, files] of stagedFiles) out[id] = files.length
   return out
+}
+
+let restored: Promise<void> | null = null
+/** Bring back photos kept on the phone from an earlier run of the app. */
+function restoreStaged(): Promise<void> {
+  if (restored) return restored
+  restored = listStashed('waypoint')
+    .then((rows) => {
+      for (const r of rows) {
+        const list = stagedFiles.get(r.targetId) ?? []
+        if (!list.some((x) => x.stashId === r.id)) list.push({ file: asFile(r), stashId: r.id, ownerId: r.ownerId })
+        stagedFiles.set(r.targetId, list)
+      }
+      useWaypoints.setState({ stagedPhotoCount: stagedCounts() })
+    })
+    .catch(() => {})
+  return restored
 }
 
 export const useWaypoints = create<WaypointState>()(
@@ -217,7 +246,15 @@ export const useWaypoints = create<WaypointState>()(
         const uid =
           (await supabase.auth.getSession()).data.session?.user?.id ?? null
         if (uid) {
-          if (get().ownerId && get().ownerId !== uid) get().clearLocal()
+          if (get().ownerId && get().ownerId !== uid) {
+            // Another account: its unsent work is set aside under it, not lost.
+            if (!setAsideFor('waypoints', get().ownerId, { pending: get().pending, failed: get().failed })) return
+            get().clearLocal()
+          }
+          if (uid) {
+            const back = takeUnsent('waypoints', uid)
+            if (back) set({ ownerId: uid, pending: prependFrom(back, 'pending', get().pending), failed: prependFrom(back, 'failed', get().failed) })
+          }
           set({ ownerId: uid })
         }
 
@@ -368,8 +405,13 @@ export const useWaypoints = create<WaypointState>()(
         const now = new Date().toISOString()
         let photoPaths: string[] = []
 
+        // Photos that can't go up now (no signal, or a failed upload) are
+        // kept on the phone and attached on the next sync pass.
+        let keepForLater: File[] = photos
         if (photos.length > 0 && online()) {
-          photoPaths = await uploadPhotos(uid, id, photos)
+          const up = await uploadPhotos(uid, id, photos)
+          photoPaths = up.paths
+          keepForLater = up.failed
         }
 
         const waypoint: Waypoint = {
@@ -391,6 +433,7 @@ export const useWaypoints = create<WaypointState>()(
           ownerId: uid,
           pending: [...get().pending, { kind: 'create', waypoint }],
         })
+        if (keepForLater.length > 0) await get().stagePhotos(id, keepForLater)
         await get().flush()
         return waypoint
       },
@@ -443,7 +486,14 @@ export const useWaypoints = create<WaypointState>()(
        * the waypoint id in the second path segment.
        */
       addPhotos: async (id, files) => {
-        if (files.length === 0) return 0
+        const { sent, notSent } = await get().addPhotosDetailed(id, files)
+        // What did not go up is kept on the phone and goes on the next pass.
+        if (notSent.length) await get().stagePhotos(id, notSent)
+        return sent
+      },
+
+      addPhotosDetailed: async (id, files) => {
+        if (files.length === 0) return { sent: 0, notSent: [] }
         if (!online()) throw new Error('Photos need a connection to upload')
 
         const uid = (await supabase.auth.getSession()).data.session?.user?.id
@@ -455,40 +505,61 @@ export const useWaypoints = create<WaypointState>()(
         const room = Math.max(0, 8 - before.photos.length)
         if (room === 0) throw new Error('That waypoint already has 8 photos')
 
-        const uploaded = await uploadPhotos(uid, id, files.slice(0, room))
-        if (uploaded.length === 0) throw new Error('Photo upload failed')
-
-        // Re-read after the upload: a teammate may have attached photos to the
-        // same waypoint while ours were in flight, and patching from the
-        // pre-upload array would erase theirs from the row.
-        const current =
-          get().visible().find((w) => w.id === id)?.photos ?? before.photos
-        await get().update(id, { photos: [...current, ...uploaded] })
-        return uploaded.length
+        const { paths, failed } = await uploadPhotos(uid, id, files.slice(0, room))
+        if (paths.length > 0) {
+          // Re-read after the upload: a teammate may have attached photos to the
+          // same waypoint while ours were in flight, and patching from the
+          // pre-upload array would erase theirs from the row.
+          const current =
+            get().visible().find((w) => w.id === id)?.photos ?? before.photos
+          await get().update(id, { photos: [...current, ...paths] })
+        }
+        return { sent: paths.length, notSent: failed }
       },
 
-      stagePhotos: (id, files) => {
+      stagePhotos: async (id, files) => {
         if (files.length === 0) return
+        await restoreStaged()
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id ?? null
         const current = stagedFiles.get(id) ?? []
-        stagedFiles.set(id, [...current, ...files].slice(0, 8))
+        const room = Math.max(0, 8 - current.length)
+        const kept = await stashPhotos('waypoint', id, uid, files.slice(0, room))
+        stagedFiles.set(id, [
+          ...current,
+          ...kept.map((k) => ({ file: asFile(k), stashId: k.id, ownerId: uid })),
+        ])
         set({ stagedPhotoCount: stagedCounts() })
       },
 
-      stagedFor: (id) => stagedFiles.get(id) ?? [],
+      stagedFor: (id) => (stagedFiles.get(id) ?? []).map((x) => x.file),
 
       drainStagedPhotos: async () => {
+        await restoreStaged()
         if (!online() || stagedFiles.size === 0) return 0
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id ?? null
         let uploaded = 0
-        for (const [id, files] of [...stagedFiles]) {
+        for (const [id, all] of [...stagedFiles]) {
+          // Another crew member's photos wait for them to sign in again.
+          const items = all.filter((x) => !x.ownerId || x.ownerId === uid)
+          const others = all.filter((x) => x.ownerId && x.ownerId !== uid)
+          if (items.length === 0) continue
           // If the waypoint was deleted while its photos waited, drop them —
           // there is nothing left to attach to.
           if (!get().visible().some((w) => w.id === id)) {
-            stagedFiles.delete(id)
+            if (get().loading) continue
+            if (others.length) stagedFiles.set(id, others)
+            else stagedFiles.delete(id)
+            await removeStashed(items.map((x) => x.stashId).filter((v): v is string => !!v))
             continue
           }
           try {
-            uploaded += await get().addPhotos(id, files)
-            stagedFiles.delete(id)
+            const { sent, notSent } = await get().addPhotosDetailed(id, items.map((x) => x.file))
+            uploaded += sent
+            const left = items.filter((x) => notSent.includes(x.file))
+            const done = items.filter((x) => !notSent.includes(x.file))
+            await removeStashed(done.map((x) => x.stashId).filter((v): v is string => !!v))
+            if (left.length + others.length) stagedFiles.set(id, [...left, ...others])
+            else stagedFiles.delete(id)
           } catch (e) {
             // Still offline or the upload failed — keep them staged.
             console.warn('staged photo upload failed', errorMessage(e))
@@ -513,15 +584,21 @@ export const useWaypoints = create<WaypointState>()(
 
       discardFailed: () => set({ failed: [] }),
 
+      applyRemote: (row, removed = false) => {
+        if (!row?.id) return
+        const rest = get().cache.filter((x) => x.id !== row.id)
+        set({ cache: removed || row.deleted_at ? rest : [row, ...rest] })
+      },
+
       clearLocal: () => {
-        stagedFiles.clear()
+        // Photos kept on the phone are not cleared: each carries who took it.
         set({
           cache: [],
           pending: [],
           failed: [],
           lastSyncedAt: null,
           ownerId: null,
-          stagedPhotoCount: {},
+          stagedPhotoCount: stagedCounts(),
         })
       },
 
@@ -550,8 +627,9 @@ async function uploadPhotos(
   userId: string,
   waypointId: string,
   files: File[],
-): Promise<string[]> {
+): Promise<{ paths: string[]; failed: File[] }> {
   const paths: string[] = []
+  const failed: File[] = []
   for (const file of files.slice(0, 8)) {
     const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().slice(0, 5)
     const path = `${userId}/${waypointId}/${newId()}.${ext}`
@@ -559,7 +637,10 @@ async function uploadPhotos(
       .from(PHOTO_BUCKET)
       .upload(path, file, { contentType: file.type || 'image/jpeg' })
     if (!error) paths.push(path)
-    else console.warn('photo upload failed', errorMessage(error))
+    else {
+      console.warn('photo upload failed, keeping it to retry', errorMessage(error))
+      failed.push(file)
+    }
   }
-  return paths
+  return { paths, failed }
 }
