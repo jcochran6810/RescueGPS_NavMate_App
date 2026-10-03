@@ -189,6 +189,19 @@ const onSearch = new Map<string, Promise<boolean>>()
 const INCIDENT_COLUMNS =
   'id, client_id, team_id, incident_number, incident_type, incident_name, urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source, incident_time, time_last_alive, summary, outcome, outcome_time, ended_at, created_by, current_ic_id, created_at, updated_at' as const
 
+/**
+ * Columns the new-incident wizard may add to a create (the command system's
+ * wizard columns, lib/wizard/rows.ts). Anything else in a wizard row is
+ * dropped here, so a typo can never reach a column this app does not own.
+ */
+const WIZARD_ROW_COLUMNS = [
+  'incident_sub_type', 'incident_time_estimated', 'time_last_alive_estimated',
+  'activity_at_incident', 'possibly_injured', 'lkp_is_exact', 'lkp_confidence',
+  'witness_name', 'witness_phone', 'details', 'reporter_name', 'reporter_phone',
+  'reporter_relation', 'vessel_name', 'vessel_type', 'vessel_length', 'vessel_color',
+  'vessel_registration',
+] as const
+
 /** The row columns sent to the server (never updated_at — a trigger owns it). */
 function toRow(r: Incident) {
   const {
@@ -196,7 +209,14 @@ function toRow(r: Incident) {
     urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
     incident_time, time_last_alive, summary, created_by,
   } = normalizeIncident(r)
+  const extra: Record<string, unknown> = {}
+  if (r.wizard_row) {
+    for (const k of WIZARD_ROW_COLUMNS) {
+      if (r.wizard_row[k] !== undefined) extra[k] = r.wizard_row[k]
+    }
+  }
   return {
+    ...extra,
     id, client_id, team_id, incident_number, incident_type, incident_name,
     urgency_level, status, lkp_lat, lkp_lng, lkp_time, lkp_source,
     incident_time, time_last_alive, summary, created_by,
@@ -399,24 +419,32 @@ export const useIncidents = create<IncidentState>()(
         const uid = (await supabase.auth.getSession()).data.session?.user?.id
         if (!uid) return null
 
-        const id = newId()
+        const id = input.id ?? newId()
         const now = new Date().toISOString()
+        // A wizard row (lib/wizard/rows.ts) carries the command system's
+        // answers; its own columns fill the ones this app keeps too.
+        const w = input.wizard_row ?? null
+        const str = (k: string) => (typeof w?.[k] === 'string' ? (w[k] as string) : null)
+        const num = (k: string) => (typeof w?.[k] === 'number' && Number.isFinite(w[k]) ? (w[k] as number) : null)
         const incident: Incident = {
           id,
           client_id: id,
           team_id: input.team_id ?? null,
-          incident_number: newIncidentNumber(new Date(), id),
+          incident_number: input.incident_number ?? newIncidentNumber(new Date(), id),
           incident_type: input.incident_type,
           incident_name: input.incident_name.trim(),
-          urgency_level: 'high',
+          // The command wizard's level for a new incident (RescueGPS
+          // toDbIncident); the quick start keeps its own.
+          urgency_level: w ? ((str('urgency_level') as Incident['urgency_level']) ?? 'medium') : 'high',
           status: 'active',
-          lkp_lat: null,
-          lkp_lng: null,
-          lkp_time: null,
-          lkp_source: null,
-          incident_time: null,
-          time_last_alive: null,
+          lkp_lat: num('lkp_lat'),
+          lkp_lng: num('lkp_lng'),
+          lkp_time: str('lkp_time'),
+          lkp_source: str('lkp_source'),
+          incident_time: str('incident_time'),
+          time_last_alive: str('time_last_alive'),
           summary: '',
+          wizard_row: w,
           outcome: null,
           outcome_time: null,
           ended_at: null,

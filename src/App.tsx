@@ -26,6 +26,7 @@ import { useAssignments } from '@/store/useAssignments'
 import { useMessages } from '@/store/useMessages'
 import { useHazards } from '@/store/useHazards'
 import { useVictims } from '@/store/useVictims'
+import { useWizardVictims } from '@/store/useWizardVictims'
 import { useIncidentShare } from '@/store/useIncidentShare'
 import { EmergencyAlert } from '@/components/MessagesCard'
 import { type TabId } from '@/components/NavMenu'
@@ -90,7 +91,8 @@ export default function App() {
       const wp = useWaypoints.getState()
       void wp.flush().then(() => wp.drainStagedPhotos())
       void useSarRecords.getState().flush()
-      void useIncidents.getState().flush()
+      // The wizard's people go once their incident has reached the server.
+      void useIncidents.getState().flush().then(() => useWizardVictims.getState().flush())
       void useVessels.getState().flush()
       void useAssignments.getState().flush()
       void useMessages.getState().flush()

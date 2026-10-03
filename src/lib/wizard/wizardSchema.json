@@ -1,0 +1,1533 @@
+{
+  "$comment": "RescueGPS incident wizard: the questions both RescueGPS (IncidentWizard.jsx) and NavMate ask, the answer keys (the wizard form fields) and the option values. Pinned to IncidentWizard.jsx by frontend/src/__tests__/wizardContract.test.js; copied into NavMate by frontend/scripts/sync-wizard-contract.sh. Do not edit the NavMate copy.",
+  "schema": "rescuegps-incident-wizard",
+  "version": 1,
+  "incidentTypes": [
+    {
+      "id": "missing_person_piw",
+      "label": "Missing Person / PIW",
+      "description": "Person in water, swimmer, missing from vessel"
+    },
+    {
+      "id": "missing_vessel",
+      "label": "Missing Vessel",
+      "description": "Overdue vessel, lost contact, distress signal"
+    },
+    {
+      "id": "found_watercraft",
+      "label": "Found Watercraft",
+      "description": "Found kayak, canoe, jet ski, capsized vessel, life raft"
+    },
+    {
+      "id": "debris_found",
+      "label": "Debris / Area Found",
+      "description": "Debris field, floating objects, oil slick"
+    },
+    {
+      "id": "other",
+      "label": "Other",
+      "description": "Other water emergency or incident"
+    }
+  ],
+  "steps": {
+    "missing_person_piw": [
+      {
+        "id": "type",
+        "label": "Incident Type"
+      },
+      {
+        "id": "position",
+        "label": "Last Known Position"
+      },
+      {
+        "id": "victim_details",
+        "label": "Victim Details"
+      },
+      {
+        "id": "activity",
+        "label": "Activity"
+      },
+      {
+        "id": "fall_from_height",
+        "label": "Fall Assessment"
+      },
+      {
+        "id": "times",
+        "label": "Times"
+      },
+      {
+        "id": "summary",
+        "label": "Summary"
+      },
+      {
+        "id": "password",
+        "label": "Set Password"
+      }
+    ],
+    "missing_vessel": [
+      {
+        "id": "type",
+        "label": "Incident Type"
+      },
+      {
+        "id": "watercraft",
+        "label": "Watercraft Info"
+      },
+      {
+        "id": "departure",
+        "label": "Departure & Route"
+      },
+      {
+        "id": "destination",
+        "label": "Destination"
+      },
+      {
+        "id": "position",
+        "label": "Last Known Position"
+      },
+      {
+        "id": "victim_details",
+        "label": "Persons Aboard"
+      },
+      {
+        "id": "piw_check",
+        "label": "PIW Possibility"
+      },
+      {
+        "id": "times",
+        "label": "Times"
+      },
+      {
+        "id": "summary",
+        "label": "Summary"
+      },
+      {
+        "id": "password",
+        "label": "Set Password"
+      }
+    ],
+    "found_watercraft": [
+      {
+        "id": "type",
+        "label": "Incident Type"
+      },
+      {
+        "id": "found_type",
+        "label": "Watercraft Found"
+      },
+      {
+        "id": "position",
+        "label": "Location Found"
+      },
+      {
+        "id": "victim_details",
+        "label": "Possible Victims"
+      },
+      {
+        "id": "times",
+        "label": "Times"
+      },
+      {
+        "id": "summary",
+        "label": "Summary"
+      },
+      {
+        "id": "password",
+        "label": "Set Password"
+      }
+    ],
+    "debris_found": [
+      {
+        "id": "type",
+        "label": "Incident Type"
+      },
+      {
+        "id": "debris_info",
+        "label": "Debris Information"
+      },
+      {
+        "id": "debris_context",
+        "label": "Field Context"
+      },
+      {
+        "id": "search_planning",
+        "label": "Search Planning"
+      },
+      {
+        "id": "summary",
+        "label": "Summary"
+      },
+      {
+        "id": "password",
+        "label": "Set Password"
+      }
+    ],
+    "other": [
+      {
+        "id": "type",
+        "label": "Incident Type"
+      },
+      {
+        "id": "manu_narrative",
+        "label": "Describe to MANU"
+      },
+      {
+        "id": "position",
+        "label": "Location"
+      },
+      {
+        "id": "details",
+        "label": "Details"
+      },
+      {
+        "id": "times",
+        "label": "Times"
+      },
+      {
+        "id": "summary",
+        "label": "Summary"
+      },
+      {
+        "id": "password",
+        "label": "Set Password"
+      }
+    ]
+  },
+  "stepFields": {
+    "type": [
+      {
+        "key": "incidentType",
+        "label": "Incident type",
+        "kind": "choice",
+        "options": "INCIDENT_TYPES",
+        "required": true
+      }
+    ],
+    "position": [
+      {
+        "key": "positionKnown",
+        "label": "Is the exact location known?",
+        "kind": "yesno",
+        "required": true,
+        "yes": "Exact location known",
+        "no": "Approximate area only"
+      },
+      {
+        "key": "lkp",
+        "label": "Last known position",
+        "kind": "position",
+        "lat": "lkpLat",
+        "lng": "lkpLng",
+        "when": {
+          "positionKnown": true
+        },
+        "required": true
+      },
+      {
+        "key": "areaDescription",
+        "label": "Area description",
+        "kind": "textarea",
+        "when": {
+          "positionKnown": false
+        },
+        "requiredAnyOf": [
+          "areaDescription",
+          "lkp"
+        ]
+      },
+      {
+        "key": "lkp",
+        "label": "Area centre (optional)",
+        "kind": "position",
+        "lat": "lkpLat",
+        "lng": "lkpLng",
+        "when": {
+          "positionKnown": false
+        }
+      },
+      {
+        "key": "positionSource",
+        "label": "Source of information",
+        "kind": "select",
+        "options": "POSITION_SOURCES",
+        "requiredFor": [
+          "missing_person_piw"
+        ]
+      },
+      {
+        "key": "confidenceLevel",
+        "label": "Confidence level",
+        "kind": "select",
+        "options": "CONFIDENCE_LEVELS"
+      },
+      {
+        "key": "eyewitnessName",
+        "label": "Eyewitness name",
+        "kind": "text",
+        "when": {
+          "positionSource": "eyewitness"
+        }
+      },
+      {
+        "key": "eyewitnessContact",
+        "label": "Eyewitness contact number",
+        "kind": "tel",
+        "when": {
+          "positionSource": "eyewitness"
+        }
+      }
+    ],
+    "watercraft": [
+      {
+        "key": "watercraftType",
+        "label": "Vessel type",
+        "kind": "select",
+        "options": "WATERCRAFT_TYPES",
+        "required": true
+      },
+      {
+        "key": "watercraftName",
+        "label": "Vessel name",
+        "kind": "text"
+      },
+      {
+        "key": "watercraftColor",
+        "label": "Hull color",
+        "kind": "text"
+      },
+      {
+        "key": "watercraftLength",
+        "label": "Length (ft)",
+        "kind": "number"
+      },
+      {
+        "key": "registrationNumber",
+        "label": "Registration / documentation number",
+        "kind": "text"
+      },
+      {
+        "key": "watercraftDescription",
+        "label": "Additional description",
+        "kind": "textarea"
+      }
+    ],
+    "departure": [
+      {
+        "key": "departureLocation",
+        "label": "Departure location name",
+        "kind": "text"
+      },
+      {
+        "key": "departure",
+        "label": "Departure position",
+        "kind": "position",
+        "lat": "departureLat",
+        "lng": "departureLng"
+      },
+      {
+        "key": "departureTime",
+        "label": "Departure time",
+        "kind": "datetime"
+      },
+      {
+        "key": "bearing",
+        "label": "Initial bearing (deg)",
+        "kind": "number"
+      },
+      {
+        "key": "speed",
+        "label": "Estimated speed (kts)",
+        "kind": "number"
+      },
+      {
+        "key": "expectedArrivalTime",
+        "label": "Expected arrival",
+        "kind": "datetime"
+      }
+    ],
+    "destination": [
+      {
+        "key": "destinationKnown",
+        "label": "Is the destination known?",
+        "kind": "yesno"
+      },
+      {
+        "key": "destinationDescription",
+        "label": "Destination name",
+        "kind": "text",
+        "when": {
+          "destinationKnown": true
+        }
+      },
+      {
+        "key": "destination",
+        "label": "Destination position",
+        "kind": "position",
+        "lat": "destinationLat",
+        "lng": "destinationLng",
+        "when": {
+          "destinationKnown": true
+        }
+      },
+      {
+        "key": "destinationAreaDescription",
+        "label": "Possible destination area",
+        "kind": "textarea",
+        "when": {
+          "destinationKnown": false
+        }
+      }
+    ],
+    "found_type": [
+      {
+        "key": "foundWatercraftType",
+        "label": "Type of watercraft",
+        "kind": "select",
+        "options": "FOUND_WATERCRAFT_TYPES",
+        "required": true
+      },
+      {
+        "key": "foundCondition",
+        "label": "Condition",
+        "kind": "textarea"
+      },
+      {
+        "key": "watercraftColor",
+        "label": "Color / markings",
+        "kind": "text"
+      },
+      {
+        "key": "registrationNumber",
+        "label": "Registration number (if visible)",
+        "kind": "text"
+      }
+    ],
+    "debris_info": [
+      {
+        "key": "debrisType",
+        "label": "Type of debris",
+        "kind": "select",
+        "options": "DEBRIS_TYPES",
+        "required": true
+      },
+      {
+        "key": "lkp",
+        "label": "Where it was found",
+        "kind": "position",
+        "lat": "lkpLat",
+        "lng": "lkpLng",
+        "required": true
+      },
+      {
+        "key": "debrisDescription",
+        "label": "Debris description",
+        "kind": "textarea"
+      }
+    ],
+    "debris_context": [
+      {
+        "key": "debrisQuantity",
+        "label": "Quantity / amount",
+        "kind": "text"
+      },
+      {
+        "key": "debrisSpread",
+        "label": "Spread / distribution",
+        "kind": "text"
+      },
+      {
+        "key": "reportingSource",
+        "label": "Who reported",
+        "kind": "text"
+      },
+      {
+        "key": "reporterContact",
+        "label": "Reporter contact",
+        "kind": "tel"
+      },
+      {
+        "key": "activityDescription",
+        "label": "Additional context",
+        "kind": "textarea"
+      }
+    ],
+    "search_planning": [
+      {
+        "key": "searchPriority",
+        "label": "Search priority",
+        "kind": "select",
+        "options": "SEARCH_PRIORITIES"
+      },
+      {
+        "key": "searchNotes",
+        "label": "Search notes",
+        "kind": "textarea"
+      }
+    ],
+    "victim_details": [
+      {
+        "key": "victims",
+        "label": "People",
+        "kind": "victims"
+      }
+    ],
+    "activity": [
+      {
+        "key": "activity",
+        "label": "Activity at the time",
+        "kind": "select",
+        "options": "ACTIVITIES",
+        "requiredFor": [
+          "missing_person_piw"
+        ]
+      },
+      {
+        "key": "activityDescription",
+        "label": "Activity details",
+        "kind": "textarea"
+      }
+    ],
+    "fall_from_height": [
+      {
+        "key": "fallFromHeight",
+        "label": "Did they fall or jump from a height?",
+        "kind": "yesno"
+      },
+      {
+        "key": "fallSource",
+        "label": "Where did they fall from?",
+        "kind": "select",
+        "options": "FALL_SOURCES",
+        "when": {
+          "fallFromHeight": true
+        }
+      },
+      {
+        "key": "fallHeight",
+        "label": "Fall height (feet)",
+        "kind": "number",
+        "when": {
+          "fallFromHeight": true
+        },
+        "estimate": "fallHeightEstimated"
+      },
+      {
+        "key": "impactPosition",
+        "label": "Body position at water impact",
+        "kind": "select",
+        "options": "IMPACT_POSITIONS",
+        "when": {
+          "fallFromHeight": true
+        }
+      },
+      {
+        "key": "waterType",
+        "label": "Water type",
+        "kind": "select",
+        "options": "WATER_TYPES",
+        "when": {
+          "fallFromHeight": true
+        }
+      }
+    ],
+    "piw_check": [
+      {
+        "key": "piwPossibility",
+        "label": "Is there a possibility someone entered the water?",
+        "kind": "yesno"
+      },
+      {
+        "key": "piwDetails",
+        "label": "PIW details",
+        "kind": "textarea",
+        "when": {
+          "piwPossibility": true
+        }
+      }
+    ],
+    "times": [
+      {
+        "key": "incidentTime",
+        "label": "Time of incident",
+        "kind": "dateparts",
+        "date": "incidentDate",
+        "hour": "incidentTimeHour",
+        "minute": "incidentTimeMinute",
+        "estimate": "incidentTimeEstimate",
+        "requiredFor": [
+          "missing_person_piw"
+        ]
+      },
+      {
+        "key": "lastSeenTime",
+        "label": "Last seen / last contact",
+        "kind": "dateparts",
+        "date": "lastSeenDate",
+        "hour": "lastSeenTimeHour",
+        "minute": "lastSeenTimeMinute",
+        "estimate": "lastSeenTimeEstimate",
+        "requiredFor": [
+          "missing_person_piw"
+        ]
+      },
+      {
+        "key": "reportedTime",
+        "label": "Time reported",
+        "kind": "dateparts",
+        "date": "reportedDate",
+        "hour": "reportedTimeHour",
+        "minute": "reportedTimeMinute"
+      }
+    ],
+    "manu_narrative": [
+      {
+        "key": "description",
+        "label": "Describe what happened",
+        "kind": "textarea"
+      }
+    ],
+    "details": [
+      {
+        "key": "incidentName",
+        "label": "Incident name",
+        "kind": "text"
+      },
+      {
+        "key": "description",
+        "label": "Description",
+        "kind": "textarea"
+      }
+    ],
+    "summary": [],
+    "password": [
+      {
+        "key": "incidentPassword",
+        "label": "Incident password",
+        "kind": "password",
+        "optOut": "requirePassword"
+      }
+    ]
+  },
+  "victimFields": [
+    {
+      "key": "name",
+      "label": "Name",
+      "kind": "text"
+    },
+    {
+      "key": "gender",
+      "label": "Gender",
+      "kind": "select",
+      "options": "GENDER_OPTIONS",
+      "requiredFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "age",
+      "label": "Age",
+      "kind": "number",
+      "estimate": "ageEstimate",
+      "requiredFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "weight",
+      "label": "Weight (lbs)",
+      "kind": "number",
+      "estimate": "weightEstimate",
+      "requiredFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "height",
+      "label": "Height",
+      "kind": "height",
+      "feet": "heightFeet",
+      "inches": "heightInches",
+      "estimate": "heightEstimate",
+      "requiredFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "upperClothing",
+      "label": "Upper clothing",
+      "kind": "select",
+      "options": "UPPER_CLOTHING_OPTIONS",
+      "requiredFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "upperClothingColor",
+      "label": "Upper color",
+      "kind": "select",
+      "options": "CLOTHING_COLORS"
+    },
+    {
+      "key": "lowerClothing",
+      "label": "Lower clothing",
+      "kind": "select",
+      "options": "LOWER_CLOTHING_OPTIONS",
+      "requiredFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "lowerClothingColor",
+      "label": "Lower color",
+      "kind": "select",
+      "options": "CLOTHING_COLORS"
+    },
+    {
+      "key": "hasLifeJacket",
+      "label": "Wearing a life jacket?",
+      "kind": "yesno"
+    },
+    {
+      "key": "lifeJacketType",
+      "label": "Life jacket type",
+      "kind": "select",
+      "options": "LIFE_JACKET_TYPES",
+      "when": {
+        "hasLifeJacket": true
+      }
+    },
+    {
+      "key": "lifeJacketColor",
+      "label": "Life jacket color",
+      "kind": "select",
+      "options": "CLOTHING_COLORS",
+      "when": {
+        "hasLifeJacket": true
+      }
+    },
+    {
+      "key": "lifeJacketReflective",
+      "label": "Has reflective indicators",
+      "kind": "checkbox",
+      "when": {
+        "hasLifeJacket": true
+      }
+    },
+    {
+      "key": "victimState",
+      "label": "Victim state",
+      "kind": "select",
+      "options": "VICTIM_STATES",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "waterActivity",
+      "label": "Activity in water",
+      "kind": "select",
+      "options": "WATER_ACTIVITY_OPTIONS",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "seaState",
+      "label": "Sea state",
+      "kind": "select",
+      "options": "SEA_STATE_OPTIONS",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "hypothermiaRisk",
+      "label": "Hypothermia risk",
+      "kind": "select",
+      "options": "HYPOTHERMIA_RISK",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "fatigue",
+      "label": "Fatigue level",
+      "kind": "select",
+      "options": "FATIGUE_LEVELS",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "fitnessStatus",
+      "label": "Fitness status",
+      "kind": "select",
+      "options": "FITNESS_STATUS",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "swimmingAbility",
+      "label": "Swimming ability",
+      "kind": "select",
+      "options": "SWIMMING_ABILITY",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "injuries",
+      "label": "Known injuries",
+      "kind": "text",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "medicalConditionCodes",
+      "label": "Medical conditions",
+      "kind": "multiselect",
+      "options": "MEDICAL_CONDITIONS",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    },
+    {
+      "key": "medicalNotes",
+      "label": "Additional medical notes",
+      "kind": "textarea",
+      "onlyFor": [
+        "missing_person_piw"
+      ]
+    }
+  ],
+  "options": {
+    "WATERCRAFT_TYPES": [
+      {
+        "value": "sailboat",
+        "label": "Sailboat"
+      },
+      {
+        "value": "powerboat",
+        "label": "Powerboat"
+      },
+      {
+        "value": "fishing_vessel",
+        "label": "Fishing Vessel"
+      },
+      {
+        "value": "commercial_vessel",
+        "label": "Commercial Vessel"
+      },
+      {
+        "value": "personal_watercraft",
+        "label": "Personal Watercraft (PWC)"
+      },
+      {
+        "value": "kayak",
+        "label": "Kayak"
+      },
+      {
+        "value": "canoe",
+        "label": "Canoe"
+      },
+      {
+        "value": "paddleboard",
+        "label": "Paddleboard"
+      },
+      {
+        "value": "inflatable",
+        "label": "Inflatable Boat"
+      },
+      {
+        "value": "other",
+        "label": "Other"
+      }
+    ],
+    "FOUND_WATERCRAFT_TYPES": [
+      {
+        "value": "kayak",
+        "label": "Kayak"
+      },
+      {
+        "value": "canoe",
+        "label": "Canoe"
+      },
+      {
+        "value": "jet_ski",
+        "label": "Jet Ski / PWC"
+      },
+      {
+        "value": "capsized_vessel",
+        "label": "Capsized Vessel"
+      },
+      {
+        "value": "life_raft",
+        "label": "Life Raft"
+      },
+      {
+        "value": "paddleboard",
+        "label": "Paddleboard"
+      },
+      {
+        "value": "dinghy",
+        "label": "Dinghy"
+      },
+      {
+        "value": "other",
+        "label": "Other"
+      }
+    ],
+    "DEBRIS_TYPES": [
+      {
+        "value": "life_jacket",
+        "label": "Life Jacket / PFD"
+      },
+      {
+        "value": "cooler",
+        "label": "Cooler"
+      },
+      {
+        "value": "fuel_container",
+        "label": "Fuel Container"
+      },
+      {
+        "value": "cushion",
+        "label": "Seat Cushion"
+      },
+      {
+        "value": "clothing",
+        "label": "Clothing"
+      },
+      {
+        "value": "oil_slick",
+        "label": "Oil Slick"
+      },
+      {
+        "value": "boat_parts",
+        "label": "Boat Parts"
+      },
+      {
+        "value": "personal_items",
+        "label": "Personal Items"
+      },
+      {
+        "value": "fishing_gear",
+        "label": "Fishing Gear"
+      },
+      {
+        "value": "mixed_debris",
+        "label": "Mixed Debris Field"
+      },
+      {
+        "value": "other",
+        "label": "Other"
+      }
+    ],
+    "POSITION_SOURCES": [
+      {
+        "value": "eyewitness",
+        "label": "Eyewitness"
+      },
+      {
+        "value": "ais",
+        "label": "AIS"
+      },
+      {
+        "value": "phone_ping",
+        "label": "Phone Ping"
+      },
+      {
+        "value": "vessel_transmission",
+        "label": "Vessel Last Transmission"
+      },
+      {
+        "value": "radar_track",
+        "label": "Radar Track"
+      },
+      {
+        "value": "camera_footage",
+        "label": "Camera Footage"
+      },
+      {
+        "value": "gps_device",
+        "label": "GPS Device"
+      },
+      {
+        "value": "mayday_report",
+        "label": "Mayday Report"
+      },
+      {
+        "value": "departure_point",
+        "label": "Departure Point (no later report)"
+      },
+      {
+        "value": "map_selection",
+        "label": "Marked on Map"
+      },
+      {
+        "value": "other",
+        "label": "Other"
+      }
+    ],
+    "CONFIDENCE_LEVELS": [
+      {
+        "value": "high",
+        "label": "High - Exact position known"
+      },
+      {
+        "value": "medium",
+        "label": "Medium - Approximate area"
+      },
+      {
+        "value": "low",
+        "label": "Low - General vicinity only"
+      }
+    ],
+    "ACTIVITIES": [
+      {
+        "value": "swimming",
+        "label": "Swimming"
+      },
+      {
+        "value": "diving",
+        "label": "Diving / Snorkeling"
+      },
+      {
+        "value": "fishing",
+        "label": "Fishing"
+      },
+      {
+        "value": "boating",
+        "label": "Boating"
+      },
+      {
+        "value": "kayaking",
+        "label": "Kayaking / Canoeing"
+      },
+      {
+        "value": "paddleboarding",
+        "label": "Paddleboarding"
+      },
+      {
+        "value": "jet_skiing",
+        "label": "Jet Skiing"
+      },
+      {
+        "value": "sailing",
+        "label": "Sailing"
+      },
+      {
+        "value": "working",
+        "label": "Working on Vessel"
+      },
+      {
+        "value": "fell_overboard",
+        "label": "Fell Overboard"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      },
+      {
+        "value": "other",
+        "label": "Other"
+      }
+    ],
+    "GENDER_OPTIONS": [
+      {
+        "value": "male",
+        "label": "Male"
+      },
+      {
+        "value": "female",
+        "label": "Female"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "HYPOTHERMIA_RISK": [
+      {
+        "value": "high",
+        "label": "High"
+      },
+      {
+        "value": "medium",
+        "label": "Medium"
+      },
+      {
+        "value": "low",
+        "label": "Low"
+      }
+    ],
+    "FATIGUE_LEVELS": [
+      {
+        "value": "exhausted",
+        "label": "Exhausted"
+      },
+      {
+        "value": "fatigued",
+        "label": "Fatigued"
+      },
+      {
+        "value": "normal",
+        "label": "Normal"
+      },
+      {
+        "value": "alert",
+        "label": "Alert"
+      }
+    ],
+    "FITNESS_STATUS": [
+      {
+        "value": "athletic",
+        "label": "Athletic"
+      },
+      {
+        "value": "average",
+        "label": "Average"
+      },
+      {
+        "value": "below_average",
+        "label": "Below Average"
+      },
+      {
+        "value": "poor",
+        "label": "Poor"
+      }
+    ],
+    "SWIMMING_ABILITY": [
+      {
+        "value": "excellent",
+        "label": "Excellent Swimmer"
+      },
+      {
+        "value": "good",
+        "label": "Good Swimmer"
+      },
+      {
+        "value": "average",
+        "label": "Average Swimmer"
+      },
+      {
+        "value": "weak",
+        "label": "Weak Swimmer"
+      },
+      {
+        "value": "non_swimmer",
+        "label": "Non-Swimmer"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "VICTIM_STATES": [
+      {
+        "value": "calm",
+        "label": "Calm / Composed"
+      },
+      {
+        "value": "panicked",
+        "label": "Panicked / Distressed"
+      },
+      {
+        "value": "injured",
+        "label": "Injured"
+      },
+      {
+        "value": "unconscious",
+        "label": "Unconscious"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "SEA_STATE_OPTIONS": [
+      {
+        "value": "calm",
+        "label": "Calm (< 1 ft)"
+      },
+      {
+        "value": "moderate",
+        "label": "Moderate (1–4 ft)"
+      },
+      {
+        "value": "rough",
+        "label": "Rough (4–8 ft)"
+      },
+      {
+        "value": "breaking",
+        "label": "Breaking Waves"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "WATER_ACTIVITY_OPTIONS": [
+      {
+        "value": "floating",
+        "label": "Floating / Passive"
+      },
+      {
+        "value": "help",
+        "label": "HELP Position (requires PFD)"
+      },
+      {
+        "value": "huddle",
+        "label": "Huddle (group, requires PFD)"
+      },
+      {
+        "value": "swimming",
+        "label": "Swimming (accelerates heat loss)"
+      },
+      {
+        "value": "struggling",
+        "label": "Struggling / Thrashing"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "SEARCH_PRIORITIES": [
+      {
+        "value": "immediate",
+        "label": "Immediate - Life threatening"
+      },
+      {
+        "value": "urgent",
+        "label": "Urgent - Time sensitive"
+      },
+      {
+        "value": "standard",
+        "label": "Standard"
+      },
+      {
+        "value": "low",
+        "label": "Low - Investigation only"
+      }
+    ],
+    "UPPER_CLOTHING_OPTIONS": [
+      {
+        "value": "tshirt",
+        "label": "T-Shirt"
+      },
+      {
+        "value": "long_sleeve",
+        "label": "Long Sleeve Shirt"
+      },
+      {
+        "value": "tank_top",
+        "label": "Tank Top"
+      },
+      {
+        "value": "hoodie",
+        "label": "Hoodie/Sweatshirt"
+      },
+      {
+        "value": "jacket",
+        "label": "Jacket"
+      },
+      {
+        "value": "wetsuit_top",
+        "label": "Wetsuit Top"
+      },
+      {
+        "value": "rash_guard",
+        "label": "Rash Guard"
+      },
+      {
+        "value": "swimsuit_top",
+        "label": "Swimsuit/Bikini Top"
+      },
+      {
+        "value": "none",
+        "label": "None/Shirtless"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "LOWER_CLOTHING_OPTIONS": [
+      {
+        "value": "shorts",
+        "label": "Shorts"
+      },
+      {
+        "value": "jeans",
+        "label": "Jeans"
+      },
+      {
+        "value": "pants",
+        "label": "Pants"
+      },
+      {
+        "value": "swim_trunks",
+        "label": "Swim Trunks"
+      },
+      {
+        "value": "swimsuit_bottom",
+        "label": "Swimsuit/Bikini Bottom"
+      },
+      {
+        "value": "wetsuit_bottom",
+        "label": "Wetsuit Bottom"
+      },
+      {
+        "value": "skirt",
+        "label": "Skirt/Dress"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "CLOTHING_COLORS": [
+      {
+        "value": "red",
+        "label": "Red"
+      },
+      {
+        "value": "orange",
+        "label": "Orange"
+      },
+      {
+        "value": "yellow",
+        "label": "Yellow"
+      },
+      {
+        "value": "green",
+        "label": "Green"
+      },
+      {
+        "value": "blue",
+        "label": "Blue"
+      },
+      {
+        "value": "purple",
+        "label": "Purple"
+      },
+      {
+        "value": "pink",
+        "label": "Pink"
+      },
+      {
+        "value": "white",
+        "label": "White"
+      },
+      {
+        "value": "black",
+        "label": "Black"
+      },
+      {
+        "value": "gray",
+        "label": "Gray"
+      },
+      {
+        "value": "brown",
+        "label": "Brown"
+      },
+      {
+        "value": "tan",
+        "label": "Tan/Beige"
+      },
+      {
+        "value": "multi",
+        "label": "Multi-colored"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown"
+      }
+    ],
+    "LIFE_JACKET_TYPES": [
+      {
+        "value": "type_i",
+        "label": "Type I - Offshore"
+      },
+      {
+        "value": "type_ii",
+        "label": "Type II - Near-Shore"
+      },
+      {
+        "value": "type_iii",
+        "label": "Type III - Flotation Aid"
+      },
+      {
+        "value": "type_iv",
+        "label": "Type IV - Throwable"
+      },
+      {
+        "value": "type_v",
+        "label": "Type V - Special Use"
+      },
+      {
+        "value": "inflatable",
+        "label": "Inflatable PFD"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown Type"
+      }
+    ],
+    "FALL_SOURCES": [
+      {
+        "value": "bridge",
+        "label": "Bridge (30-250 ft)"
+      },
+      {
+        "value": "ship_deck",
+        "label": "Ship / Vessel Deck (10-80 ft)"
+      },
+      {
+        "value": "cruise_ship",
+        "label": "Cruise Ship (40-200 ft)"
+      },
+      {
+        "value": "pier",
+        "label": "Pier / Dock (5-30 ft)"
+      },
+      {
+        "value": "cliff",
+        "label": "Cliff / Bluff (20-300+ ft)"
+      },
+      {
+        "value": "seawall",
+        "label": "Seawall / Breakwater (10-40 ft)"
+      },
+      {
+        "value": "platform",
+        "label": "Oil Platform / Industrial (20-150 ft)"
+      },
+      {
+        "value": "helicopter",
+        "label": "Helicopter / Aircraft (15-100 ft)"
+      },
+      {
+        "value": "other",
+        "label": "Other (varies ft)"
+      }
+    ],
+    "IMPACT_POSITIONS": [
+      {
+        "value": "feet_first",
+        "label": "Feet First (Vertical)",
+        "description": "Entering water vertically, feet first -- trained jumpers, intentional entry"
+      },
+      {
+        "value": "head_first",
+        "label": "Head First (Diving)",
+        "description": "Entering water head-first, arms extended -- diving posture"
+      },
+      {
+        "value": "pencil",
+        "label": "Pencil (Streamlined)",
+        "description": "Arms tight to body, straight vertical entry -- minimizes drag, deepest penetration"
+      },
+      {
+        "value": "tucked",
+        "label": "Tucked / Cannonball",
+        "description": "Curled into a ball -- moderate depth, high surface impact"
+      },
+      {
+        "value": "sitting",
+        "label": "Seated / Bent",
+        "description": "Sitting position or bent at waist -- common in accidental falls"
+      },
+      {
+        "value": "belly_flop",
+        "label": "Horizontal / Belly Flop",
+        "description": "Flat horizontal impact -- maximum surface impact, shallowest depth, highest injury risk"
+      },
+      {
+        "value": "back_first",
+        "label": "Back First",
+        "description": "Landing on back -- high impact force, risk of spinal injury"
+      },
+      {
+        "value": "unknown",
+        "label": "Unknown / Tumbling",
+        "description": "Unknown or tumbling entry -- uses average values across positions"
+      }
+    ],
+    "WATER_TYPES": [
+      {
+        "value": "salt",
+        "label": "Salt Water (Ocean / Bay)"
+      },
+      {
+        "value": "fresh",
+        "label": "Fresh Water (River / Lake)"
+      }
+    ],
+    "MEDICAL_CONDITIONS": [
+      {
+        "value": "hypothermia_known",
+        "label": "Known hypothermia exposure"
+      },
+      {
+        "value": "cardiac_history",
+        "label": "Known cardiac condition"
+      },
+      {
+        "value": "respiratory_compromised",
+        "label": "Respiratory compromise (asthma, COPD, recent pneumonia)"
+      },
+      {
+        "value": "diabetic_insulin_dependent",
+        "label": "Insulin-dependent diabetic"
+      },
+      {
+        "value": "dialysis_dependent",
+        "label": "Dialysis-dependent"
+      },
+      {
+        "value": "advanced_age",
+        "label": "Advanced age (≥75)"
+      },
+      {
+        "value": "infant_or_young_child",
+        "label": "Infant or young child (<5 years)"
+      },
+      {
+        "value": "dementia_or_cognitive",
+        "label": "Dementia or significant cognitive impairment"
+      },
+      {
+        "value": "autism_spectrum",
+        "label": "Autism spectrum"
+      },
+      {
+        "value": "mental_illness_active",
+        "label": "Active mental illness (despondent / suicidal intent / acute psychosis)"
+      },
+      {
+        "value": "intoxication",
+        "label": "Known alcohol or substance intoxication"
+      },
+      {
+        "value": "pregnancy_third_trimester",
+        "label": "Pregnancy (third trimester)"
+      },
+      {
+        "value": "recent_surgery",
+        "label": "Recent major surgery (<30 days)"
+      },
+      {
+        "value": "no_pfd",
+        "label": "No personal flotation device"
+      },
+      {
+        "value": "head_injury_suspected",
+        "label": "Suspected head injury"
+      }
+    ]
+  }
+}

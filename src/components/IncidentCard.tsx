@@ -18,8 +18,8 @@ import { toast } from '@/store/useToast'
 import { download } from '@/lib/transfer'
 import {
   canUpdateIncident,
-  INCIDENT_TYPES,
   incidentTypeLabel,
+  newIncidentNumber,
   incidentStatusLabel,
   CLOSE_OPTIONS,
   closePatch,
@@ -28,15 +28,12 @@ import {
 import type { LkpPayload, SarRecord } from '@/lib/types'
 import { Button, Card, Label } from '@/components/ui'
 import { JoinIncidentButton } from '@/components/JoinIncident'
-import { VictimSheet } from '@/components/VictimCard'
+import { IncidentWizard } from '@/components/IncidentWizard'
+import { initialAnswers } from '@/lib/wizard/answers'
+import { wizardRowsFromAnswers, type Answers } from '@/lib/wizard/rows'
+import { useWizardVictims } from '@/store/useWizardVictims'
 import { useVictims } from '@/store/useVictims'
-import {
-  EMPTY_VICTIM,
-  victimIsEmpty,
-  victimRow,
-  victimSummary,
-  type VictimDraft,
-} from '@/lib/victim'
+import { victimIsEmpty, victimRow } from '@/lib/victim'
 
 /**
  * The incident — the search this team is on. One card, three states: open a
@@ -73,68 +70,90 @@ export function IncidentCard() {
   const units = useIncidentUnits()
   const fix = useTracker((s) => s.fix)
 
-  const [type, setType] = useState('missing_person_piw')
-  const [name, setName] = useState('')
-  const [closing, setClosing] = useState(false)
   /*
-   * The description of who is being looked for, collected while the incident
-   * is being opened rather than after. It is held here until the incident has
-   * an id — `victims` is keyed on one — and written the moment it does, so
-   * the crew types it once, at the moment they are being told it.
+   * The new-incident wizard's answers — the same questions as command's
+   * wizard in RescueGPS. Held here, not in the sheet, so a stray tap that
+   * closes the sheet keeps everything typed so far.
    */
-  const [victim, setVictim] = useState<VictimDraft | null>(null)
-  const [describing, setDescribing] = useState(false)
+  const [draft, setDraft] = useState<Answers>(initialAnswers)
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const [closing, setClosing] = useState(false)
   const [closeAs, setCloseAs] = useState(CLOSE_OPTIONS[0].value)
 
   async function open() {
-    const created = await incidents.openIncident({
-      incident_type: type,
-      incident_name: name,
-      team_id: activeTeamId,
-    })
-    if (!created) {
-      toast('Could not open the incident', 'error')
-      return
-    }
-
-    // Adopt what the crew already logged in this scope before the incident
-    // existed — the LKP is very often recorded first. Bounded to the last
-    // 24 h so a previous search's records are not swept in.
-    const cutoff = Date.now() - 24 * 3_600_000
-    const orphans = sar
-      .visible()
-      .filter(
-        (r) =>
-          r.incident_id === null &&
-          (activeTeamId ? r.team_id === activeTeamId : r.team_id === null) &&
-          new Date(r.recorded_at).getTime() >= cutoff,
-      )
-    for (const r of orphans) {
-      await sar.updateRecord(r.id, { incident_id: created.id })
-    }
-    const lkp = orphans.find((r) => r.kind === 'lkp')
-    if (lkp && lkp.lat != null && lkp.lon != null) {
-      await incidents.updateIncident(created.id, {
-        lkp_lat: lkp.lat,
-        lkp_lng: lkp.lon,
-        lkp_time: lkp.recorded_at,
-        lkp_source: lkpSourceOf(lkp),
-        incident_time: lkp.recorded_at,
+    setOpening(true)
+    try {
+      const id =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : undefined
+      const number = newIncidentNumber(new Date(), id)
+      // The rows command's own wizard would write for these answers.
+      const rows = wizardRowsFromAnswers(draft, { incidentNumber: number, clientId: id ?? null })
+      const created = await incidents.openIncident({
+        id,
+        incident_number: number,
+        incident_type: String(rows.incident.incident_type),
+        incident_name: String(rows.incident.incident_name ?? ''),
+        team_id: activeTeamId,
+        wizard_row: rows.incident,
       })
-    }
+      if (!created) {
+        toast('Could not open the incident', 'error')
+        return
+      }
 
-    if (victim && !victimIsEmpty(victim)) {
-      await useVictims.getState().save(created.id, victim)
-      setVictim(null)
-    }
+      // Adopt what the crew already logged in this scope before the incident
+      // existed — the LKP is very often recorded first. Bounded to the last
+      // 24 h so a previous search's records are not swept in.
+      const cutoff = Date.now() - 24 * 3_600_000
+      const orphans = sar
+        .visible()
+        .filter(
+          (r) =>
+            r.incident_id === null &&
+            (activeTeamId ? r.team_id === activeTeamId : r.team_id === null) &&
+            new Date(r.recorded_at).getTime() >= cutoff,
+        )
+      for (const r of orphans) {
+        await sar.updateRecord(r.id, { incident_id: created.id })
+      }
+      // A logged LKP fills the position only when the wizard gave none.
+      const lkp = orphans.find((r) => r.kind === 'lkp')
+      if (lkp && lkp.lat != null && lkp.lon != null && created.lkp_lat == null) {
+        await incidents.updateIncident(created.id, {
+          lkp_lat: lkp.lat,
+          lkp_lng: lkp.lon,
+          lkp_time: lkp.recorded_at,
+          lkp_source: lkpSourceOf(lkp),
+          incident_time: created.incident_time ?? lkp.recorded_at,
+        })
+      }
 
-    setName('')
-    toast(
-      `${created.incident_number} opened` +
-        (orphans.length > 0 ? ` — ${orphans.length} record${orphans.length === 1 ? '' : 's'} attached` : '') +
-        (online ? '' : ' — offline, will sync'),
-      'success',
-    )
+      if (rows.victims.length > 0) {
+        await useWizardVictims.getState().queue(created.id, rows.victims)
+      }
+
+      const password = String(draft.incidentPassword ?? '').trim()
+      let passwordNote = ''
+      if (password) {
+        const r = await incidents.setIncidentPassword(created.id, password)
+        if (r !== 'set') passwordNote = ' — password not set (set it again once online)'
+      }
+
+      setDraft(initialAnswers())
+      setWizardOpen(false)
+      toast(
+        `${created.incident_number} opened` +
+          (orphans.length > 0 ? ` — ${orphans.length} record${orphans.length === 1 ? '' : 's'} attached` : '') +
+          (online ? '' : ' — offline, will sync') +
+          passwordNote,
+        'success',
+      )
+    } finally {
+      setOpening(false)
+    }
   }
 
   if (!incident) {
@@ -145,53 +164,26 @@ export function IncidentCard() {
           Open an incident and everything the team logs — LKP, conditions,
           markers, clues — belongs to this search, ready to hand to command.
         </p>
-        <div className="flex gap-2">
-          <select
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className="min-h-11 w-40 shrink-0 rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 focus:border-sky-400/60 focus:outline-none"
-            aria-label="Incident type"
-          >
-            {INCIDENT_TYPES.map((t) => (
-              <option key={t.value} value={t.value}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name (optional)"
-            aria-label="Incident name"
-            className="min-h-11 w-full min-w-0 rounded-xl border border-white/10 bg-navy-950/60 px-3 text-slate-100 placeholder:text-slate-400 focus:border-sky-400/60 focus:outline-none"
-          />
-        </div>
-        <button
-          type="button"
-          onClick={() => setDescribing(true)}
-          className="mt-2 w-full rounded-xl border border-white/10 px-3 py-2 text-left text-xs text-slate-300 hover:bg-white/5"
-        >
-          <span className="font-semibold text-slate-200">
-            {victim && !victimIsEmpty(victim)
-              ? 'Victim details ✓'
-              : 'Victim details (optional)'}
-          </span>
-          <span className="mt-0.5 block text-slate-400">
-            {victim && !victimIsEmpty(victim)
-              ? victimSummary(victim)
-              : 'Clothing colour, life jacket, build — what searchers scan for.'}
-          </span>
-        </button>
-        {describing && (
-          <VictimSheet
-            initial={victim ?? EMPTY_VICTIM}
-            onSave={(draft) => setVictim(draft)}
-            onDismiss={() => setDescribing(false)}
+        <Button variant="primary" className="w-full" onClick={() => setWizardOpen(true)}>
+          {draft.incidentType ? 'Continue new search incident' : 'Start New Search Incident'}
+        </Button>
+        <p className="mt-1 text-[11px] text-slate-400">
+          The same questions as command's wizard. Answer what you know; command
+          completes the rest.
+        </p>
+        {wizardOpen && (
+          <IncidentWizard
+            answers={draft}
+            onChange={setDraft}
+            onSubmit={() => void open()}
+            onDismiss={() => setWizardOpen(false)}
+            onDiscard={() => {
+              setDraft(initialAnswers())
+              setWizardOpen(false)
+            }}
+            busy={opening}
           />
         )}
-        <Button variant="primary" className="mt-2 w-full" onClick={() => void open()}>
-          Start New Search Incident
-        </Button>
         {/* The other way onto a search: one that is already running. A second
             boat, or a unit arriving late, should not have to start a second
             container for the same search. */}

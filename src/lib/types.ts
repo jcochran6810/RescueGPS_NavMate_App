@@ -252,11 +252,23 @@ export interface Incident {
   current_ic_id?: string | null
   created_at: string
   updated_at: string
+  /**
+   * The rest of the row the new-incident wizard wrote (the command system's
+   * columns and `details`, lib/wizard/rows.ts). Sent with the create; never
+   * read back (the cache keeps the columns above).
+   */
+  wizard_row?: Record<string, unknown> | null
 }
 
 /** Fields the client supplies when opening an incident. */
 export type NewIncident = Pick<Incident, 'incident_type' | 'incident_name'> & {
   team_id?: string | null
+  /** The wizard's incidents row (lib/wizard/rows.ts wizardRowsFromAnswers). */
+  wizard_row?: Record<string, unknown> | null
+  /** Use this id (the wizard picks it first, to key its people to it). */
+  id?: string
+  /** Use this number (the wizard builds the name from it). */
+  incident_number?: string
 }
 
 /**
