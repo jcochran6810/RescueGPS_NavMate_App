@@ -208,7 +208,7 @@ branch merged into `main` and pushed. Do the following in order:
 src/lib/          coordinate math, distance/bearing, import/export, Supabase client
 src/store/        Zustand stores: auth, waypoints (offline queue), teams, tracker
 src/components/   shared UI, header, tab bar, auth screen
-src/tabs/         Convert, Track, Waypoints, Team, Data
+src/tabs/         one screen per section (src/lib/sections.ts lists them all)
 supabase/migrations/  schema, RLS policies, storage rules
 brand/            emblem.png / logo.png — the artwork every icon derives from
 scripts/          make-icons.mjs — regenerates the icons from the masters
@@ -314,6 +314,17 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
      never `upsert` without `ignoreDuplicates` into a table with no UPDATE
      policy (`asset_tracks`, `field_messages`, `incident_hazards`) — a replay
      fails RLS and takes the batch with it.
+- **Sections are history entries.** `src/lib/sections.ts` is the one list of
+  sections (name, icon, group); `src/store/useSection.ts` holds the one on
+  screen and drives `src/lib/backStack.ts`, which keeps the browser history in
+  step so the phone's back button goes to the previous screen. Move between
+  sections with `goTo(id)`, never local state, or back stops working. Any new
+  overlay (sheet, panel, full-screen view) calls `useBackDismiss(open, close)`
+  — `Sheet` already does — so back closes it before changing the page. The
+  menu's and a closed sheet's leftover entries are *stale* and stepped over;
+  `backStack.test.ts` holds the orderings that broke it while it was written.
+  The search is four sections (`incident`, `datum`, `search`, `clues`) sharing
+  `DatumTab`'s records and handlers via its `section` prop.
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.
@@ -330,6 +341,38 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
   ever changes, `APP_BG` in the script has to change with it.
 
 ## Session log
+
+### 2026-10-06 — ccr-4d46007c-8qbiej (navigation: back button, logo home, bottom bar, search steps)
+
+"The back button needs to navigate to the previous page and the logo needs to
+act as a home button… everything seems too long winded and off of the drop
+down menu instead of logically planned out buttons and work flows."
+
+- **Back button.** Sections are now browser history entries
+  (`src/lib/backStack.ts`, `src/store/useSection.ts`): the phone's back
+  button/gesture and a new ← in the header go to the previous screen, and
+  close an open sheet, the More grid, the account panel or a full-screen map
+  first (`useBackDismiss`, wired into `Sheet` so every sheet gets it). A
+  reload keeps the screen. History's async `go()` vs sync `pushState` is
+  handled by a queue; a closed overlay left under a new page is a *stale*
+  entry and is stepped over. 21 unit tests against a fake history cover the
+  orderings.
+- **Logo = Home.** The emblem + name in the header is a button to Home.
+- **Drop-down menu removed** (`NavMenu.tsx` deleted). `BottomBar.tsx`: Home ·
+  Chart · Stamp (raised centre) · Search · More; More is a grid of every
+  section with icons. `src/lib/sections.ts` is the single list of sections.
+  Icons from the new `lucide-react` dependency.
+- **Home is a launcher**: Plan a course / Start-or-Continue search big
+  buttons, eight tool tiles, then daylight and nearby waypoints.
+- **Search as four steps**: the twelve-card Datum page is split into
+  `incident`, `datum`, `search` (pattern), `clues` sections (`DatumTab`
+  `section` prop), with `SearchSteps` across the top and a Next button at the
+  foot. The pattern page no longer repeats the incident/command cards.
+- **Verification**: 1506 tests, typecheck, lint, build;
+  `scripts/drive-navigation.mjs` 42/42 at 320 and 390 px; compass 64, datum
+  15, map-menu 35, mobile 11, search 25 green. Chart and waypoint-add drives
+  fail identically on `main` before this work (out of date with the chart
+  screen) — in `fix_list.md`. Not yet tried on a real phone.
 
 ### 2026-10-03 (later) — claude/happy-mendel-95ku00 (the new-incident wizard: command's questions, saved command's way)
 

@@ -8,7 +8,8 @@ import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
 import { useNow } from '@/hooks/useNow'
 import { useGoTo } from '@/store/useGoTo'
-import type { TabId } from '@/components/NavMenu'
+import type { TabId } from '@/lib/sections'
+import { NextStep, SearchSteps } from '@/components/SearchSteps'
 import { toast } from '@/store/useToast'
 import { canUpdateIncident, recordsForSearch } from '@/lib/incident'
 import { useAuth } from '@/store/useAuth'
@@ -58,7 +59,35 @@ import type {
  * coverage is precisely the one that must not be lost — and everything is
  * shaped to feed RescueGPS's drift engine when the unit is back in coverage.
  */
-export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) {
+const TITLES: Record<'incident' | 'datum' | 'clues', { title: string; blurb: string }> = {
+  incident: {
+    title: 'Incident',
+    blurb:
+      'The search this crew is on: open or join one, who is being looked for, and what command has sent.',
+  },
+  datum: {
+    title: 'Search datum',
+    blurb:
+      'Log the LKP and the conditions; the worksheet keeps the datum current. Everything works offline and syncs later.',
+  },
+  clues: {
+    title: 'Clue log',
+    blurb: 'What was found, where and when — with a photograph. It reaches command as evidence.',
+  },
+}
+
+/**
+ * The search's own screens — Incident, Datum, Clues — which were one page of
+ * twelve cards. They share this component because they share the records,
+ * the scope rule and the save handlers; `section` picks which cards show.
+ */
+export function DatumTab({
+  section = 'datum',
+  onNavigate,
+}: {
+  section?: 'incident' | 'datum' | 'clues'
+  onNavigate?: (tab: TabId) => void
+}) {
   const once = useTracker((s) => s.once)
   const activeTeamId = useTeams((s) => s.activeTeamId)
   const {
@@ -101,12 +130,11 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
 
   return (
     <div className="space-y-3">
+      <SearchSteps current={section} />
+
       <div>
-        <h2 className="text-lg font-semibold text-slate-50">Search datum</h2>
-        <p className="text-sm text-slate-300">
-          Log the LKP, the conditions and what you find; the worksheet keeps
-          the datum current. Everything works offline and syncs later.
-        </p>
+        <h2 className="text-lg font-semibold text-slate-50">{TITLES[section].title}</h2>
+        <p className="text-sm text-slate-300">{TITLES[section].blurb}</p>
         {queued > 0 && (
           <p className="mt-1 text-xs text-sky-300">
             {queued} record{queued === 1 ? '' : 's'} waiting to sync
@@ -141,304 +169,316 @@ export function DatumTab({ onNavigate }: { onNavigate?: (tab: TabId) => void }) 
         </div>
       )}
 
-      <IncidentCard />
+      {section === 'incident' && (
+        <>
+          <IncidentCard />
 
-      {/* What command has sent this crew: segments, orders, hazards. Each
+          {/* What command has sent this crew: segments, orders, hazards. Each
 
-          renders nothing off an incident. */}
+              renders nothing off an incident. */}
 
-      <AssignmentsCard />
+          <AssignmentsCard />
 
-      <RiverSegmentsCard />
+          <RiverSegmentsCard />
 
-      <CatchPointsCard />
+          <CatchPointsCard />
 
-      <MessagesCard />
+          <MessagesCard />
 
-      <HazardsCard />
+          <HazardsCard />
 
-      {/* Who is being looked for. Under the incident because that is what it
+          {/* Who is being looked for. Under the incident because that is what it
 
-          belongs to — it writes the command system's `victims` table, keyed
+              belongs to — it writes the command system's `victims` table, keyed
 
-          on this incident, so nobody retypes it at the other end. */}
+              on this incident, so nobody retypes it at the other end. */}
 
-      {incident && <VictimCard incidentId={incident.id} />}
+          {incident && <VictimCard incidentId={incident.id} />}
+        </>
+      )}
 
-      <LkpCard
-        lkp={lkp}
-        onSave={async (input) => {
-          const created = await createRecord({
-            ...input,
-            team_id: activeTeamId,
-            incident_id: incident?.id ?? null,
-          })
-          // The incident carries the LKP in RescueGPS's own columns, so the
-          // handoff row is always current. incident_time is only set once —
-          // it means "went into the water", and a corrected LKP later must
-          // not restart the drift clock.
-          //
-          // Only on an incident this crew may change: on a search they joined
-          // the row is command's, the write would be refused as "0 rows" and
-          // the phone would show an LKP command never got. Their LKP still
-          // reaches command — as the record just saved, which command reads
-          // and copies into its LKP history.
-          if (created && incident && canUpdateIncident(incident, me, activeTeamId)) {
-            await useIncidents.getState().updateIncident(incident.id, {
-              lkp_lat: input.lat,
-              lkp_lng: input.lon,
-              lkp_time: input.recorded_at,
-              lkp_source:
-                input.payload.source === 'gps'
-                  ? 'field_gps'
-                  : input.payload.source,
-              ...(input.payload.last_seen_alive
-                ? { time_last_alive: input.payload.last_seen_alive }
-                : {}),
-              // `incident_time` means "went into the water" on their side too,
-              // so an entered time-in-water is the authoritative value and
-              // overwrites the one derived from the first LKP. Without one the
-              // old rule stands: seed it once, and never let a corrected LKP
-              // restart the drift clock.
-              ...(input.payload.time_in_water
-                ? { incident_time: input.payload.time_in_water }
-                : incident.incident_time
-                  ? {}
-                  : { incident_time: input.recorded_at }),
-            })
-          }
-          toast(
-            created
-              ? online
-                ? 'LKP recorded'
-                : 'LKP recorded offline — will sync later'
-              : 'Could not record the LKP',
-            created ? 'success' : 'error',
-          )
-        }}
-        takeFix={once}
-      />
+      {section === 'datum' && (
+        <>
+          <LkpCard
+            lkp={lkp}
+            onSave={async (input) => {
+              const created = await createRecord({
+                ...input,
+                team_id: activeTeamId,
+                incident_id: incident?.id ?? null,
+              })
+              // The incident carries the LKP in RescueGPS's own columns, so the
+              // handoff row is always current. incident_time is only set once —
+              // it means "went into the water", and a corrected LKP later must
+              // not restart the drift clock.
+              //
+              // Only on an incident this crew may change: on a search they joined
+              // the row is command's, the write would be refused as "0 rows" and
+              // the phone would show an LKP command never got. Their LKP still
+              // reaches command — as the record just saved, which command reads
+              // and copies into its LKP history.
+              if (created && incident && canUpdateIncident(incident, me, activeTeamId)) {
+                await useIncidents.getState().updateIncident(incident.id, {
+                  lkp_lat: input.lat,
+                  lkp_lng: input.lon,
+                  lkp_time: input.recorded_at,
+                  lkp_source:
+                    input.payload.source === 'gps'
+                      ? 'field_gps'
+                      : input.payload.source,
+                  ...(input.payload.last_seen_alive
+                    ? { time_last_alive: input.payload.last_seen_alive }
+                    : {}),
+                  // `incident_time` means "went into the water" on their side too,
+                  // so an entered time-in-water is the authoritative value and
+                  // overwrites the one derived from the first LKP. Without one the
+                  // old rule stands: seed it once, and never let a corrected LKP
+                  // restart the drift clock.
+                  ...(input.payload.time_in_water
+                    ? { incident_time: input.payload.time_in_water }
+                    : incident.incident_time
+                      ? {}
+                      : { incident_time: input.recorded_at }),
+                })
+              }
+              toast(
+                created
+                  ? online
+                    ? 'LKP recorded'
+                    : 'LKP recorded offline — will sync later'
+                  : 'Could not record the LKP',
+                created ? 'success' : 'error',
+              )
+            }}
+            takeFix={once}
+          />
 
-      <ConditionsCard
-        environment={environment}
-        onSave={async (payload, note) => {
-          // Where it was taken — see `observationPosition`.
-          const at = observationPosition({ fix: useTracker.getState().fix, nowMs: Date.now() })
-          const created = await createRecord({
-            kind: 'environment',
-            lat: at?.lat ?? null,
-            lon: at?.lon ?? null,
-            recorded_at: new Date().toISOString(),
-            payload,
-            note,
-            team_id: activeTeamId,
-            incident_id: incident?.id ?? null,
-          })
-          toast(
-            created ? 'Conditions recorded' : 'Could not record conditions',
-            created ? 'success' : 'error',
-          )
-        }}
-      />
+          <ConditionsCard
+            environment={environment}
+            onSave={async (payload, note) => {
+              // Where it was taken — see `observationPosition`.
+              const at = observationPosition({ fix: useTracker.getState().fix, nowMs: Date.now() })
+              const created = await createRecord({
+                kind: 'environment',
+                lat: at?.lat ?? null,
+                lon: at?.lon ?? null,
+                recorded_at: new Date().toISOString(),
+                payload,
+                note,
+                team_id: activeTeamId,
+                incident_id: incident?.id ?? null,
+              })
+              toast(
+                created ? 'Conditions recorded' : 'Could not record conditions',
+                created ? 'success' : 'error',
+              )
+            }}
+          />
 
-      <DriftMarkerCard
-        markers={markers}
-        onDeploy={async (markerType) => {
-          const fix = await once()
-          if (!fix) {
-            toast(useTracker.getState().error ?? 'No GPS fix', 'error')
-            return
-          }
-          const time = new Date(fix.timestamp).toISOString()
-          const payload: DriftMarkerPayload = {
-            marker_type: markerType,
-            deploy: { lat: fix.lat, lon: fix.lon, time },
-          }
-          const created = await createRecord({
-            kind: 'drift_marker',
-            lat: fix.lat,
-            lon: fix.lon,
-            recorded_at: time,
-            payload,
-            note: '',
-            team_id: activeTeamId,
-            incident_id: incident?.id ?? null,
-          })
-          toast(
-            created ? 'Marker deployed — position logged' : 'Could not log the marker',
-            created ? 'success' : 'error',
-          )
-        }}
-        onRetrieve={async (marker) => {
-          const fix = await once()
-          if (!fix) {
-            toast(useTracker.getState().error ?? 'No GPS fix', 'error')
-            return
-          }
-          const p = marker.payload as DriftMarkerPayload
-          const obs = observedDrift(
-            {
-              lat: p.deploy.lat,
-              lon: p.deploy.lon,
-              time: new Date(p.deploy.time).getTime(),
-            },
-            { lat: fix.lat, lon: fix.lon, time: fix.timestamp },
-          )
-          if (!obs) {
-            toast('Retrieve time is not after the deploy time', 'error')
-            return
-          }
-          const patch: Partial<SarRecord> = {
-            payload: {
-              ...p,
-              retrieve: {
+          <DriftMarkerCard
+            markers={markers}
+            onDeploy={async (markerType) => {
+              const fix = await once()
+              if (!fix) {
+                toast(useTracker.getState().error ?? 'No GPS fix', 'error')
+                return
+              }
+              const time = new Date(fix.timestamp).toISOString()
+              const payload: DriftMarkerPayload = {
+                marker_type: markerType,
+                deploy: { lat: fix.lat, lon: fix.lon, time },
+              }
+              const created = await createRecord({
+                kind: 'drift_marker',
+                lat: fix.lat,
+                lon: fix.lon,
+                recorded_at: time,
+                payload,
+                note: '',
+                team_id: activeTeamId,
+                incident_id: incident?.id ?? null,
+              })
+              toast(
+                created ? 'Marker deployed — position logged' : 'Could not log the marker',
+                created ? 'success' : 'error',
+              )
+            }}
+            onRetrieve={async (marker) => {
+              const fix = await once()
+              if (!fix) {
+                toast(useTracker.getState().error ?? 'No GPS fix', 'error')
+                return
+              }
+              const p = marker.payload as DriftMarkerPayload
+              const obs = observedDrift(
+                {
+                  lat: p.deploy.lat,
+                  lon: p.deploy.lon,
+                  time: new Date(p.deploy.time).getTime(),
+                },
+                { lat: fix.lat, lon: fix.lon, time: fix.timestamp },
+              )
+              if (!obs) {
+                toast('Retrieve time is not after the deploy time', 'error')
+                return
+              }
+              const patch: Partial<SarRecord> = {
+                payload: {
+                  ...p,
+                  retrieve: {
+                    lat: fix.lat,
+                    lon: fix.lon,
+                    time: new Date(fix.timestamp).toISOString(),
+                  },
+                  set_deg: obs.setDeg,
+                  drift_kts: obs.driftKts,
+                  distance_nm: obs.distanceNM,
+                  hours: obs.hours,
+                },
+              }
+              await updateRecord(marker.id, patch)
+              toast(
+                `Set ${Math.round(obs.setDeg)}°, drift ${obs.driftKts.toFixed(2)} kn observed`,
+                'success',
+              )
+            }}
+            onRecord={async (marker) => {
+              const fix = await once()
+              if (!fix) {
+                toast(useTracker.getState().error ?? 'No GPS fix', 'error')
+                return
+              }
+              const p = marker.payload as DriftMarkerPayload
+              const from = lastMarkerPoint(p)
+              const obs = observedDrift(from, {
+                lat: fix.lat,
+                lon: fix.lon,
+                time: fix.timestamp,
+              })
+              if (!obs) {
+                toast('This reading is not after the one before it', 'error')
+                return
+              }
+              // Refused rather than recorded, either way: a reading here reaches
+              // the datum through "Use as current", so a number invented from
+              // noise or from a jumped fix becomes a search area in the wrong
+              // place.
+              const verdict = describeDriftLeg(
+                obs.distanceNM,
+                obs.driftKts,
+                fix.accuracy,
+              )
+              if (!verdict.ok) {
+                toast(verdict.why, 'error')
+                return
+              }
+              const sample: DriftSample = {
                 lat: fix.lat,
                 lon: fix.lon,
                 time: new Date(fix.timestamp).toISOString(),
-              },
-              set_deg: obs.setDeg,
-              drift_kts: obs.driftKts,
-              distance_nm: obs.distanceNM,
-              hours: obs.hours,
-            },
-          }
-          await updateRecord(marker.id, patch)
-          toast(
-            `Set ${Math.round(obs.setDeg)}°, drift ${obs.driftKts.toFixed(2)} kn observed`,
-            'success',
-          )
-        }}
-        onRecord={async (marker) => {
-          const fix = await once()
-          if (!fix) {
-            toast(useTracker.getState().error ?? 'No GPS fix', 'error')
-            return
-          }
-          const p = marker.payload as DriftMarkerPayload
-          const from = lastMarkerPoint(p)
-          const obs = observedDrift(from, {
-            lat: fix.lat,
-            lon: fix.lon,
-            time: fix.timestamp,
-          })
-          if (!obs) {
-            toast('This reading is not after the one before it', 'error')
-            return
-          }
-          // Refused rather than recorded, either way: a reading here reaches
-          // the datum through "Use as current", so a number invented from
-          // noise or from a jumped fix becomes a search area in the wrong
-          // place.
-          const verdict = describeDriftLeg(
-            obs.distanceNM,
-            obs.driftKts,
-            fix.accuracy,
-          )
-          if (!verdict.ok) {
-            toast(verdict.why, 'error')
-            return
-          }
-          const sample: DriftSample = {
-            lat: fix.lat,
-            lon: fix.lon,
-            time: new Date(fix.timestamp).toISOString(),
-            set_deg: obs.setDeg,
-            drift_kts: obs.driftKts,
-            distance_nm: obs.distanceNM,
-            hours: obs.hours,
-          }
-          await updateRecord(marker.id, {
-            payload: { ...p, samples: [...(p.samples ?? []), sample] },
-          })
-          toast(
-            `Drift ${obs.driftKts.toFixed(2)} kn toward ${Math.round(obs.setDeg)}° recorded`,
-            'success',
-          )
-        }}
-        onUseAsCurrent={async (p) => {
-          const payload: EnvironmentPayload = {
-            current_toward_deg: p.set_deg ?? null,
-            current_kts: p.drift_kts ?? null,
-          }
-          // Measured at the marker, so that is where the reading belongs.
-          const at = observationPosition({
-            fix: useTracker.getState().fix,
-            nowMs: Date.now(),
-            marker: p,
-          })
-          const created = await createRecord({
-            kind: 'environment',
-            lat: at?.lat ?? null,
-            lon: at?.lon ?? null,
-            recorded_at: new Date().toISOString(),
-            payload,
-            note: 'From drift marker observation',
-            team_id: activeTeamId,
-            incident_id: incident?.id ?? null,
-          })
-          toast(
-            created
-              ? 'Observed set and drift now feed the worksheet'
-              : 'Could not record it',
-            created ? 'success' : 'error',
-          )
-        }}
-      />
+                set_deg: obs.setDeg,
+                drift_kts: obs.driftKts,
+                distance_nm: obs.distanceNM,
+                hours: obs.hours,
+              }
+              await updateRecord(marker.id, {
+                payload: { ...p, samples: [...(p.samples ?? []), sample] },
+              })
+              toast(
+                `Drift ${obs.driftKts.toFixed(2)} kn toward ${Math.round(obs.setDeg)}° recorded`,
+                'success',
+              )
+            }}
+            onUseAsCurrent={async (p) => {
+              const payload: EnvironmentPayload = {
+                current_toward_deg: p.set_deg ?? null,
+                current_kts: p.drift_kts ?? null,
+              }
+              // Measured at the marker, so that is where the reading belongs.
+              const at = observationPosition({
+                fix: useTracker.getState().fix,
+                nowMs: Date.now(),
+                marker: p,
+              })
+              const created = await createRecord({
+                kind: 'environment',
+                lat: at?.lat ?? null,
+                lon: at?.lon ?? null,
+                recorded_at: new Date().toISOString(),
+                payload,
+                note: 'From drift marker observation',
+                team_id: activeTeamId,
+                incident_id: incident?.id ?? null,
+              })
+              toast(
+                created
+                  ? 'Observed set and drift now feed the worksheet'
+                  : 'Could not record it',
+                created ? 'success' : 'error',
+              )
+            }}
+          />
 
-      <WorksheetCard
-        lkp={lkp}
-        environment={environment}
-        markers={markers}
-        clues={clues}
-        onNavigate={onNavigate}
-      />
+          <WorksheetCard
+            lkp={lkp}
+            environment={environment}
+            markers={markers}
+            clues={clues}
+            onNavigate={onNavigate}
+          />
+        </>
+      )}
 
-      <ClueCard
-        clues={clues}
-        onLog={async (clueType, note, photo) => {
-          const fix = await once()
-          const time = fix ? new Date(fix.timestamp).toISOString() : new Date().toISOString()
-          // The clue → evidence contract (N11): type, description and an
-          // optional photograph, in these keys. The text also stays in
-          // `note`, where everything else in NavMate keeps it.
-          const payload: CluePayload = {
-            clue_type: clueType,
-            ...(note ? { description: note } : {}),
-          }
-          const created = await createRecord({
-            kind: 'clue',
-            lat: fix?.lat ?? null,
-            lon: fix?.lon ?? null,
-            recorded_at: time,
-            payload,
-            note,
-            team_id: activeTeamId,
-            incident_id: incident?.id ?? null,
-          })
-          let photoNote = ''
-          if (created && photo) {
-            const path = await useSarRecords.getState().attachPhoto(created.id, photo)
-            photoNote =
-              path === 'queued'
-                ? ' — photo kept on this phone, it sends when there is signal'
-                : path
-                  ? ' and photo'
-                  : ' — photo could not be kept'
-          }
-          toast(
-            created
-              ? (fix
-                  ? 'Clue logged with position'
-                  : 'Clue logged — no GPS fix, position blank') + photoNote
-              : 'Could not log the clue',
-            created ? 'success' : 'error',
-          )
-        }}
-        onRemove={async (id) => {
-          await removeRecord(id)
-          toast('Clue removed')
-        }}
-      />
+      {section === 'clues' && (
+        <ClueCard
+          clues={clues}
+          onLog={async (clueType, note, photo) => {
+            const fix = await once()
+            const time = fix ? new Date(fix.timestamp).toISOString() : new Date().toISOString()
+            // The clue → evidence contract (N11): type, description and an
+            // optional photograph, in these keys. The text also stays in
+            // `note`, where everything else in NavMate keeps it.
+            const payload: CluePayload = {
+              clue_type: clueType,
+              ...(note ? { description: note } : {}),
+            }
+            const created = await createRecord({
+              kind: 'clue',
+              lat: fix?.lat ?? null,
+              lon: fix?.lon ?? null,
+              recorded_at: time,
+              payload,
+              note,
+              team_id: activeTeamId,
+              incident_id: incident?.id ?? null,
+            })
+            let photoNote = ''
+            if (created && photo) {
+              const path = await useSarRecords.getState().attachPhoto(created.id, photo)
+              photoNote =
+                path === 'queued'
+                  ? ' — photo kept on this phone, it sends when there is signal'
+                  : path
+                    ? ' and photo'
+                    : ' — photo could not be kept'
+            }
+            toast(
+              created
+                ? (fix
+                    ? 'Clue logged with position'
+                    : 'Clue logged — no GPS fix, position blank') + photoNote
+                : 'Could not log the clue',
+              created ? 'success' : 'error',
+            )
+          }}
+          onRemove={async (id) => {
+            await removeRecord(id)
+            toast('Clue removed')
+          }}
+        />
+      )}
+
+      <NextStep current={section} />
     </div>
   )
 }

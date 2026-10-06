@@ -8,6 +8,18 @@ Add new items at the top. Use the format:
 
 ## Open
 
+- [ ] 2026-10-06 — **Two browser drives fail on `main` as well as on the new
+      navigation** (checked by building `main` and running them): the chart
+      drive times out waiting for the "From" label (`scripts/drive-chart.mjs:273`
+      — the Plan-a-course sheet changed the plotter's layout) and the
+      waypoint-add drive cannot find the plotter's "To: Waypoint" chip. The
+      drives need updating to the current chart screen; the app is not broken.
+- [ ] 2026-10-06 — **New navigation not yet tried on a phone.** Back button,
+      bottom bar and search steps are driven in Chromium at 320 and 390 px
+      (`scripts/drive-navigation.mjs`, 42 checks). Check the Android back
+      gesture and the installed iPhone app (which has no back button — the ←
+      in the header is its only one).
+
 ### 2026-10-02 — NavMate ⇄ RescueGPS integration audit
 
 A check of every feature meant to work in both directions, run against the

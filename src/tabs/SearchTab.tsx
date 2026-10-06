@@ -1,3 +1,5 @@
+import { NextStep, SearchSteps } from '@/components/SearchSteps'
+import { goTo } from '@/store/useSection'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
@@ -40,12 +42,6 @@ import { sunEvents } from '@/lib/sun'
 import { SatelliteMap } from '@/components/SatelliteMap'
 import { SteerCard } from '@/components/SteerCard'
 import { shouldAdvance } from '@/lib/steer'
-import { IncidentCard } from '@/components/IncidentCard'
-import { AssignmentsCard } from '@/components/AssignmentsCard'
-import { RiverSegmentsCard } from '@/components/RiverSegmentsCard'
-import { CatchPointsCard } from '@/components/CatchPointsCard'
-import { MessagesCard } from '@/components/MessagesCard'
-import { HazardsCard } from '@/components/HazardsCard'
 import { Button, Card, EmptyState, Input, Label, Stat } from '@/components/ui'
 import type { EnvironmentPayload, LkpPayload } from '@/lib/types'
 
@@ -244,6 +240,11 @@ export function SearchTab() {
 
   return (
     <div className="space-y-3">
+      {/* The incident, command's orders and messages live on the Incident
+          step now, one tap away in the steps above — not repeated over the
+          pattern a crew is trying to steer. */}
+      <SearchSteps current="search" />
+
       <div>
         <h2 className="text-lg font-semibold text-slate-50">Search pattern</h2>
         <p className="text-sm text-slate-300">
@@ -251,22 +252,6 @@ export function SearchTab() {
           lookout can actually see, and steer it leg by leg.
         </p>
       </div>
-
-      <IncidentCard />
-
-      {/* What command has sent this crew: segments, orders, hazards. Each
-
-          renders nothing off an incident. */}
-
-      <AssignmentsCard />
-
-      <RiverSegmentsCard />
-
-      <CatchPointsCard />
-
-      <MessagesCard />
-
-      <HazardsCard />
 
       {!datum ? (
         <Card>
@@ -284,6 +269,9 @@ export function SearchTab() {
             }}
           >
             Use my position
+          </Button>
+          <Button className="mt-2 w-full" onClick={() => goTo('datum')}>
+            Set the datum first
           </Button>
         </Card>
       ) : (
@@ -538,6 +526,8 @@ export function SearchTab() {
         waterTempC={env?.water_temp_c ?? null}
         defaultPfd={objectType.key === 'person_with_pfd' ? 'yes' : 'unknown'}
       />
+
+      <NextStep current="search" />
     </div>
   )
 }

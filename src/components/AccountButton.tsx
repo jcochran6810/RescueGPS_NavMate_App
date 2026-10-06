@@ -4,6 +4,7 @@ import { useAuth } from '@/store/useAuth'
 import { useWaypoints } from '@/store/useWaypoints'
 import { toast } from '@/store/useToast'
 import { Button, Input, Spinner } from '@/components/ui'
+import { useBackDismiss } from '@/store/useSection'
 
 /**
  * The account: a small circle in the top right, showing the user's initials.
@@ -22,6 +23,8 @@ export function AccountButton() {
     setFullName(profile?.full_name ?? '')
     setCallsign(profile?.call_sign ?? '')
   }, [profile?.full_name, profile?.call_sign])
+
+  useBackDismiss(open, () => setOpen(false))
 
   useEffect(() => {
     if (!open) return

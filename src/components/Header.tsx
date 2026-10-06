@@ -4,43 +4,60 @@ import { useWaypoints } from '@/store/useWaypoints'
 import { useOnline } from '@/hooks/useOnline'
 import { useClock } from '@/hooks/useNow'
 import { gpsChip, type GpsChip as GpsChipState } from '@/lib/navView'
-import { NavMenu, type TabId } from '@/components/NavMenu'
 import { AccountButton } from '@/components/AccountButton'
+import { ArrowLeft } from 'lucide-react'
+import { goBack, goTo, useSection } from '@/store/useSection'
 
-export function Header({
-  active,
-  onChange,
-}: {
-  active: TabId
-  onChange: (id: TabId) => void
-}) {
+/**
+ * The bar across the top: ← back, the NavMate mark (which is the way home),
+ * the status badges and the account circle. The sections themselves are in
+ * the bottom bar, under the thumb, not in a menu up here.
+ */
+export function Header() {
   const { teams, activeTeamId, setActiveTeam } = useTeams()
+  const tab = useSection((s) => s.tab)
+  const canGoBack = useSection((s) => s.canGoBack)
   const pending = useWaypoints((s) => s.pending.length)
   const online = useOnline()
 
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-white/10 bg-navy-950/85 backdrop-blur">
       <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pb-2">
-        {/* Emblem only up here — the wordmark would be unreadable at this
-            size. The artwork has no field of its own, so it sits on the
-            header's blur. Hidden on the narrowest screens, where the name
-            and the two corner buttons need every pixel. */}
-        <img
-          src="/emblem-192.png"
-          alt=""
-          width={192}
-          height={192}
-          className="size-6 shrink-0 max-[379px]:hidden"
-        />
-        {/* NavMate is the field app and stands on its own name now that it has
-            its own address; RescueGPS is the command system it reports into,
-            at rescuegps.stationinsight.com. The emblem beside this is the
-            shared mark, which is what still ties the two together.
-            `min-w-0 truncate` lets the name give way to the status badges and
-            the corner buttons rather than pushing them off a narrow phone. */}
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-slate-50 sm:text-base">
-          NavMate
-        </span>
+        {/* The previous screen — exactly what the phone's back button does,
+            for the phones (and the installed iPhone app) that have none. */}
+        {canGoBack && (
+          <button
+            onClick={goBack}
+            aria-label="Back"
+            title="Back to the previous screen"
+            className="-ml-1 grid size-9 shrink-0 place-items-center rounded-lg text-slate-200 hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+          >
+            <ArrowLeft className="size-5" aria-hidden />
+          </button>
+        )}
+
+        {/* The mark and the name are the Home button, as a logo is anywhere
+            else. NavMate is the field app and stands on its own name;
+            RescueGPS is the command system it reports into. `min-w-0` lets
+            the name give way to the badges on a narrow phone rather than
+            pushing the corner buttons off it. */}
+        <button
+          onClick={() => goTo('home')}
+          aria-label="NavMate — go to Home"
+          aria-current={tab === 'home' ? 'page' : undefined}
+          className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-lg pr-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+        >
+          <img
+            src="/emblem-192.png"
+            alt=""
+            width={192}
+            height={192}
+            className="size-7 shrink-0"
+          />
+          <span className="min-w-0 truncate text-sm font-semibold tracking-tight text-slate-50 sm:text-base">
+            NavMate
+          </span>
+        </button>
 
         <div className="flex shrink-0 items-center gap-1.5">
           {!online && (
@@ -58,10 +75,7 @@ export function Header({
           )}
           <GpsChip />
 
-          {/* The two corner controls: the account circle, then the menu in
-              the very corner. */}
           <AccountButton />
-          <NavMenu active={active} onChange={onChange} />
         </div>
       </div>
 

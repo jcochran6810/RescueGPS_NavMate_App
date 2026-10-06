@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFormat } from '@/hooks/useFormat'
+import { useBackDismiss } from '@/store/useSection'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Fix } from '@/lib/types'
 import {
@@ -337,6 +338,11 @@ export function SatelliteMap({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [expanded, menu])
+
+  // Back leaves full screen, and closes a press menu first — the same order
+  // as Escape above.
+  useBackDismiss(expanded, () => setExpanded(false))
+  useBackDismiss(!!menu, () => setMenu(null))
 
   // The page behind must not scroll under a map that covers it.
   useEffect(() => {

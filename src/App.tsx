@@ -1,5 +1,5 @@
 import { startSyncLoop } from '@/lib/syncAll'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useAuth } from '@/store/useAuth'
 import { useTeams } from '@/store/useTeams'
 import { toast } from '@/store/useToast'
@@ -24,8 +24,8 @@ import { useNavigation } from '@/store/useNavigation'
 import { useNavUi } from '@/store/useNavUi'
 import { initialTab, showNavBanner } from '@/lib/navView'
 import { EmergencyAlert } from '@/components/MessagesCard'
-import { type TabId } from '@/components/NavMenu'
-import { StampWaypoint } from '@/components/StampWaypoint'
+import { BottomBar } from '@/components/BottomBar'
+import { goTo, startSections, useSection } from '@/store/useSection'
 import { SurvivalBanner } from '@/components/SurvivalBanner'
 import { Toast } from '@/components/Toast'
 import { Spinner } from '@/components/ui'
@@ -49,14 +49,25 @@ import { useSavedRoutes } from '@/store/useSavedRoutes'
 
 export default function App() {
   const { session, ready, recovering, init } = useAuth()
-  // A reload mid-passage opens on the steering card, not the home screen:
-  // the store is rehydrated from storage before this first render.
-  const [tab, setTab] = useState<TabId>(() => initialTab(useNavigation.getState().status))
+  // The section on screen, kept in step with the browser's history so the
+  // phone's back button goes to the previous screen (store/useSection). A
+  // reload keeps its section; a reload mid-passage opens on the steering card
+  // instead — the navigation store is rehydrated before this first render.
+  const tab = useSection((s) => s.tab)
+  useEffect(() => {
+    const status = useNavigation.getState().status
+    return startSections(initialTab(status) === 'chart' ? 'chart' : null)
+  }, [])
+
+  // A new section starts at its top, not wherever the last one was scrolled to.
+  useEffect(() => {
+    window.scrollTo({ top: 0 })
+  }, [tab])
 
   useEffect(() => init(), [init])
 
   // A shared route link (`/?route=…`), opened once signed in, on the chart.
-  const openChart = useCallback(() => setTab('chart'), [])
+  const openChart = useCallback(() => goTo('chart'), [])
   useRouteLink(ready && !!session, openChart)
 
   // Steering runs whichever tab is open — see hooks/useNavigationEngine.ts
@@ -143,8 +154,9 @@ export default function App() {
     if (!code) return
     params.delete('join')
     const rest = params.toString()
+    // Keeps the history entry's state: it is what the back button reads.
     window.history.replaceState(
-      {},
+      window.history.state,
       '',
       window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash,
     )
@@ -194,16 +206,17 @@ export default function App() {
           worksheet is still a unit on the search. */}
       <IncidentTelemetry />
       <NavigationEngine />
-      <Header active={tab} onChange={setTab} />
-      {/* Clears the footer, which now carries only the stamp button — the
-          section menu lives in the header's top corner. */}
+      <Header />
+      {/* Clears the bottom bar (and the steering banner above it). */}
       <main
         className={
-          'mx-auto max-w-3xl px-3 pt-3 ' + (showBanner ? 'pb-40' : 'pb-24')
+          'mx-auto max-w-3xl px-3 pt-3 ' + (showBanner ? 'pb-44' : 'pb-28')
         }
       >
-        {tab === 'home' && <HomeTab onNavigate={setTab} />}
-        {tab === 'datum' && <DatumTab onNavigate={setTab} />}
+        {tab === 'home' && <HomeTab onNavigate={goTo} />}
+        {tab === 'incident' && <DatumTab section="incident" onNavigate={goTo} />}
+        {tab === 'datum' && <DatumTab section="datum" onNavigate={goTo} />}
+        {tab === 'clues' && <DatumTab section="clues" onNavigate={goTo} />}
         {tab === 'search' && <SearchTab />}
         {tab === 'track' && <TrackTab />}
         {tab === 'eta' && <EtaTab />}
@@ -222,15 +235,16 @@ export default function App() {
       {/* What a long press on any map in the app asked for — the sheet it
           opens, or the handover to the chart plotter. Here because both need
           something no map can reach: the tab, and a sheet that contains a map. */}
-      <MapActionHost onNavigate={setTab} />
+      <MapActionHost onNavigate={goTo} />
       {/* One waypoint sheet for the whole app, opened by tapping a waypoint
           in any list or on any map. */}
       <WaypointSheet />
 
-      {/* Stamping is the one action that can be urgent, so the button sits on
-          every screen, in the same place, however far the page has scrolled. */}
+      {/* The bottom bar: the main sections either side of the stamp button.
+          Stamping is the one action that can be urgent, so it sits on every
+          screen, in the same place, however far the page has scrolled. */}
       <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-navy-950/95 backdrop-blur">
-        {/* Above the stamp button, so the clock is read on the way to the one
+        {/* Above the bottom bar, so the clock is read on the way to the one
             control that is on every screen. It renders nothing at all unless
             the search already knows the water temperature and when the person
             went in. */}
@@ -241,13 +255,13 @@ export default function App() {
               onOpen={() => {
                 // On the Chart tab the card is only scrolled away: bring it back.
                 if (tab === 'chart') window.scrollTo({ top: 0, behavior: 'smooth' })
-                else setTab('chart')
+                else goTo('chart')
               }}
             />
           </div>
         )}
-        <div className="mx-auto max-w-3xl pb-2">
-          <StampWaypoint />
+        <div className="pt-1">
+          <BottomBar />
         </div>
       </div>
 

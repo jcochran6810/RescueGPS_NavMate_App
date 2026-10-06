@@ -9,13 +9,14 @@ import { WaypointPhoto } from '@/components/WaypointPhoto'
 import { Sheet } from '@/components/Sheet'
 import { Button, Input, Label, Spinner } from '@/components/ui'
 import type { Waypoint } from '@/lib/types'
+import { Crosshair } from 'lucide-react'
 
 const NO_PHOTOS: string[] = []
 
 /**
  * Drop a waypoint at the current position in one press, then describe it.
  *
- * The button lives in the fixed footer and stays under the thumb however far
+ * The button is the centre of the bottom bar and stays under the thumb however far
  * the screen has been scrolled — stamping a position is the one thing on this
  * app that is sometimes done in a hurry, and hunting for the control is not
  * something anyone should have to do while a boat is moving.
@@ -137,16 +138,19 @@ export function StampWaypoint() {
 
   return (
     <>
-      <div className="px-3 pt-2">
-        <Button
-          variant="primary"
-          className="w-full py-3.5 text-base"
-          onClick={() => void stamp()}
-          disabled={stamping}
-        >
-          {stamping ? <Spinner /> : '◎'} Stamp my position
-        </Button>
-      </div>
+      {/* The centre of the bottom bar, raised above it: the biggest target
+          on the screen, in the same place on every screen. */}
+      <button
+        onClick={() => void stamp()}
+        disabled={stamping}
+        aria-label="Stamp my position"
+        className="group flex h-full w-full flex-col items-center justify-end gap-0.5 pb-1 text-[11px] font-semibold text-sky-300 disabled:opacity-60 focus-visible:outline-none"
+      >
+        <span className="-mt-6 grid size-14 place-items-center rounded-full border-4 border-navy-950 bg-sky-500 text-navy-950 shadow-lg shadow-black/40 group-hover:bg-sky-400 group-active:bg-sky-600 group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-sky-400">
+          {stamping ? <Spinner /> : <Crosshair className="size-7" aria-hidden />}
+        </span>
+        Stamp
+      </button>
 
       {stamped && (
         <Sheet
