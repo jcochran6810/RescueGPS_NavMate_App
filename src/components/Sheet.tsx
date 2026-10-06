@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { useBackDismiss } from '@/store/useSection'
 
 /**
  * A panel that rises from the bottom of the screen over everything else.
@@ -10,8 +11,8 @@ import { createPortal } from 'react-dom'
  * the panel in the forty-pixel strip the footer occupies.
  *
  * Dismissing is deliberately one behaviour for all three routes out — the
- * close control, Escape, and a tap on the backdrop — so a caller that commits
- * on dismiss commits whichever way the crew leaves.
+ * close control, Escape, a tap on the backdrop and the phone's back button —
+ * so a caller that commits on dismiss commits whichever way the crew leaves.
  */
 export function Sheet({
   label,
@@ -23,6 +24,9 @@ export function Sheet({
   children: ReactNode
   onDismiss: () => void
 }) {
+  // Back closes the sheet rather than changing the page behind it.
+  useBackDismiss(true, onDismiss)
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onDismiss()

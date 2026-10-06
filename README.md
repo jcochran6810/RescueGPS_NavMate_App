@@ -40,7 +40,16 @@ cannot overwrite each other.
 
 ## Features
 
+- **Getting around** — a bar along the bottom of every screen: **Home**,
+  **Chart**, the **Stamp** button in the middle, **Search** and **More** (a grid
+  of every section). The phone's back button — and the ← at the top left —
+  goes to the screen you were on before, and closes an open sheet or menu
+  first. The NavMate logo at the top is the Home button. A search is worked as
+  four steps across the top of its screens — **Incident → Datum → Pattern →
+  Clues** — with a "Next" button at the foot of each.
 - **Home** — the screen the app opens on: current position in DDM, DMS and DD,
+  the two big buttons (Plan a course, Start / Continue a search), a tile for
+  every tool,
   the daylight countdown and the waypoints nearest you.
 - **Search datum** — the reason this app exists as a standalone tool: a single
   unit searching for a victim logs the last known position (with time, source

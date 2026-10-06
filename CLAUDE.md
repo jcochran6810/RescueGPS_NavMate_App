@@ -208,7 +208,7 @@ branch merged into `main` and pushed. Do the following in order:
 src/lib/          coordinate math, distance/bearing, import/export, Supabase client
 src/store/        Zustand stores: auth, waypoints (offline queue), teams, tracker
 src/components/   shared UI, header, tab bar, auth screen
-src/tabs/         Convert, Track, Waypoints, Team, Data
+src/tabs/         one screen per section (src/lib/sections.ts lists them all)
 supabase/migrations/  schema, RLS policies, storage rules
 brand/            emblem.png / logo.png — the artwork every icon derives from
 scripts/          make-icons.mjs — regenerates the icons from the masters
@@ -314,6 +314,17 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
      never `upsert` without `ignoreDuplicates` into a table with no UPDATE
      policy (`asset_tracks`, `field_messages`, `incident_hazards`) — a replay
      fails RLS and takes the batch with it.
+- **Sections are history entries.** `src/lib/sections.ts` is the one list of
+  sections (name, icon, group); `src/store/useSection.ts` holds the one on
+  screen and drives `src/lib/backStack.ts`, which keeps the browser history in
+  step so the phone's back button goes to the previous screen. Move between
+  sections with `goTo(id)`, never local state, or back stops working. Any new
+  overlay (sheet, panel, full-screen view) calls `useBackDismiss(open, close)`
+  — `Sheet` already does — so back closes it before changing the page. The
+  menu's and a closed sheet's leftover entries are *stale* and stepped over;
+  `backStack.test.ts` holds the orderings that broke it while it was written.
+  The search is four sections (`incident`, `datum`, `search`, `clues`) sharing
+  `DatumTab`'s records and handlers via its `section` prop.
 - **Waypoint writes go through an offline queue** (`src/store/useWaypoints.ts`).
   A failed op stays queued and stops the queue — order matters between ops on
   the same row.

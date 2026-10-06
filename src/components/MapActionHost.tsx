@@ -3,7 +3,7 @@ import { AddWaypointSheet } from '@/components/AddWaypoint'
 import { useGoTo } from '@/store/useGoTo'
 import { useMapAction } from '@/store/useMapAction'
 import { navigateTo } from '@/store/navigateTo'
-import type { TabId } from '@/components/NavMenu'
+import type { TabId } from '@/lib/sections'
 
 /**
  * Carries out what a long press on a map — or another screen — asked for.
