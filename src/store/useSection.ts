@@ -39,6 +39,11 @@ function sync() {
 export function startSections(initial: TabId | null): () => void {
   if (typeof window === 'undefined') return () => {}
   if (!stack) {
+    // Scroll is NavMate's to manage (each section opens at its top). Left to
+    // the browser, every history step — including the silent one when a sheet
+    // closes — jumps the page back to wherever that entry was scrolled,
+    // which threw the chart off screen just as a point was to be picked.
+    if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual'
     stack = createBackStack({
       history: window.history,
       home: 'home',

@@ -166,11 +166,14 @@ beforeEach(() => {
 describe('Chart tab, by navigation state', () => {
   it('idle: asks where to, with one way to set it — Plan a course — and no banner', () => {
     const r = render('idle', null)
-    expect(r.tab).toContain('Where to?')
+    // Changed on purpose (2026-10-06): the two ends are their own A / B
+    // rows, each a button that sets it, instead of "Where to?" text.
+    expect(r.tab).toContain('aria-label="Set the starting point"')
+    expect(r.tab).toContain('aria-label="Set the destination"')
     // Changed on purpose (2026-09-28): the Map / Coords / Waypoint chips and
     // "Change start" folded into the one "Plan a course" flow; "My location"
     // is one of its choices, not a chip on the page.
-    expect(r.tab).toContain('>Plan a course</button>')
+    expect(r.tab).toContain('Plan a course</button>')
     expect(r.tab).not.toContain('Change start')
     expect(r.banner).toBe('')
   })
@@ -187,6 +190,10 @@ describe('Chart tab, by navigation state', () => {
     expect(r.tab).toMatch(/1\.05 NM · 6 min · ETA/)
     expect(r.tab).toContain('ETA at 9.7 kn (current)')
     expect(r.tab).toContain('>Start</button>')
+    // Clear sits with the A / B rows at the top (2026-10-06), above Start —
+    // not under the legs and the speed table.
+    expect(r.tab.indexOf('Clear route')).toBeGreaterThan(-1)
+    expect(r.tab.indexOf('Clear route')).toBeLessThan(r.tab.indexOf('>Start</button>'))
     expect(r.tab).not.toContain('I understand')
     expect(r.tab).toContain('Waypoint reached within')
   })

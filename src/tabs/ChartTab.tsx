@@ -55,6 +55,8 @@ import {
 import { SatelliteMap, type MapBase } from '@/components/SatelliteMap'
 import { NavCard } from '@/components/NavCard'
 import { PlanCourseSheet, PlanCoursePickBar } from '@/components/PlanCourseSheet'
+import { CourseEndRow } from '@/components/CourseEnds'
+import { Route, X } from 'lucide-react'
 import { usePlanCourse } from '@/store/usePlanCourse'
 import { navigateTo } from '@/store/navigateTo'
 import { RouteActions, SavedRoutesSheet } from '@/components/RouteActions'
@@ -705,60 +707,63 @@ export function ChartTab() {
       )}
 
       {/* ---------------------------------------------------- where to */}
+      {/* The two ends of the course, A and B, each one big button that sets
+          or changes it — and Clear beside them, not under the legs and the
+          speed table where it used to take a long scroll to reach. */}
       {!steering && (
         <Card className="p-3">
-          <Button
-            variant={dest ? 'default' : 'primary'}
-            className="min-h-12 w-full text-base"
-            onClick={() => openPlan()}
-          >
-            Plan a course
-          </Button>
-          {dest ? (
-            <div className="mt-2 grid gap-1">
-              <div className="flex min-w-0 items-baseline justify-between gap-2">
-                <div className="min-w-0">
-                  <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">From </span>
-                  <span className="text-sm text-slate-100">{fromLabel}</span>
-                  {origin ? (
-                    <span className="tnum block truncate text-xs text-slate-400">{formatPlace(origin, format)}</span>
-                  ) : null}
-                </div>
-                <button
-                  onClick={() => openPlan('start')}
-                  className="min-h-9 shrink-0 text-xs font-semibold text-sky-300 hover:text-sky-200"
-                  aria-label="Change the starting point"
-                >
-                  Change
-                </button>
-              </div>
-              <div className="flex min-w-0 items-baseline justify-between gap-2">
-                <div className="min-w-0">
-                  <span className="text-xs font-semibold tracking-wide text-slate-400 uppercase">To </span>
-                  <span className="text-sm text-slate-100">{dest.label}</span>
-                  <span className="tnum block truncate text-xs text-slate-400">{formatPlace(dest, format)}</span>
-                </div>
-                <button
-                  onClick={() => openPlan('dest')}
-                  className="min-h-9 shrink-0 text-xs font-semibold text-sky-300 hover:text-sky-200"
-                  aria-label="Change the destination"
-                >
-                  Change
-                </button>
-              </div>
-              {origin ? (
-                <p className="mt-1 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
-                  Planned from here, not from where you are — for planning ahead.
-                  Steering still follows your live position.
-                </p>
-              ) : null}
-            </div>
+          {!dest ? (
+            <Button
+              variant="primary"
+              className="mb-2 min-h-12 w-full text-base"
+              onClick={() => openPlan()}
+            >
+              <Route className="size-5" aria-hidden />
+              Plan a course
+            </Button>
           ) : (
-            <p className="mt-2 text-xs text-slate-400">
-              Choose a starting point and a destination — or press and hold any map
-              and choose <strong>Navigate here</strong>.
-            </p>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold tracking-wide text-slate-300 uppercase">
+                Course
+              </span>
+              <button
+                onClick={clearNav}
+                className="flex min-h-9 items-center gap-1 rounded-lg border border-white/15 px-3 text-xs font-semibold text-slate-200 hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+              >
+                <X className="size-4" aria-hidden />
+                Clear route
+              </button>
+            </div>
           )}
+
+          <div className="grid gap-1.5">
+            <CourseEndRow
+              end="start"
+              value={dest ? fromLabel : null}
+              detail={origin ? formatPlace(origin, format) : null}
+              onClick={() => openPlan('start')}
+              actionLabel={dest ? 'Change the starting point' : 'Set the starting point'}
+            />
+            <CourseEndRow
+              end="dest"
+              value={dest ? dest.label : null}
+              detail={dest ? formatPlace(dest, format) : null}
+              onClick={() => openPlan('dest')}
+              actionLabel={dest ? 'Change the destination' : 'Set the destination'}
+            />
+          </div>
+
+          {origin ? (
+            <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-200">
+              Planned from A, not from where you are — for planning ahead.
+              Steering still follows your live position.
+            </p>
+          ) : null}
+          {!dest ? (
+            <p className="mt-2 text-xs text-slate-400">
+              Or press and hold any map and choose <strong>Navigate here</strong>.
+            </p>
+          ) : null}
           {incident?.lkp_lat != null && incident?.lkp_lng != null ? (
             <button
               onClick={() =>
@@ -785,51 +790,64 @@ export function ChartTab() {
         </div>
       ) : null}
 
-      {!steering && boatCard}
+      {/* Nothing is planned without a boat, so until there is one it comes
+          first. Once there is, it is one line the crew rarely changes, and it
+          goes under the chart rather than between the course and the map. */}
+      {!steering && !boat && boatCard}
 
       {/* ----------------------------------------------------------- chart */}
       <Card className="p-3">
-        <Segmented
-          label="Base layer"
-          value={base}
-          onChange={setBase}
-          options={[
-            { id: 'chart' as MapBase, label: 'Chart' },
-            { id: 'satellite' as MapBase, label: 'Satellite' },
-            {
-              id: 'hybrid' as MapBase,
-              label: 'Hybrid',
-              hint: 'The chart blended over the satellite imagery, half and half',
-            },
-          ]}
-          className="mb-2"
-        />
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <RouteLegend />
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setSeamarks((v) => !v)}
-              aria-pressed={seamarks}
-              className={
-                'min-h-9 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
-                (seamarks
-                  ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                  : 'border-white/10 text-slate-300 hover:bg-white/5')
-              }
-            >
-              Buoys
-            </button>
-            <span className="tnum text-xs text-slate-400">
-              {chartStatus === 'loading'
-                ? 'depths…'
-                : chartStatus === 'ready'
-                  ? chartCoverage
-                  : chartStatus === 'error'
-                    ? 'chart failed'
-                    : ''}
-            </span>
+        {/* While a point is being picked: what to do and Confirm, above the
+            chart, so the map and the button are on one screen. */}
+        <PlanCoursePickBar />
+
+        {/* Layer and legend controls step aside while a point is being
+            picked, so the chart sits straight under Confirm. */}
+        {!planPicking && (
+          <>
+          <Segmented
+            label="Base layer"
+            value={base}
+            onChange={setBase}
+            options={[
+              { id: 'chart' as MapBase, label: 'Chart' },
+              { id: 'satellite' as MapBase, label: 'Satellite' },
+              {
+                id: 'hybrid' as MapBase,
+                label: 'Hybrid',
+                hint: 'The chart blended over the satellite imagery, half and half',
+              },
+            ]}
+            className="mb-2"
+          />
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <RouteLegend />
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setSeamarks((v) => !v)}
+                aria-pressed={seamarks}
+                className={
+                  'min-h-9 rounded-lg border px-2 py-1.5 text-xs font-semibold ' +
+                  (seamarks
+                    ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                    : 'border-white/10 text-slate-300 hover:bg-white/5')
+                }
+              >
+                Buoys
+              </button>
+              <span className="tnum text-xs text-slate-400">
+                {chartStatus === 'loading'
+                  ? 'depths…'
+                  : chartStatus === 'ready'
+                    ? chartCoverage
+                    : chartStatus === 'error'
+                      ? 'chart failed'
+                      : ''}
+              </span>
+            </div>
           </div>
-        </div>
+          </>
+        )}
 
         <SatelliteMap
           trail={trail}
@@ -867,9 +885,9 @@ export function ChartTab() {
           // point they picked.
           frame={failureFrame({ status, dest, origin, fix, lastPlannedAt })}
         />
-
-        <PlanCoursePickBar />
       </Card>
+
+      {!steering && boat && boatCard}
 
       {/* ----------------------------------------------------------- route */}
       <Card>
@@ -882,13 +900,6 @@ export function ChartTab() {
             </span>
           ) : null}
         </div>
-
-        {status === 'idle' && !dest ? (
-          <p className="text-sm text-slate-300">
-            Where to? Set a destination above — or press and hold any map in
-            the app and choose <strong>Navigate here</strong>.
-          </p>
-        ) : null}
 
         {plan && routeOk && summary ? (
           <>
@@ -1049,11 +1060,6 @@ export function ChartTab() {
               </p>
             )}
 
-            {!steering ? (
-              <Button variant="ghost" className="mt-2 w-full" onClick={clearNav}>
-                Clear route
-              </Button>
-            ) : null}
           </>
         ) : null}
 

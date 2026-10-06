@@ -6,6 +6,9 @@ import { canCreate, endLabel, type PickMethod, type PlanPlace } from '@/lib/plan
 import { formatPlace } from '@/lib/placeText'
 import { useCoordFormat } from '@/store/useCoordFormat'
 import { usePlanCourse } from '@/store/usePlanCourse'
+import { CourseEndRow, EndBadge } from '@/components/CourseEnds'
+import { endText } from '@/lib/courseEnds'
+import { Bookmark, Keyboard, LocateFixed, Map as MapIcon, Route, type LucideIcon } from 'lucide-react'
 
 export interface WaypointChoice {
   id: string
@@ -14,11 +17,11 @@ export interface WaypointChoice {
   lon: number
 }
 
-const START_WAYS: { id: PickMethod; label: string; hint: string }[] = [
-  { id: 'here', label: 'Use my current location', hint: 'The route starts from the boat, and follows the GPS' },
-  { id: 'map', label: 'Choose on map', hint: 'Tap the chart, then confirm' },
-  { id: 'coords', label: 'Enter coordinates', hint: 'In your coordinate format' },
-  { id: 'waypoint', label: 'Select a saved waypoint', hint: 'From this team’s waypoints' },
+const START_WAYS: { id: PickMethod; label: string; hint: string; icon: LucideIcon }[] = [
+  { id: 'here', label: 'Use my current location', hint: 'The route starts from the boat, and follows the GPS', icon: LocateFixed },
+  { id: 'map', label: 'Choose on map', hint: 'Tap the chart, then confirm', icon: MapIcon },
+  { id: 'coords', label: 'Enter coordinates', hint: 'In your coordinate format', icon: Keyboard },
+  { id: 'waypoint', label: 'Select a saved waypoint', hint: 'From this team’s waypoints', icon: Bookmark },
 ]
 const DEST_WAYS = START_WAYS.filter((w) => w.id !== 'here').map((w) =>
   w.id === 'map' ? { ...w, label: 'Choose destination on map' } : w,
@@ -60,6 +63,7 @@ export function PlanCourseSheet({
   const title =
     s.step === 'start' ? 'Starting point' : s.step === 'dest' ? 'Destination' : 'Ready to plan'
   const ways = s.step === 'start' ? START_WAYS : DEST_WAYS
+  const stepEnd = s.step === 'start' ? 'start' : 'dest'
   const startText = endLabel(s.start)
   const destText = endLabel(s.dest)
 
@@ -79,24 +83,30 @@ export function PlanCourseSheet({
         <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
           {`Plan a course · step ${Math.min(stepNo, 2)} of 2`}
         </p>
-        <h3 className="text-lg font-semibold text-slate-50">{title}</h3>
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-50">
+          {s.step !== 'review' ? <EndBadge end={stepEnd} /> : null}
+          {title}
+        </h3>
       </div>
 
-      {/* What is chosen so far, each with its way back. */}
+      {/* What is chosen so far, A and B in their own colours, each tappable
+          to change — set apart from the ways to choose below. */}
       <div className="mb-3 grid gap-1.5">
-        <EndChip
-          label="From"
+        <CourseEndRow
+          end="start"
           value={startText}
           detail={s.start?.kind === 'place' ? formatPlace(s.start.place, format) : null}
           active={s.step === 'start'}
-          onChange={() => dispatch({ type: 'change', end: 'start' })}
+          onClick={startText && s.step !== 'start' ? () => dispatch({ type: 'change', end: 'start' }) : undefined}
+          actionLabel="Change the starting point"
         />
-        <EndChip
-          label="To"
+        <CourseEndRow
+          end="dest"
           value={destText}
           detail={s.dest ? formatPlace(s.dest.place, format) : null}
           active={s.step === 'dest'}
-          onChange={() => dispatch({ type: 'change', end: 'dest' })}
+          onClick={destText && s.step !== 'dest' ? () => dispatch({ type: 'change', end: 'dest' }) : undefined}
+          actionLabel="Change the destination"
         />
       </div>
 
@@ -108,20 +118,29 @@ export function PlanCourseSheet({
 
       {s.step !== 'review' && s.method === null ? (
         <div className="grid gap-1.5" role="group" aria-label={`Ways to set the ${title.toLowerCase()}`}>
-          {ways.map((w) => (
-            <button
-              key={w.id}
-              type="button"
-              onClick={() => choose(w.id)}
-              disabled={w.id === 'waypoint' && waypoints.length === 0}
-              className="min-h-12 w-full rounded-xl border border-white/10 px-3 py-2 text-left hover:bg-white/5 disabled:opacity-50"
-            >
-              <span className="block text-sm font-semibold text-slate-100">{w.label}</span>
-              <span className="block text-xs text-slate-400">
-                {w.id === 'waypoint' && waypoints.length === 0 ? 'No saved waypoints in this scope yet' : w.hint}
-              </span>
-            </button>
-          ))}
+          <p className={'text-sm font-semibold ' + endText(stepEnd)}>
+            {s.step === 'start' ? 'Where does the course start?' : 'Where are you going?'}
+          </p>
+          {ways.map((w) => {
+            const Icon = w.icon
+            return (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => choose(w.id)}
+                disabled={w.id === 'waypoint' && waypoints.length === 0}
+                className="flex min-h-12 w-full items-center gap-3 rounded-xl bg-white/[0.06] px-3 py-2 text-left hover:bg-white/10 disabled:opacity-50"
+              >
+                <Icon className={'size-5 shrink-0 ' + endText(stepEnd)} aria-hidden />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-slate-100">{w.label}</span>
+                  <span className="block text-xs text-slate-400">
+                    {w.id === 'waypoint' && waypoints.length === 0 ? 'No saved waypoints in this scope yet' : w.hint}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
           {s.step === 'start' && onOpenSaved ? (
             <button
               type="button"
@@ -200,6 +219,7 @@ export function PlanCourseSheet({
         {canCreate(s) ? (
           <Button
             variant="primary"
+            className="min-h-12 text-base"
             onClick={() => {
               const dest = s.dest!.place
               const origin = s.start!.kind === 'here' ? null : s.start!.place
@@ -207,6 +227,7 @@ export function PlanCourseSheet({
               onCreate(dest, origin)
             }}
           >
+            <Route className="size-5" aria-hidden />
             Create route
           </Button>
         ) : (
@@ -216,47 +237,6 @@ export function PlanCourseSheet({
         )}
       </div>
     </Sheet>
-  )
-}
-
-function EndChip({
-  label,
-  value,
-  detail,
-  active,
-  onChange,
-}: {
-  label: string
-  value: string | null
-  detail: string | null
-  active: boolean
-  onChange: () => void
-}) {
-  return (
-    <div
-      className={
-        'flex min-w-0 items-center justify-between gap-2 rounded-xl border px-3 py-2 ' +
-        (active ? 'border-sky-400/60 bg-sky-500/10' : 'border-white/10')
-      }
-    >
-      <div className="min-w-0">
-        <span className="block text-[10px] font-semibold tracking-wide text-slate-400 uppercase">{label}</span>
-        <span className={'block truncate text-sm ' + (value ? 'text-slate-100' : 'text-slate-400')}>
-          {value ?? 'Not set'}
-        </span>
-        {detail ? <span className="tnum block truncate text-[11px] text-slate-400">{detail}</span> : null}
-      </div>
-      {value ? (
-        <button
-          type="button"
-          onClick={onChange}
-          className="min-h-11 shrink-0 rounded-lg px-2 text-xs font-semibold text-sky-300 hover:bg-white/5"
-          aria-label={`Change the ${label === 'From' ? 'starting point' : 'destination'}`}
-        >
-          Change
-        </button>
-      ) : null}
-    </div>
   )
 }
 
@@ -273,17 +253,22 @@ export function PlanCoursePickBar() {
   // together (on a phone the bar is otherwise below the fold, under the
   // "Stamp my position" bar — hence the bottom scroll margin).
   useEffect(() => {
-    if (picking) ref.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
+    if (picking) ref.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
   }, [picking])
   if (!picking) return null
+  const end = s.step === 'start' ? 'start' : 'dest'
   return (
     <div
       ref={ref}
-      className="mt-2 scroll-mb-28 rounded-xl border border-sky-400/50 bg-sky-500/10 px-3 py-2"
+      className={
+        'mb-2 scroll-mt-16 rounded-xl border-2 px-3 py-2 ' +
+        (end === 'start' ? 'border-emerald-400/50 bg-emerald-500/10' : 'border-violet-400/50 bg-violet-500/10')
+      }
       role="region"
       aria-label="Pick a point on the chart"
     >
-      <p className="text-sm font-semibold text-sky-100">
+      <p className="flex items-center gap-2 text-sm font-semibold text-slate-50">
+        <EndBadge end={end} />
         {s.pending
           ? s.step === 'start'
             ? 'Starting point here?'
