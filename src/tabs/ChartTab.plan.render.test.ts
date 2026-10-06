@@ -267,7 +267,7 @@ describe('Plan a course — the steps, rendered', () => {
     expect(html).toContain('Choose destination on map')
     expect(html).not.toContain('Use my current location')
     expect(html).toContain('My location')
-    expect(html).toContain('aria-label="Change the starting point"')
+    expect(html).toContain('aria-label="Change the starting point — From My location"')
   })
 
   it('coordinates: the app’s own coordinate boxes', () => {
