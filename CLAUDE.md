@@ -342,6 +342,38 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-10-06 — ccr-4d46007c-8qbiej (navigation: back button, logo home, bottom bar, search steps)
+
+"The back button needs to navigate to the previous page and the logo needs to
+act as a home button… everything seems too long winded and off of the drop
+down menu instead of logically planned out buttons and work flows."
+
+- **Back button.** Sections are now browser history entries
+  (`src/lib/backStack.ts`, `src/store/useSection.ts`): the phone's back
+  button/gesture and a new ← in the header go to the previous screen, and
+  close an open sheet, the More grid, the account panel or a full-screen map
+  first (`useBackDismiss`, wired into `Sheet` so every sheet gets it). A
+  reload keeps the screen. History's async `go()` vs sync `pushState` is
+  handled by a queue; a closed overlay left under a new page is a *stale*
+  entry and is stepped over. 21 unit tests against a fake history cover the
+  orderings.
+- **Logo = Home.** The emblem + name in the header is a button to Home.
+- **Drop-down menu removed** (`NavMenu.tsx` deleted). `BottomBar.tsx`: Home ·
+  Chart · Stamp (raised centre) · Search · More; More is a grid of every
+  section with icons. `src/lib/sections.ts` is the single list of sections.
+  Icons from the new `lucide-react` dependency.
+- **Home is a launcher**: Plan a course / Start-or-Continue search big
+  buttons, eight tool tiles, then daylight and nearby waypoints.
+- **Search as four steps**: the twelve-card Datum page is split into
+  `incident`, `datum`, `search` (pattern), `clues` sections (`DatumTab`
+  `section` prop), with `SearchSteps` across the top and a Next button at the
+  foot. The pattern page no longer repeats the incident/command cards.
+- **Verification**: 1506 tests, typecheck, lint, build;
+  `scripts/drive-navigation.mjs` 42/42 at 320 and 390 px; compass 64, datum
+  15, map-menu 35, mobile 11, search 25 green. Chart and waypoint-add drives
+  fail identically on `main` before this work (out of date with the chart
+  screen) — in `fix_list.md`. Not yet tried on a real phone.
+
 ### 2026-10-03 (later) — claude/happy-mendel-95ku00 (the new-incident wizard: command's questions, saved command's way)
 
 Run from the RescueGPS session with this repo attached. "Start New Search
