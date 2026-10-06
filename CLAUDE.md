@@ -342,6 +342,32 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-10-06 (later) — ccr-4d46007c-8qbiej (chart plotter: clearer course picking)
+
+"Picking a course needs to be better laid out and clear. Too much scrolling to
+get to clear the route and selecting the start/end points blends in with the
+other options too easily."
+
+- **A and B.** The two ends of a course are big rows with a lettered badge in
+  a colour of their own — **A** emerald (start), **B** violet (destination),
+  chosen clear of the route's sky/amber/red — each one button that sets or
+  changes that end; unset, a dashed call to action
+  (`src/components/CourseEnds.tsx`, colours in `src/lib/courseEnds.ts`). The
+  same rows head the Plan a course sheet, whose ways to choose now carry icons
+  and a different look so they no longer read as more From/To rows.
+- **Clear route** moved from under the legs, speed table and tide to the top
+  of the course card, beside A and B (render test asserts it sits above
+  Start).
+- **Picking on the chart**: the pick bar (A/B coloured, Back / Confirm) sits
+  above the map, and the layer/legend rows step aside, so the map and Confirm
+  are on one screen. The boat card goes under the chart once a boat exists.
+- **Bug from the back-button work**: closing a sheet takes a silent history
+  step, and the browser's scroll restoration jumped the page back to the top
+  with it — throwing the chart off screen as a point was picked.
+  `history.scrollRestoration = 'manual'` in `useSection.startSections`.
+- 1506 tests, typecheck, lint, build; navigation drive 42/42; screens checked
+  at 390 px in Chromium. Not yet tried on a phone.
+
 ### 2026-10-06 — ccr-4d46007c-8qbiej (navigation: back button, logo home, bottom bar, search steps)
 
 "The back button needs to navigate to the previous page and the logo needs to
