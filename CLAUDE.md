@@ -373,6 +373,9 @@ android version then end session".
   The workflow reads four `NAVMATE_*` secrets; without them it signs with a
   throwaway key and warns (updates then need an uninstall). Adding the secrets
   is the user's step.
+- First CI build failed on Groovy precedence (`versionCode (x).toInteger()`
+  is `versionCode(x).toInteger()`); fixed. Run 3 green: `NavMate-1.0.3.apk`
+  (5 MB) as a workflow artifact.
 - 1518 tests, typecheck, lint, build; navigation drive 42/42; web service
   worker still registers. Not run on a phone.
 
