@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 
+// CI sets NAVMATE_VERSION_CODE to the run number; a local build is 1.
+def navmateVersionCode = (System.getenv("NAVMATE_VERSION_CODE") ?: "1").toInteger()
+
 android {
     namespace "com.stationinsight.navmate"
     compileSdk rootProject.ext.compileSdkVersion
@@ -10,8 +13,8 @@ android {
         // Every build must carry a higher versionCode, or Android refuses to
         // install it over the copy already on the phone. CI sets it from the
         // run number; a local build is 1.
-        versionCode (System.getenv("NAVMATE_VERSION_CODE") ?: "1").toInteger()
-        versionName "1.0." + (System.getenv("NAVMATE_VERSION_CODE") ?: "0")
+        versionCode navmateVersionCode
+        versionName "1.0.${navmateVersionCode}"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -36,7 +39,7 @@ android {
     }
     buildTypes {
         release {
-            signingConfig System.getenv("NAVMATE_KEYSTORE") ? signingConfigs.release : signingConfigs.debug
+            signingConfig(System.getenv("NAVMATE_KEYSTORE") ? signingConfigs.release : signingConfigs.debug)
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
