@@ -342,6 +342,24 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-11-23 — ccr-3d0ad5f5-mre6c6 (USNG on the current position)
+
+"The current position needs to also show USNG format in addition to DDM, DMS
+and DD."
+
+- `toUSNG` in `src/lib/coords.ts`: US National Grid (= MGRS, AA lettering),
+  built on the existing UTM maths, factored out as `utmParts` (`toUTM`
+  unchanged in output). Digits are **truncated, not rounded**, per the grid
+  standard — rounding can name the neighbouring square. Blank outside the UTM
+  domain (polar UPS not covered).
+- Shown on Home's position card, in `CoordInput`'s echo of the other formats,
+  and as a read-only USNG / MGRS box on the Convert tab under UTM.
+- Tests: the FGDC Washington Monument reference (18S UJ 23487 06483, within a
+  few metres), agreement with UTM, southern hemisphere / even-zone rows,
+  truncation at lower precision, no I/O letters. 1512 tests, typecheck,
+  lint, build. Not checked against an independent MGRS library (install was
+  blocked) and not yet seen in a browser or on a phone.
+
 ### 2026-10-06 (later) — ccr-4d46007c-8qbiej (chart plotter: clearer course picking)
 
 "Picking a course needs to be better laid out and clear. Too much scrolling to
