@@ -13,6 +13,8 @@ interface InstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
 }
 
+import { isNativeApp } from './native'
+
 export type InstallPlatform = 'installed' | 'prompt' | 'ios' | 'ios-other' | 'manual'
 
 let deferred: InstallPromptEvent | null = null
@@ -80,7 +82,9 @@ export function currentInstallEnv(): InstallEnv {
   const nav = navigator as Navigator & { standalone?: boolean }
   return {
     userAgent: nav.userAgent,
+    // The Android app is installed by definition.
     standalone:
+      isNativeApp() ||
       nav.standalone === true ||
       (typeof matchMedia === 'function' &&
         matchMedia('(display-mode: standalone)').matches),

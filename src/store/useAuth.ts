@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Session, User } from '@supabase/supabase-js'
+import { appOrigin } from '@/lib/native'
 import { supabase, errorMessage } from '@/lib/supabase'
 import type { Profile } from '@/lib/types'
 
@@ -76,7 +77,7 @@ export const useAuth = create<AuthState>((set, get) => ({
         password,
         options: {
           data: { full_name: fullName.trim(), callsign: callsign.trim() },
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: appOrigin(),
         },
       })
       if (error) return { error: errorMessage(error) }
@@ -109,7 +110,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     set({ busy: true })
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: window.location.origin,
+        redirectTo: appOrigin(),
       })
       return error ? { error: errorMessage(error) } : {}
     } finally {
