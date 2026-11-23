@@ -4,6 +4,7 @@ import { useTracker } from '@/store/useTracker'
 import { toDD, toDDM, toDMS, toUSNG } from '@/lib/coords'
 import { DaylightTracker } from '@/components/DaylightTracker'
 import { NearbyWaypoints } from '@/components/NearbyWaypoints'
+import { InstallCard } from '@/components/InstallCard'
 import { Card, Label } from '@/components/ui'
 import { usePlanCourse } from '@/store/usePlanCourse'
 import { useNavigation } from '@/store/useNavigation'
@@ -180,6 +181,8 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
         lon={lon}
         onSeeAll={() => onNavigate('waypoints')}
       />
+
+      <InstallCard dismissible />
     </div>
   )
 }
