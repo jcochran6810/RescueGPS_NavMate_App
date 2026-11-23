@@ -8,6 +8,25 @@ Add new items at the top. Use the format:
 
 ## Open
 
+### 2026-11-23 — Android app (sideloaded APK)
+
+- [ ] **Add the signing-key secrets** (`ANDROID.md` → The signing key). Until
+      they exist every APK is signed with a throwaway key, so an update needs
+      the old app uninstalled first — losing waypoints/queue on that phone.
+- [ ] **Run the APK on a real Android phone**: background tracking with the
+      screen locked for 10+ minutes; the notification shows; positions keep
+      reaching command. Never run on a device — built in CI only.
+- [ ] **Uploads after 5 minutes in the background.** Android throttles the
+      WebView's network then (plugin README); fixes are still recorded and
+      buffered, but may only reach command when the app is reopened. Fix if
+      seen: route track uploads through CapacitorHttp.
+- [ ] Android 13+: the tracking notification needs POST_NOTIFICATIONS, which
+      nothing requests yet — tracking still runs, the notification may not
+      show.
+- [ ] Hosting the APK where crews can reach it: GitHub Releases on a private
+      repo need a GitHub login, so for now the APK is passed on by hand.
+- [ ] iPhone: not built (needs a Mac + Apple Developer account).
+
 - [ ] 2026-10-06 — **Two browser drives fail on `main` as well as on the new
       navigation** (checked by building `main` and running them): the chart
       drive times out waiting for the "From" label (`scripts/drive-chart.mjs:273`
