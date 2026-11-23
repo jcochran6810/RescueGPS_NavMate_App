@@ -50,6 +50,10 @@ export function CompassTab() {
     if (!fix && !watching) void once()
   }, [fix, watching, once])
 
+  // Keep the position live while this screen is open, so speed and course
+  // appear and the numbers follow the boat — without recording a track.
+  useEffect(() => useTracker.getState().follow(), [])
+
   const lat = fix?.lat ?? null
   const lon = fix?.lon ?? null
 

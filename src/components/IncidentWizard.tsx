@@ -2,6 +2,8 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Sheet } from '@/components/Sheet'
 import { Button, Field } from '@/components/ui'
 import { useTracker } from '@/store/useTracker'
+import { useUnits } from '@/store/useUnits'
+import { formatAccuracy } from '@/lib/units'
 import { toast } from '@/store/useToast'
 import type { Answers } from '@/lib/wizard/rows'
 import {
@@ -381,7 +383,7 @@ function PositionInput({ field, answers, onChange }: { field: WizardField; answe
         }}
         className="min-h-9 rounded-lg border border-white/10 px-3 text-xs text-slate-200 hover:bg-white/5"
       >
-        Use my GPS position{fix?.accuracy != null ? ` (±${Math.round(fix.accuracy)} m)` : ''}
+        Use my GPS position{fix?.accuracy != null ? ` (${formatAccuracy(fix.accuracy, useUnits.getState().altitude)})` : ''}
       </button>
     </div>
   )

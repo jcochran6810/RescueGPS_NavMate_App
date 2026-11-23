@@ -246,7 +246,7 @@ export function IncidentCard() {
                     ? `${fmt.length(nm)} ${compassPoint(deg)}`
                     : '—'}
                   {u.speedKn != null && u.speedKn >= 0.5
-                    ? ` · ${u.speedKn.toFixed(1)} kn`
+                    ? ` · ${fmt.knots(u.speedKn)}`
                     : ''}
                   {u.stale ? ' · no signal' : ''}
                 </span>

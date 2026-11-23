@@ -57,6 +57,10 @@ export function EtaTab() {
     if (!fix && !watching) void once()
   }, [fix, watching, once])
 
+  // Keep the position live while this screen is open, so speed and course
+  // appear and the numbers follow the boat — without recording a track.
+  useEffect(() => useTracker.getState().follow(), [])
+
   const target = waypoints.find((w) => w.id === targetId) ?? null
 
   const eta = useMemo(() => {

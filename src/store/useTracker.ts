@@ -7,6 +7,7 @@ import {
 } from '@/lib/steer'
 import type { Fix } from '@/lib/types'
 import { isNativeApp, watchNativePosition } from '@/lib/native'
+import { seaLevelAltitude } from '@/lib/geoid'
 import {
   DEFAULT_GATE_M,
   TrackFilter,
@@ -60,6 +61,13 @@ interface TrackerState {
   setGateM: (meters: number) => void
   setArrivalFt: (feet: ArrivalFt) => void
   once: () => Promise<Fix | null>
+  /**
+   * Keep the position live while a screen shows it (Home, Compass, ETA):
+   * the fixes go through the filter, so speed and course appear, but no
+   * breadcrumb is recorded and the screen is not held awake. Returns the
+   * release function — call it when the screen goes away.
+   */
+  follow: () => () => void
 }
 
 const TRAIL_LIMIT = 2000
@@ -83,6 +91,9 @@ const FRESH_MS = 5000
 let watchId: number | null = null
 /** The native (Android app) watch, which keeps running with the screen off. */
 let nativeStop: (() => void) | null = null
+/** A watch that only keeps the position live for whichever screens are following. */
+let viewWatchId: number | null = null
+let viewers = 0
 const filter = new TrackFilter({ maxAccuracyM: DEFAULT_GATE_M })
 
 /* --------------------------------------------------------------- wake lock
@@ -137,8 +148,9 @@ function toFix(pos: GeolocationPosition): Fix {
     speed: c.speed != null && Number.isFinite(c.speed) ? c.speed : null,
     heading: c.heading != null && Number.isFinite(c.heading) ? c.heading : null,
     accuracy: c.accuracy ?? null,
-    altitude:
-      c.altitude != null && Number.isFinite(c.altitude) ? c.altitude : null,
+    // Android reports height above the WGS84 ellipsoid, ~28 m off sea level
+    // on the Gulf coast; this is height above the sea (lib/geoid.ts).
+    altitude: seaLevelAltitude(c.altitude, c.latitude, c.longitude),
     timestamp: pos.timestamp,
     // Freshness is judged on the phone's clock at arrival, not on the
     // position's own stamp — see `Fix.receivedAt`.
@@ -177,160 +189,207 @@ const WATCH_OPTIONS: PositionOptions = {
 
 export const useTracker = create<TrackerState>()(
   persist(
-    (set, get) => ({
-      fix: null,
-      raw: null,
-      watching: false,
-      error: null,
-      trail: [],
-      intervalS: DEFAULT_INTERVAL_S,
-      gateM: DEFAULT_GATE_M,
-      arrivalFt: DEFAULT_ARRIVAL_FT,
-      rejected: { accuracy: 0, jump: 0, stale: 0 },
-      lastReject: null,
-      derived: { speed: false, heading: false },
-      screenAwake: false,
-      stoppedFor: null,
+    (set, get) => {
+      /** Every position, from any watch, goes through here and the filter. */
+      const ingest = (pos: GeolocationPosition) => {
+        let raw = toFix(pos)
+        // A receiver that has lost the sky may keep handing back the
+        // position it last had. That must still go stale, so a repeat of
+        // the same position keeps the time it FIRST arrived.
+        const prevRaw = get().raw
+        if (
+          prevRaw &&
+          prevRaw.timestamp === raw.timestamp &&
+          prevRaw.receivedAt != null
+        ) {
+          raw = { ...raw, receivedAt: prevRaw.receivedAt }
+        }
+        const result = filter.push(raw)
 
-      start: () => {
-        const native = isNativeApp()
-        if (!native && !navigator.geolocation) {
-          set({ error: 'This browser does not support geolocation.' })
+        if (!result.accepted) {
+          // A refused fix is not a silent one. The crew can see the count
+          // climb and loosen the gate if the receiver is having a bad day.
+          set({
+            raw,
+            error: null,
+            rejected: { ...filter.rejected },
+            lastReject: result.detail,
+          })
           return
         }
-        if (watchId !== null || nativeStop !== null) return
-        set({ stoppedFor: null })
 
-        filter.reset()
-        filter.setMaxAccuracy(get().gateM)
+        const { trail, intervalS } = get()
+        const last = trail[trail.length - 1]
+        // An estimate (dead-reckoned, or a fix worse than the gate) is
+        // steered by, never recorded: the track is where the boat was.
+        // Only tracking records a breadcrumb; a screen merely showing
+        // the live position (follow) leaves the track alone.
+        const next =
+          get().watching &&
+          !result.fix.estimate &&
+          shouldRecord(last, result.fix, intervalS)
+            ? [...trail, result.fix]
+            : trail
+
         set({
-          rejected: { accuracy: 0, jump: 0, stale: 0 },
-          lastReject: null,
+          fix: result.fix,
+          raw,
+          derived: result.derived,
+          error: null,
+          trail: next.length > TRAIL_LIMIT ? next.slice(-TRAIL_LIMIT) : next,
         })
+      }
 
-        const onPosition = (pos: GeolocationPosition) => {
-            let raw = toFix(pos)
-            // A receiver that has lost the sky may keep handing back the
-            // position it last had. That must still go stale, so a repeat of
-            // the same position keeps the time it FIRST arrived.
-            const prevRaw = get().raw
-            if (prevRaw && prevRaw.timestamp === raw.timestamp && prevRaw.receivedAt != null) {
-              raw = { ...raw, receivedAt: prevRaw.receivedAt }
-            }
-            const result = filter.push(raw)
+      const stopView = () => {
+        if (viewWatchId !== null) {
+          navigator.geolocation.clearWatch(viewWatchId)
+          viewWatchId = null
+        }
+      }
 
-            if (!result.accepted) {
-              // A refused fix is not a silent one. The crew can see the count
-              // climb and loosen the gate if the receiver is having a bad day.
-              set({
-                raw,
-                error: null,
-                rejected: { ...filter.rejected },
-                lastReject: result.detail,
-              })
+      const startView = () => {
+        if (get().watching || viewWatchId !== null) return
+        if (typeof navigator === 'undefined' || !navigator.geolocation) return
+        filter.setMaxAccuracy(get().gateM)
+        viewWatchId = navigator.geolocation.watchPosition(
+          ingest,
+          (err) => set({ error: describe(err) }),
+          WATCH_OPTIONS,
+        )
+      }
+
+      return {
+        fix: null,
+        raw: null,
+        watching: false,
+        error: null,
+        trail: [],
+        intervalS: DEFAULT_INTERVAL_S,
+        gateM: DEFAULT_GATE_M,
+        arrivalFt: DEFAULT_ARRIVAL_FT,
+        rejected: { accuracy: 0, jump: 0, stale: 0 },
+        lastReject: null,
+        derived: { speed: false, heading: false },
+        screenAwake: false,
+        stoppedFor: null,
+
+        start: () => {
+          const native = isNativeApp()
+          if (!native && !navigator.geolocation) {
+            set({ error: 'This browser does not support geolocation.' })
+            return
+          }
+          if (watchId !== null || nativeStop !== null) return
+          set({ stoppedFor: null })
+
+          filter.reset()
+          filter.setMaxAccuracy(get().gateM)
+          set({
+            rejected: { accuracy: 0, jump: 0, stale: 0 },
+            lastReject: null,
+          })
+
+          // Tracking takes over from a screen's live view.
+          stopView()
+          if (native) {
+            nativeStop = watchNativePosition(ingest, (error) => set({ error }))
+          } else {
+            watchId = navigator.geolocation.watchPosition(
+              ingest,
+              (err) => set({ error: describe(err) }),
+              WATCH_OPTIONS,
+            )
+          }
+          set({ watching: true, error: null })
+          void holdScreen(set)
+        },
+
+        stop: () => {
+          if (nativeStop) {
+            nativeStop()
+            nativeStop = null
+          }
+          if (watchId !== null) {
+            navigator.geolocation.clearWatch(watchId)
+            watchId = null
+          }
+          releaseScreen(set)
+          set({ watching: false })
+          // A screen still showing the live position keeps getting it.
+          if (viewers > 0) startView()
+        },
+
+        follow: () => {
+          viewers++
+          startView()
+          let released = false
+          return () => {
+            if (released) return
+            released = true
+            viewers = Math.max(0, viewers - 1)
+            if (viewers === 0) stopView()
+          }
+        },
+
+        stopByCrew: (incidentId) => {
+          get().stop()
+          set({ stoppedFor: incidentId })
+        },
+
+        clearTrail: () => set({ trail: [] }),
+
+        setIntervalS: (seconds) => {
+          if (!Number.isFinite(seconds) || seconds <= 0) return
+          set({ intervalS: Math.round(seconds) })
+        },
+
+        setGateM: (meters) => {
+          if (!Number.isFinite(meters) || meters < 0) return
+          filter.setMaxAccuracy(meters)
+          set({ gateM: meters })
+        },
+
+        setArrivalFt: (feet) => {
+          if (!ARRIVAL_FT_CHOICES.includes(feet)) return
+          set({ arrivalFt: feet })
+        },
+
+        once: () =>
+          new Promise<Fix | null>((resolve) => {
+            // Already tracking, and the position is seconds old: that fix has
+            // been through the filter and is better than anything a fresh
+            // one-shot call will return.
+            const current = get().fix
+            if (
+              current &&
+              Date.now() - (current.receivedAt ?? current.timestamp) < FRESH_MS
+            ) {
+              resolve(current)
               return
             }
-
-            const { trail, intervalS } = get()
-            const last = trail[trail.length - 1]
-            // An estimate (dead-reckoned, or a fix worse than the gate) is
-            // steered by, never recorded: the track is where the boat was.
-            const next =
-              !result.fix.estimate && shouldRecord(last, result.fix, intervalS)
-                ? [...trail, result.fix]
-                : trail
-
-            set({
-              fix: result.fix,
-              raw,
-              derived: result.derived,
-              error: null,
-              trail:
-                next.length > TRAIL_LIMIT ? next.slice(-TRAIL_LIMIT) : next,
-            })
-        }
-
-        if (native) {
-          nativeStop = watchNativePosition(onPosition, (error) => set({ error }))
-        } else {
-          watchId = navigator.geolocation.watchPosition(
-            onPosition,
-            (err) => set({ error: describe(err) }),
-            WATCH_OPTIONS,
-          )
-        }
-        set({ watching: true, error: null })
-        void holdScreen(set)
-      },
-
-      stop: () => {
-        if (nativeStop) {
-          nativeStop()
-          nativeStop = null
-        }
-        if (watchId !== null) {
-          navigator.geolocation.clearWatch(watchId)
-          watchId = null
-        }
-        releaseScreen(set)
-        set({ watching: false })
-      },
-
-      stopByCrew: (incidentId) => {
-        get().stop()
-        set({ stoppedFor: incidentId })
-      },
-
-      clearTrail: () => set({ trail: [] }),
-
-      setIntervalS: (seconds) => {
-        if (!Number.isFinite(seconds) || seconds <= 0) return
-        set({ intervalS: Math.round(seconds) })
-      },
-
-      setGateM: (meters) => {
-        if (!Number.isFinite(meters) || meters < 0) return
-        filter.setMaxAccuracy(meters)
-        set({ gateM: meters })
-      },
-
-      setArrivalFt: (feet) => {
-        if (!ARRIVAL_FT_CHOICES.includes(feet)) return
-        set({ arrivalFt: feet })
-      },
-
-      once: () =>
-        new Promise<Fix | null>((resolve) => {
-          // Already tracking, and the position is seconds old: that fix has
-          // been through the filter and is better than anything a fresh
-          // one-shot call will return.
-          const current = get().fix
-          if (current && Date.now() - (current.receivedAt ?? current.timestamp) < FRESH_MS) {
-            resolve(current)
-            return
-          }
-          if (!navigator.geolocation) {
-            set({ error: 'This browser does not support geolocation.' })
-            resolve(null)
-            return
-          }
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              const fix = toFix(pos)
-              // Deliberately not gated. A single fix asked for by hand is a
-              // fix the crew wants now — capture succeeds, and the accuracy
-              // travels with it so nobody has to guess how good it was.
-              set({ fix, raw: fix, error: null })
-              resolve(fix)
-            },
-            (err) => {
-              set({ error: describe(err) })
+            if (!navigator.geolocation) {
+              set({ error: 'This browser does not support geolocation.' })
               resolve(null)
-            },
-            { enableHighAccuracy: true, timeout: 30_000, maximumAge: 0 },
-          )
-        }),
-    }),
+              return
+            }
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                const fix = toFix(pos)
+                // Deliberately not gated. A single fix asked for by hand is a
+                // fix the crew wants now — capture succeeds, and the accuracy
+                // travels with it so nobody has to guess how good it was.
+                set({ fix, raw: fix, error: null })
+                resolve(fix)
+              },
+              (err) => {
+                set({ error: describe(err) })
+                resolve(null)
+              },
+              { enableHighAccuracy: true, timeout: 30_000, maximumAge: 0 },
+            )
+          }),
+      }
+    },
     {
       name: 'navmate-tracker',
       version: 2,
