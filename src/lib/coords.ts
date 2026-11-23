@@ -213,9 +213,19 @@ export function utmZone(lat: number, lon: number): number {
  * Returns '' outside the UTM domain (below 80°S or above 84°N).
  */
 export function toUTM(lat: number, lon: number): string {
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return ''
+  const u = utmParts(lat, lon)
+  if (!u) return ''
+  return `${u.zone}${u.band} ${Math.round(u.easting)} ${Math.round(u.northing)}`
+}
+
+/** The UTM projection unrounded, or null outside the UTM domain. */
+export function utmParts(
+  lat: number,
+  lon: number,
+): { zone: number; band: string; easting: number; northing: number } | null {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
   const band = latBand(lat)
-  if (band === '') return ''
+  if (band === '') return null
 
   const l = wrapLon(lon)
   const a = 6378137.0
@@ -264,5 +274,33 @@ export function toUTM(lat: number, lon: number): string {
 
   if (lat < 0) northing += 10000000
 
-  return `${zone}${band} ${Math.round(easting)} ${Math.round(northing)}`
+  return { zone, band, easting, northing }
+}
+
+// 100 km square letters, AA scheme (WGS-84). I and O are never used.
+const USNG_COLS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+const USNG_ROWS = 'ABCDEFGHJKLMNPQRSTUV'
+
+/**
+ * US National Grid (same grid as MGRS), e.g. `17R LL 56421 96502`.
+ * Digits are **truncated**, not rounded, as the grid standard requires: a
+ * reference names the square the point is in, and rounding can name the next
+ * square over. `digits` per axis: 5 = 1 m, 4 = 10 m, 3 = 100 m.
+ * Returns '' outside the UTM domain (the polar UPS areas are not covered).
+ */
+export function toUSNG(lat: number, lon: number, digits = 5): string {
+  const u = utmParts(lat, lon)
+  if (!u) return ''
+  const set = ((u.zone - 1) % 3) // column letters repeat every 3 zones
+  const colIdx = Math.floor(u.easting / 100000) - 1 // 1..8 → 0..7
+  if (colIdx < 0 || colIdx > 7) return ''
+  const col = USNG_COLS.charAt(set * 8 + colIdx)
+  const rowOffset = u.zone % 2 === 0 ? 5 : 0 // even zones start at F
+  const row = USNG_ROWS.charAt(
+    (Math.floor(u.northing / 100000) + rowOffset) % 20,
+  )
+  const scale = 10 ** (5 - digits)
+  const pad = (v: number) =>
+    String(Math.floor((v % 100000) / scale)).padStart(digits, '0')
+  return `${u.zone}${u.band} ${col}${row} ${pad(u.easting)} ${pad(u.northing)}`
 }

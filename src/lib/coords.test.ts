@@ -5,6 +5,7 @@ import {
   toDMS,
   toDDM,
   toUTM,
+  toUSNG,
   latBand,
   utmZone,
   wrapLon,
@@ -179,5 +180,47 @@ describe('formatPosition', () => {
   it('carries the rounding the same way the single-axis formatters do', () => {
     // 29.99999° is 59' 59.996", which must carry rather than print 60.
     expect(formatPosition(29.99999, -94, 'dms')).toBe('30° 0\' 0.0" N  94° 0\' 0.0" W')
+  })
+})
+
+describe('USNG', () => {
+  it('matches the published Washington Monument reference', () => {
+    // FGDC's own USNG example: 18S UJ 23487 06483. The input is rounded to
+    // five decimals, so allow a few metres either way.
+    const [gzd, sq, e, n] = toUSNG(38.88948, -77.0352).split(' ')
+    expect(gzd).toBe('18S')
+    expect(sq).toBe('UJ')
+    expect(Math.abs(Number(e) - 23487)).toBeLessThan(10)
+    expect(Math.abs(Number(n) - 6483)).toBeLessThan(10)
+  })
+
+  it('agrees with UTM on zone and digits', () => {
+    const [zone, east, north] = toUTM(27.98785, -82.44712).split(' ')
+    const [gzd, sq, e, n] = toUSNG(27.98785, -82.44712).split(' ')
+    expect(gzd).toBe(zone)
+    expect(sq).toBe('LL')
+    expect(Math.abs(Number(e) - (Number(east) % 100000))).toBeLessThanOrEqual(1)
+    expect(Math.abs(Number(n) - (Number(north) % 100000))).toBeLessThanOrEqual(1)
+  })
+
+  it('uses the southern hemisphere and even-zone row offset', () => {
+    expect(toUSNG(-33.8568, 151.2153).startsWith('56H LH ')).toBe(true)
+  })
+
+  it('truncates rather than rounds, and pads to the precision', () => {
+    expect(toUSNG(38.88948, -77.0352, 4)).toBe('18S UJ 2348 0648')
+    expect(toUSNG(38.88948, -77.0352, 1)).toBe('18S UJ 2 0')
+    expect(toUSNG(38.88948, -77.0352)).toMatch(/^18S UJ \d{5} \d{5}$/)
+  })
+
+  it('never uses I or O as a square letter', () => {
+    for (let lat = -79; lat <= 83; lat += 3.7)
+      for (let lon = -179; lon <= 179; lon += 4.3)
+        expect(toUSNG(lat, lon).split(' ')[1]).not.toMatch(/[IO]/)
+  })
+
+  it('is undefined outside the UTM domain', () => {
+    expect(toUSNG(85, 0)).toBe('')
+    expect(toUSNG(Number.NaN, 0)).toBe('')
   })
 })
