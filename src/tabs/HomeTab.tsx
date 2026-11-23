@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
-import { toDD, toDDM, toDMS } from '@/lib/coords'
+import { toDD, toDDM, toDMS, toUSNG } from '@/lib/coords'
 import { DaylightTracker } from '@/components/DaylightTracker'
 import { NearbyWaypoints } from '@/components/NearbyWaypoints'
 import { Card, Label } from '@/components/ui'
@@ -89,6 +89,12 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
               <span className="text-slate-400">DD </span>
               {toDD(fix.lat)}, {toDD(fix.lon)}
             </div>
+            {toUSNG(fix.lat, fix.lon) ? (
+              <div>
+                <span className="text-slate-400">USNG </span>
+                {toUSNG(fix.lat, fix.lon)}
+              </div>
+            ) : null}
             <div className="text-slate-300">
               {fix.altitude != null ? `Altitude ${Math.round(fix.altitude)} m` : 'Altitude —'}
               {' | '}

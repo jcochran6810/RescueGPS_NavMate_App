@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { parseCoord, toDD, toDMS, toDDM, toUTM } from '@/lib/coords'
+import { parseCoord, toDD, toDMS, toDDM, toUTM, toUSNG } from '@/lib/coords'
 import { useTracker } from '@/store/useTracker'
 import { useWaypoints } from '@/store/useWaypoints'
 import { useTeams } from '@/store/useTeams'
@@ -144,6 +144,17 @@ export function ConvertTab() {
           placeholder="17R 356421 3096502"
           className="tnum"
           aria-label="UTM coordinate"
+        />
+      </Card>
+
+      <Card>
+        <Label>USNG / MGRS</Label>
+        <Input
+          readOnly
+          value={valid ? toUSNG(lat, lon) : ''}
+          placeholder="17R LL 56421 96502"
+          className="tnum"
+          aria-label="USNG coordinate"
         />
       </Card>
 

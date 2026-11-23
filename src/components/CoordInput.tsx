@@ -6,6 +6,7 @@ import {
   toDD,
   toDDM,
   toDMS,
+  toUSNG,
   type Axis,
 } from '@/lib/coords'
 import {
@@ -209,6 +210,12 @@ export function CoordInput({
             <div>
               <span className="text-slate-400">DD </span>
               {toDD(value.lat)}, {toDD(value.lon)}
+            </div>
+          ) : null}
+          {toUSNG(value.lat, value.lon) ? (
+            <div>
+              <span className="text-slate-400">USNG </span>
+              {toUSNG(value.lat, value.lon)}
             </div>
           ) : null}
         </div>
