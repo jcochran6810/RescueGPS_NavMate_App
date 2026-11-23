@@ -11,6 +11,9 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Registered from main.tsx instead, so the Android app (which carries
+      // its own copy of the build) can skip the service worker entirely.
+      injectRegister: false,
       // No icon-512 here: includeAssets adds to the precache manifest, which
       // silently re-added the file the globIgnores below exists to keep out.
       includeAssets: ['icon-192.png', 'emblem-192.png', 'logo.png'],

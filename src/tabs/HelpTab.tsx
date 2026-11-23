@@ -1,4 +1,5 @@
 import { SupportRequests } from '@/components/SupportRequests'
+import { InstallCard } from '@/components/InstallCard'
 
 /** Help is its own section: file a request, watch it get handled. */
 export function HelpTab() {
@@ -11,6 +12,8 @@ export function HelpTab() {
           problems, bugs — starts here.
         </p>
       </div>
+
+      <InstallCard />
 
       <SupportRequests />
     </div>

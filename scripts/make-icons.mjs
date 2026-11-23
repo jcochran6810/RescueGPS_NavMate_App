@@ -17,7 +17,7 @@
  * `node scripts/make-icons.mjs`.
  */
 import { deflateSync, inflateSync } from 'node:zlib'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -319,3 +319,53 @@ write(
   'logo.png',
   encodePNG(resize(logo, LOGO_WIDTH, Math.round((LOGO_WIDTH * logo.height) / logo.width))),
 )
+
+// --- Android app (Capacitor) ---------------------------------------------
+//
+// The same emblem on the same background, at Android's densities. Skipped
+// when the android/ project is not there, so the web build never depends on it.
+
+const RES = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+
+/** `src` centred on a w×h rectangle of the app background, `frac` of the short side. */
+function panel(src, w, h, frac) {
+  const side = Math.min(w, h)
+  const square = tile(src, side, frac)
+  const out = Buffer.alloc(w * h * 4)
+  for (let i = 0; i < w * h; i++) {
+    out[i * 4] = APP_BG[0]
+    out[i * 4 + 1] = APP_BG[1]
+    out[i * 4 + 2] = APP_BG[2]
+    out[i * 4 + 3] = 0xff
+  }
+  const dx = Math.floor((w - side) / 2)
+  const dy = Math.floor((h - side) / 2)
+  for (let y = 0; y < side; y++) {
+    square.rgba.copy(out, ((dy + y) * w + dx) * 4, y * side * 4, (y + 1) * side * 4)
+  }
+  return { width: w, height: h, rgba: out }
+}
+
+if (existsSync(RES)) {
+  const DENSITY = { mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 }
+  for (const [d, k] of Object.entries(DENSITY)) {
+    const dir = join(RES, `mipmap-${d}`)
+    const legacy = encodePNG(tile(emblem, Math.round(48 * k), INSET.any))
+    writeFileSync(join(dir, 'ic_launcher.png'), legacy)
+    writeFileSync(join(dir, 'ic_launcher_round.png'), legacy)
+    // Adaptive icon: the launcher crops this 108 dp layer to its own shape and
+    // keeps only the middle 66 dp safe, so the emblem sits inside that.
+    writeFileSync(
+      join(dir, 'ic_launcher_foreground.png'),
+      encodePNG(tile(emblem, Math.round(108 * k), 0.58)),
+    )
+  }
+  // The launch screen: replace Capacitor's own logo, keeping each file's size.
+  for (const dir of readdirSync(RES).filter((n) => n.startsWith('drawable'))) {
+    const file = join(RES, dir, 'splash.png')
+    if (!existsSync(file)) continue
+    const { width, height } = decodePNG(readFileSync(file))
+    writeFileSync(file, encodePNG(panel(emblem, width, height, 0.4)))
+  }
+  console.log('wrote Android launcher icons and launch screens')
+}

@@ -27,13 +27,25 @@ const ALLOWED_HOST = 'encdirect.noaa.gov'
 /** …and the only path prefix on it. */
 const ALLOWED_PREFIX = '/arcgis/rest/services/'
 
+/**
+ * The NavMate Android app is served from `https://localhost` inside the
+ * phone, so its queries arrive cross-origin. Only that one origin is let read
+ * the responses. A fixed value rather than an echo of the request's Origin,
+ * so the edge cache never has to vary on it.
+ */
+export const APP_ORIGIN = 'https://localhost'
+
 /** ENC is republished weekly, so a day at the edge is generous and safe. */
 const CACHE = 'public, s-maxage=86400, stale-while-revalidate=604800'
 
 function bad(status, message) {
   return new Response(JSON.stringify({ error: message }), {
     status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    headers: {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': APP_ORIGIN,
+    },
   })
 }
 
@@ -108,6 +120,7 @@ export default async function handler(request) {
         'content-type': 'application/json',
         'cache-control': 'no-store',
         'x-enc-relay': 'arcgis-error',
+        'access-control-allow-origin': APP_ORIGIN,
       },
     })
   }
@@ -120,6 +133,7 @@ export default async function handler(request) {
       'content-type':
         upstream.headers.get('content-type') ?? 'application/json',
       'cache-control': upstream.ok ? CACHE : 'no-store',
+      'access-control-allow-origin': APP_ORIGIN,
     },
   })
 }

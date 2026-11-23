@@ -342,6 +342,43 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-11-23 (later) — ccr-3d0ad5f5-mre6c6 (install card; Android app with background GPS)
+
+"This also needs to be a downloadable app so it works in the background" →
+"create this as an app the same way Where's My Note was made" → "fix the
+android version then end session".
+
+- **Where's My Note is a PWA**, installed from the browser — the same thing
+  NavMate already was. So: `InstallCard` (`src/lib/install.ts`,
+  `src/components/InstallCard.tsx`) — one-tap Install on Android/Chrome
+  (`beforeinstallprompt` caught in `main.tsx` before render), Share → Add to
+  Home Screen steps on iPhone Safari, hidden once installed. On Home
+  (dismissible) and Help. 6 unit tests, 10-check browser drive.
+- **Android app** (`ANDROID.md`): Capacitor 7, `android/` project, the same
+  `dist/` build. `@capacitor-community/background-geolocation` foreground
+  service keeps GPS running with the screen off (`useLegacyBridge: true` or
+  it stops after 5 min). All native differences live in `src/lib/native.ts`:
+  `appOrigin()` (the app runs at `https://localhost`, so email/invite links
+  and the `/api/enc` relay use `VITE_PUBLIC_ORIGIN`, default the live site —
+  the web still hardcodes no host), `watchNativePosition` feeding the
+  tracker's existing filter. `api/enc.js` sends
+  `access-control-allow-origin: https://localhost`. The service worker is now
+  registered from `main.tsx` (`injectRegister: false`) and skipped in the app.
+  Launcher icons, adaptive icon and launch screen generated from the emblem by
+  `make-icons.mjs` when `android/` exists.
+- **Built in CI, not here**: the sandbox cannot reach dl.google.com (Android
+  SDK). `.github/workflows/android.yml` builds the APK on every push
+  (artifact) and publishes a Release from `main`.
+- **Signing key is not in the repo** — committing it was blocked, rightly.
+  The workflow reads four `NAVMATE_*` secrets; without them it signs with a
+  throwaway key and warns (updates then need an uninstall). Adding the secrets
+  is the user's step.
+- First CI build failed on Groovy precedence (`versionCode (x).toInteger()`
+  is `versionCode(x).toInteger()`); fixed. Run 3 green: `NavMate-1.0.3.apk`
+  (5 MB) as a workflow artifact.
+- 1518 tests, typecheck, lint, build; navigation drive 42/42; web service
+  worker still registers. Not run on a phone.
+
 ### 2026-11-23 — ccr-3d0ad5f5-mre6c6 (USNG on the current position)
 
 "The current position needs to also show USNG format in addition to DDM, DMS

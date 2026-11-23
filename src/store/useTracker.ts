@@ -6,6 +6,7 @@ import {
   type ArrivalFt,
 } from '@/lib/steer'
 import type { Fix } from '@/lib/types'
+import { isNativeApp, watchNativePosition } from '@/lib/native'
 import {
   DEFAULT_GATE_M,
   TrackFilter,
@@ -80,6 +81,8 @@ export const DEFAULT_INTERVAL_S = 15
 const FRESH_MS = 5000
 
 let watchId: number | null = null
+/** The native (Android app) watch, which keeps running with the screen off. */
+let nativeStop: (() => void) | null = null
 const filter = new TrackFilter({ maxAccuracyM: DEFAULT_GATE_M })
 
 /* --------------------------------------------------------------- wake lock
@@ -190,11 +193,12 @@ export const useTracker = create<TrackerState>()(
       stoppedFor: null,
 
       start: () => {
-        if (!navigator.geolocation) {
+        const native = isNativeApp()
+        if (!native && !navigator.geolocation) {
           set({ error: 'This browser does not support geolocation.' })
           return
         }
-        if (watchId !== null) return
+        if (watchId !== null || nativeStop !== null) return
         set({ stoppedFor: null })
 
         filter.reset()
@@ -204,8 +208,7 @@ export const useTracker = create<TrackerState>()(
           lastReject: null,
         })
 
-        watchId = navigator.geolocation.watchPosition(
-          (pos) => {
+        const onPosition = (pos: GeolocationPosition) => {
             let raw = toFix(pos)
             // A receiver that has lost the sky may keep handing back the
             // position it last had. That must still go stale, so a repeat of
@@ -245,15 +248,26 @@ export const useTracker = create<TrackerState>()(
               trail:
                 next.length > TRAIL_LIMIT ? next.slice(-TRAIL_LIMIT) : next,
             })
-          },
-          (err) => set({ error: describe(err) }),
-          WATCH_OPTIONS,
-        )
+        }
+
+        if (native) {
+          nativeStop = watchNativePosition(onPosition, (error) => set({ error }))
+        } else {
+          watchId = navigator.geolocation.watchPosition(
+            onPosition,
+            (err) => set({ error: describe(err) }),
+            WATCH_OPTIONS,
+          )
+        }
         set({ watching: true, error: null })
         void holdScreen(set)
       },
 
       stop: () => {
+        if (nativeStop) {
+          nativeStop()
+          nativeStop = null
+        }
         if (watchId !== null) {
           navigator.geolocation.clearWatch(watchId)
           watchId = null

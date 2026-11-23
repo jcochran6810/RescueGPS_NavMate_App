@@ -1,0 +1,92 @@
+# Builds the NavMate Android app (APK) on GitHub's machines.
+#
+# Every push builds it and attaches the APK to the run ("Artifacts").
+# A push to main also publishes it as a GitHub Release, which is where a crew
+# phone downloads it from — no Google Play involved. See ANDROID.md.
+name: Android APK
+
+on:
+  push:
+    branches: [main, 'ccr-*', 'claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NAVMATE_VERSION_CODE: ${{ github.run_number }}
+      # The signing key, stored as repository secrets (ANDROID.md). Without
+      # them the APK is signed with a throwaway key and cannot update an
+      # earlier install.
+      NAVMATE_KEYSTORE_PASSWORD: ${{ secrets.NAVMATE_KEYSTORE_PASSWORD }}
+      NAVMATE_KEY_ALIAS: ${{ secrets.NAVMATE_KEY_ALIAS }}
+      NAVMATE_KEY_PASSWORD: ${{ secrets.NAVMATE_KEY_PASSWORD }}
+      NAVMATE_KEYSTORE_B64: ${{ secrets.NAVMATE_KEYSTORE_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Use the secret signing key, if one is set
+        if: env.NAVMATE_KEYSTORE_B64 != ''
+        run: |
+          echo "$NAVMATE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/navmate.jks"
+          echo "NAVMATE_KEYSTORE=$RUNNER_TEMP/navmate.jks" >> "$GITHUB_ENV"
+
+      - name: Build the web app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Copy it into the Android project
+        run: npx cap sync android
+
+      - name: Warn when there is no signing key
+        if: env.NAVMATE_KEYSTORE_B64 == ''
+        run: echo "::warning::No NAVMATE_KEYSTORE_BASE64 secret - this APK is signed with a throwaway key and will not install over an earlier one."
+
+      - name: Build the APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Name the APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/NavMate-1.0.${{ github.run_number }}.apk"
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NavMate-android-1.0.${{ github.run_number }}
+          path: out/*.apk
+
+      - name: Publish as a release (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v1.0.${{ github.run_number }}
+          name: NavMate for Android 1.0.${{ github.run_number }}
+          make_latest: true
+          files: out/*.apk
+          body: |
+            Download **NavMate-1.0.${{ github.run_number }}.apk** on the Android phone and open it.
+            First time: allow your browser or Files app to "install unknown apps" when Android asks.
+            Updates install over the old version and keep everything saved on the phone.

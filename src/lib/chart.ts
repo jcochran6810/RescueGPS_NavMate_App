@@ -25,6 +25,7 @@
  */
 
 import { haversineNM } from './geo'
+import { isNativeApp, PUBLIC_ORIGIN } from './native'
 import type {
   ChannelPolygon,
   ChartFeatures,
@@ -741,7 +742,10 @@ export type Fetcher = (url: string) => Promise<unknown>
 export function encRequestUrl(url: string): string {
   if (typeof window === 'undefined') return url
   if (!url.startsWith('https://encdirect.noaa.gov/')) return url
-  return `/api/enc?u=${encodeURIComponent(url)}`
+  // The Android app is served from https://localhost, which has no relay:
+  // it goes to the live site's (api/enc.js allows that origin).
+  const base = isNativeApp() ? PUBLIC_ORIGIN : ''
+  return `${base}/api/enc?u=${encodeURIComponent(url)}`
 }
 
 /** Longest one chart query may take before it is abandoned, ms. */

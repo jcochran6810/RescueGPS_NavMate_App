@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui'
+import { appOrigin } from '@/lib/native'
 import { toast } from '@/store/useToast'
 
 /**
@@ -30,7 +31,7 @@ export function TeamInvite({
 }) {
   const [open, setOpen] = useState(false)
 
-  const url = `${window.location.origin}/?join=${encodeURIComponent(joinCode)}`
+  const url = `${appOrigin()}/?join=${encodeURIComponent(joinCode)}`
   const subject = `Join ${teamName} on NavMate`
   const body =
     `Join ${teamName} on NavMate.\n\n` +
