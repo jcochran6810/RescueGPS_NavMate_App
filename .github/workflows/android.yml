@@ -83,6 +83,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-v1.0.${{ github.run_number }}
+          # Tag the commit this APK was built from. Without it a new tag lands
+          # on the repository's default branch, which is not main here.
+          target_commitish: ${{ github.sha }}
           name: NavMate for Android 1.0.${{ github.run_number }}
           make_latest: true
           files: out/*.apk

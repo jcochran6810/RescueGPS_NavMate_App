@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Input, Label } from '@/components/ui'
 import { useTeams } from '@/store/useTeams'
+import { useFormat } from '@/hooks/useFormat'
 import { useTracker } from '@/store/useTracker'
 import { supabase, errorMessage } from '@/lib/supabase'
 import { toast } from '@/store/useToast'
@@ -33,6 +34,7 @@ const RADIUS_NM = 10
  * there gets you no further than looking out of the window does.
  */
 export function NearbyTeams() {
+  const fmt = useFormat()
   const joinTeam = useTeams((s) => s.joinTeam)
   const fix = useTracker((s) => s.fix)
   const once = useTracker((s) => s.once)
@@ -120,7 +122,7 @@ export function NearbyTeams() {
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-sm font-semibold text-slate-50">{t.name}</span>
                 <span className="tnum shrink-0 text-xs text-slate-300">
-                  {t.distance_nm.toFixed(1)} NM
+                  {fmt.length(t.distance_nm)}
                 </span>
               </div>
               <div className="text-xs text-slate-400">

@@ -156,7 +156,7 @@ export function SteerCard({
               the time beside it needs a speed and says nothing without one. */}
           <div className="tnum mt-1.5 flex flex-wrap items-baseline gap-x-3 text-xs text-slate-300">
             {speedKn != null && (
-              <span>Making {speedKn.toFixed(1)} kn</span>
+              <span>Making {fmt.knots(speedKn)}</span>
             )}
             {runHours != null ? (
               <>

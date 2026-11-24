@@ -41,6 +41,10 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
     if (!fix && !watching) void once()
   }, [fix, watching, once])
 
+  // Keep the position live while this screen is open, so speed and course
+  // appear and the numbers follow the boat — without recording a track.
+  useEffect(() => useTracker.getState().follow(), [])
+
   const fmt = useFormat()
   const planCourse = usePlanCourse((s) => s.dispatch)
   const navStatus = useNavigation((s) => s.status)
@@ -97,10 +101,10 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
               </div>
             ) : null}
             <div className="text-slate-300">
-              {fix.altitude != null ? `Altitude ${Math.round(fix.altitude)} m` : 'Altitude —'}
+              Altitude {fmt.altitude(fix.altitude)}
               {' | '}
               Speed {fmt.speed(fix.speed)}
-              {fix.accuracy != null ? ` | ±${Math.round(fix.accuracy)} m` : ''}
+              {fix.accuracy != null ? ` | ${fmt.accuracy(fix.accuracy)}` : ''}
             </div>
           </div>
         ) : (

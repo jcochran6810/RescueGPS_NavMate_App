@@ -189,16 +189,17 @@ export function TrackTab() {
         />
         <Stat
           label="Accuracy"
-          value={fix?.accuracy != null ? `±${Math.round(fix.accuracy)} m` : '—'}
+          value={fmt.accuracy(fix?.accuracy)}
           hint={
             raw?.accuracy != null && fix?.accuracy != null
-              ? `receiver ±${Math.round(raw.accuracy)} m`
+              ? `receiver ${fmt.accuracy(raw.accuracy)}`
               : undefined
           }
         />
         <Stat
           label="Altitude"
-          value={fix?.altitude != null ? `${Math.round(fix.altitude)} m` : '—'}
+          value={fmt.altitude(fix?.altitude)}
+          hint={fix?.altitude != null ? 'above sea level' : undefined}
         />
       </div>
 
@@ -235,7 +236,7 @@ export function TrackTab() {
           }
         >
           {waiting
-            ? `Waiting for a fix inside the limit — the receiver is reporting ±${Math.round(raw?.accuracy ?? 0)} m.`
+            ? `Waiting for a fix inside the limit — the receiver is reporting ${fmt.accuracy(raw?.accuracy ?? 0)}.`
             : fix
               ? `Position filtered from ${trail.length > 0 ? 'the' : 'this'} fix stream; the figure above is the filter's own estimate, never better than half what the receiver claims.`
               : 'No fix yet.'}
@@ -260,7 +261,7 @@ export function TrackTab() {
                     : 'border-white/10 text-slate-300 hover:bg-white/5')
                 }
               >
-                {m === 0 ? 'Any' : `±${m} m`}
+                {m === 0 ? 'Any' : fmt.accuracy(m)}
               </button>
             ))}
           </div>

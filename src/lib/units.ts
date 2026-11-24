@@ -198,3 +198,12 @@ export function formatAltitude(
   if (metres == null || !Number.isFinite(metres)) return '—'
   return `${Math.round(altitudeIn(metres, unit))} ${unit === 'ft' ? 'ft' : 'm'}`
 }
+
+/** A GPS accuracy held in metres, as "±33 ft" or "±10 m" in the height unit. */
+export function formatAccuracy(
+  metres: number | null | undefined,
+  unit: AltitudeUnit,
+): string {
+  if (metres == null || !Number.isFinite(metres)) return '—'
+  return `±${Math.round(altitudeIn(metres, unit))} ${unit === 'ft' ? 'ft' : 'm'}`
+}

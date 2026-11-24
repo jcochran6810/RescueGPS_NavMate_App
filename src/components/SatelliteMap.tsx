@@ -264,6 +264,7 @@ export function SatelliteMap({
   height?: number
   className?: string
 }) {
+  const fmt = useFormat()
   const boxRef = useRef<HTMLDivElement | null>(null)
   const [size, setSize] = useState({ w: 0, h: height })
   /**
@@ -1396,7 +1397,7 @@ export function SatelliteMap({
                 >
                   {u.name}
                   {u.speedKn != null && u.speedKn >= 0.5
-                    ? ` ${u.speedKn.toFixed(1)} kn`
+                    ? ` ${fmt.knots(u.speedKn)}`
                     : ''}
                   {u.stale ? ' (no signal)' : ''}
                 </text>

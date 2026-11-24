@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useUnits } from '@/store/useUnits'
 import {
+  formatAccuracy,
   formatAltitude,
   formatDepth,
   formatDepthBoth,
@@ -41,6 +42,8 @@ export interface Formatters {
   temp: (celsius: number | null) => string
   /** A height held in metres. */
   altitude: (metres: number | null | undefined) => string
+  /** A GPS accuracy held in metres, in the height unit ("±33 ft"). */
+  accuracy: (metres: number | null | undefined) => string
   /** The raw settings, for a label or an input's suffix. */
   units: {
     distance: DistanceUnit
@@ -66,6 +69,7 @@ export function useFormat(): Formatters {
       knots: (kn: number | null | undefined) => formatKnots(kn, speed),
       temp: (c: number | null) => formatTemp(c, temp),
       altitude: (m: number | null | undefined) => formatAltitude(m, altitude),
+      accuracy: (m: number | null | undefined) => formatAccuracy(m, altitude),
       units: { distance, depth, speed, temp },
     }),
     [distance, depth, speed, temp, altitude],
