@@ -342,6 +342,38 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-11-24 — ccr-3d0ad5f5-mre6c6 (altitude above sea level, live speed, units; signing key; release tags)
+
+"Need to fix the accuracy of the altitude and speed. Currently it shows me at
+-21m and no speed shows." / "also need to default show in ft/knts with the
+units changed in settings" / "fix the labels for future releases".
+
+- **Altitude** (`src/lib/geoid.ts`, `src/lib/geoidData.ts`): Android reports
+  height above the WGS84 **ellipsoid**; on the Gulf coast the sea is ~28 m
+  below it, so the waterline read -21 m. `seaLevelAltitude` subtracts the
+  EGM96 geoid height from a 1° grid (65 KB, whole metres, ~0.5 m rms against
+  the full model over the US, decoded from the egm96-universal 15' grid as
+  data only). iOS reports MSL already and is left alone. Applied once in
+  `useTracker`'s `toFix`, so GPX, sharing and every screen get it.
+- **Speed**: Home/Compass/ETA only took a one-shot fix, which carries no
+  speed. `useTracker.follow()` keeps a live watch through the filter while a
+  screen is open — no breadcrumbs, no wake lock; `start()` takes over and
+  `stop()` hands back. Breadcrumbs are now recorded only while `watching`.
+- **Units**: defaults were already ft/kn/NM, but altitude, accuracy (new
+  `fmt.accuracy` / `formatAccuracy`), unit speeds on the map and incident card,
+  the steer card's "Making … kn" and nearby-team distances were hardcoded.
+  Drift-marker knots and chart soundings in metres left as they are.
+- **Signing key**: a 4096-bit key made for the user and sent as files; they
+  added the four `NAVMATE_*` secrets. Run 6 used it (warning step skipped) and
+  published `android-v1.0.6`. The key file is not in the repo.
+- **Release tags**: `softprops/action-gh-release` created missing tags on the
+  repo's default branch (still an old session branch), so `android-v1.0.6`
+  pointed there; `target_commitish: github.sha` from now on. 1.0.6 itself was
+  left as it is (its APK came from main).
+- 1529 tests, typecheck, lint, build; navigation drive 42/42; a scratch drive
+  with a fake Android receiver (-21 m, 2.5 m/s north, no speed) read
+  "Altitude 21 ft | Speed 4.8 kn | ±16 ft" on Home. Not run on a phone.
+
 ### 2026-11-23 (later) — ccr-3d0ad5f5-mre6c6 (install card; Android app with background GPS)
 
 "This also needs to be a downloadable app so it works in the background" →
