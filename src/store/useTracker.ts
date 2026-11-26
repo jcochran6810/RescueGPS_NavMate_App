@@ -8,6 +8,7 @@ import {
 import type { Fix } from '@/lib/types'
 import { isNativeApp, watchNativePosition } from '@/lib/native'
 import { seaLevelAltitude } from '@/lib/geoid'
+import { AltitudeFilter } from '@/lib/altitude'
 import {
   DEFAULT_GATE_M,
   TrackFilter,
@@ -95,6 +96,18 @@ let nativeStop: (() => void) | null = null
 let viewWatchId: number | null = null
 let viewers = 0
 const filter = new TrackFilter({ maxAccuracyM: DEFAULT_GATE_M })
+/** Height has its own filter: phone GPS height is far noisier than position. */
+const altFilter = new AltitudeFilter()
+
+/** Put the steadied height on a fix in place of the one raw reading. */
+function withSteadyAltitude(fix: Fix, raw: Fix): Fix {
+  const est = altFilter.push(raw.altitude, raw.altitudeAccuracy, raw.receivedAt ?? Date.now())
+  // Not shown until enough readings agree: "—" is honest, a first reading
+  // printed as the height is not.
+  return est?.settled
+    ? { ...fix, altitude: est.altitude, altitudeAccuracy: est.sigma }
+    : { ...fix, altitude: null, altitudeAccuracy: null }
+}
 
 /* --------------------------------------------------------------- wake lock
  * A phone that sleeps stops giving the page fixes, so a track recorded with
@@ -151,6 +164,10 @@ function toFix(pos: GeolocationPosition): Fix {
     // Android reports height above the WGS84 ellipsoid, ~28 m off sea level
     // on the Gulf coast; this is height above the sea (lib/geoid.ts).
     altitude: seaLevelAltitude(c.altitude, c.latitude, c.longitude),
+    altitudeAccuracy:
+      c.altitudeAccuracy != null && Number.isFinite(c.altitudeAccuracy)
+        ? c.altitudeAccuracy
+        : null,
     timestamp: pos.timestamp,
     // Freshness is judged on the phone's clock at arrival, not on the
     // position's own stamp — see `Fix.receivedAt`.
@@ -205,6 +222,7 @@ export const useTracker = create<TrackerState>()(
           raw = { ...raw, receivedAt: prevRaw.receivedAt }
         }
         const result = filter.push(raw)
+        const steady = withSteadyAltitude(result.accepted ? result.fix : raw, raw)
 
         if (!result.accepted) {
           // A refused fix is not a silent one. The crew can see the count
@@ -228,11 +246,11 @@ export const useTracker = create<TrackerState>()(
           get().watching &&
           !result.fix.estimate &&
           shouldRecord(last, result.fix, intervalS)
-            ? [...trail, result.fix]
+            ? [...trail, steady]
             : trail
 
         set({
-          fix: result.fix,
+          fix: steady,
           raw,
           derived: result.derived,
           error: null,
@@ -374,11 +392,12 @@ export const useTracker = create<TrackerState>()(
             }
             navigator.geolocation.getCurrentPosition(
               (pos) => {
-                const fix = toFix(pos)
+                const one = toFix(pos)
+                const fix = withSteadyAltitude(one, one)
                 // Deliberately not gated. A single fix asked for by hand is a
                 // fix the crew wants now — capture succeeds, and the accuracy
                 // travels with it so nobody has to guess how good it was.
-                set({ fix, raw: fix, error: null })
+                set({ fix, raw: one, error: null })
                 resolve(fix)
               },
               (err) => {

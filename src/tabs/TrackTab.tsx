@@ -198,7 +198,7 @@ export function TrackTab() {
         />
         <Stat
           label="Altitude"
-          value={fmt.altitude(fix?.altitude)}
+          value={fmt.height(fix?.altitude, fix?.altitudeAccuracy)}
           hint={fix?.altitude != null ? 'above sea level' : undefined}
         />
       </div>

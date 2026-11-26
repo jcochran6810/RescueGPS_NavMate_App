@@ -342,6 +342,31 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-11-26 (later) — ccr-3d0ad5f5-mre6c6 (steady GPS height)
+
+"After installing the new version it is showing my elevation to be anywhere
+from 40 to 350 ft."
+
+- **Altitude never went through a filter**: each raw reading reached the
+  screen, and indoor multipath puts single readings 100 m out.
+  `src/lib/altitude.ts` `AltitudeFilter`: robust median (median → drop beyond
+  2.5 robust SD → median) of the last 90 s (≤180 readings); readings claiming
+  worse than ±75 m dropped; **not** weighted by claimed accuracy (the bad
+  readings claimed the better accuracy, and weighting by it biased the
+  estimate further — found by the drive). σ = standard error of the median
+  plus a third of the scatter as a one-sided-multipath bias allowance,
+  floored at 5 m. Hidden until 8 readings (`settled`).
+- `useTracker` runs every reading (watch, follow, once) through it; `Fix`
+  gained `altitudeAccuracy`; the trail carries the steadied height too.
+  `formatHeight` → "46 ft (±30 ft)", "settling…" above ±40 m; Home labels
+  the horizontal figure "Position ±…".
+- A first 1-D Kalman version held steady but drifted up and claimed ±10 ft
+  while 25 ft off; replaced. Scratch drive at 1 Hz, true 46 ft, raw −109…306
+  ft: shown 32–72 ft with ±47 ft, "—" for the first second: 6/6. 1548 tests,
+  typecheck, lint, build, navigation 42/42. Limit stated to the user: GPS
+  height indoors is ±30–50 ft at best; the barometer (native only) is the
+  route to floor-level precision.
+
 ### 2026-11-26 — ccr-3d0ad5f5-mre6c6 (update prompt; feet by default)
 
 "Elevation still showing -14 m… needs to show true elevation above sea level

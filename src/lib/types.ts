@@ -414,8 +414,13 @@ export interface Fix {
   heading: number | null
   /** Metres. */
   accuracy: number | null
-  /** Metres above the WGS-84 ellipsoid, or null. */
+  /**
+   * Metres above sea level, or null. From the tracker this is the steadied
+   * estimate (lib/altitude.ts), not one raw reading.
+   */
   altitude: number | null
+  /** One-sigma uncertainty of `altitude`, metres, when known. */
+  altitudeAccuracy?: number | null
   timestamp: number
   /**
    * The phone's own clock (ms since the epoch) when this position arrived —
