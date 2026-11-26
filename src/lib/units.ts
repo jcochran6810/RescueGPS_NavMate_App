@@ -199,6 +199,22 @@ export function formatAltitude(
   return `${Math.round(altitudeIn(metres, unit))} ${unit === 'ft' ? 'ft' : 'm'}`
 }
 
+/**
+ * A GPS height with how far to trust it: "46 ft (±30 ft)". While the
+ * estimate is still worse than ±40 m (130 ft) the number is noise, and saying
+ * "settling" is more honest than printing it.
+ */
+export function formatHeight(
+  metres: number | null | undefined,
+  sigmaM: number | null | undefined,
+  unit: AltitudeUnit,
+): string {
+  if (metres == null || !Number.isFinite(metres)) return '—'
+  if (sigmaM != null && sigmaM > 40) return 'settling…'
+  const h = formatAltitude(metres, unit)
+  return sigmaM != null ? `${h} (${formatAccuracy(sigmaM, unit)})` : h
+}
+
 /** A GPS accuracy held in metres, as "±33 ft" or "±10 m" in the height unit. */
 export function formatAccuracy(
   metres: number | null | undefined,

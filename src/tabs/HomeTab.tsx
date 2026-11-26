@@ -101,10 +101,10 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
               </div>
             ) : null}
             <div className="text-slate-300">
-              Altitude {fmt.altitude(fix.altitude)}
+              Altitude {fmt.height(fix.altitude, fix.altitudeAccuracy)}
               {' | '}
               Speed {fmt.speed(fix.speed)}
-              {fix.accuracy != null ? ` | ${fmt.accuracy(fix.accuracy)}` : ''}
+              {fix.accuracy != null ? ` | Position ${fmt.accuracy(fix.accuracy)}` : ''}
             </div>
           </div>
         ) : (
