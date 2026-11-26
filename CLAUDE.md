@@ -342,6 +342,32 @@ scripts/          make-icons.mjs — regenerates the icons from the masters
 
 ## Session log
 
+### 2026-11-26 — ccr-3d0ad5f5-mre6c6 (update prompt; feet by default)
+
+"Elevation still showing -14 m… needs to show true elevation above sea level
+in ft." / "There needs to be a way to update the app… a notification with
+Update now and Later."
+
+- **The -14 m was an old build**, not the code: the live site's bundle hash
+  matched a fresh build of main, and no screen prints altitude in metres any
+  more. The phone was on APK 1.0.6 or a home-screen copy that had not updated.
+- **Update prompt** (`src/store/useUpdate.ts`, `src/components/UpdateBanner.tsx`,
+  `src/lib/version.ts`): every build carries its commit (`__APP_SHA__` from
+  `VERCEL_GIT_COMMIT_SHA` / `GITHUB_SHA`, `vite.config.ts` define) and the site
+  publishes `/version.json` (no-cache in `vercel.json`, not precached).
+  Web: `registerType: 'prompt'`, `onNeedRefresh` → banner, `registration.update()`
+  every 30 min and on return to the app; Update now = `updateSW(true)`; after
+  Later the next open lands on the new version (Chromium activates the waiting
+  worker when the only client reloads). Android: compares its sha with the
+  live `/version.json`; Update now opens the latest GitHub release; Later
+  holds until a different version appears. Nothing ever updates by itself.
+- Help shows the running version (`versionLabel`: 1.0.N · date · sha7).
+- Units persist v2: altitude reset to `ft` once.
+- 1538 tests (+9), typecheck, lint, build, navigation drive 42/42; a scratch
+  drive served three builds in turn — banner, Later, reopen, Update now:
+  9/9. The Android path is unit-tested only. Crew phones cannot open the
+  private GitHub release page; public APK hosting is an open decision.
+
 ### 2026-11-24 — ccr-3d0ad5f5-mre6c6 (altitude above sea level, live speed, units; signing key; release tags)
 
 "Need to fix the accuracy of the altitude and speed. Currently it shows me at
