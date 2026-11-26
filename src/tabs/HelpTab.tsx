@@ -1,5 +1,7 @@
 import { SupportRequests } from '@/components/SupportRequests'
 import { InstallCard } from '@/components/InstallCard'
+import { versionLabel } from '@/lib/version'
+import { isNativeApp } from '@/lib/native'
 
 /** Help is its own section: file a request, watch it get handled. */
 export function HelpTab() {
@@ -16,6 +18,10 @@ export function HelpTab() {
       <InstallCard />
 
       <SupportRequests />
+
+      <p className="text-center text-xs text-slate-400">
+        NavMate {isNativeApp() ? 'for Android' : 'web app'} · {versionLabel()}
+      </p>
     </div>
   )
 }

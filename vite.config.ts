@@ -3,14 +3,63 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { execSync } from 'node:child_process'
+import type { Plugin } from 'vite'
 import { ENC_QUERY_RULE } from './src/lib/encCache'
 
+/**
+ * Which build this is. Vercel and GitHub Actions both name the commit they
+ * build, so the website and the Android APK made from the same push of main
+ * carry the same id — that is what lets the app tell "a newer version is out".
+ */
+function buildSha(): string {
+  const fromCi = process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA
+  if (fromCi) return fromCi
+  try {
+    return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim()
+  } catch {
+    return 'dev'
+  }
+}
+const BUILD = {
+  sha: buildSha(),
+  builtAt: new Date().toISOString(),
+  // Set by the Android workflow (the run number); the website has none.
+  version: process.env.NAVMATE_VERSION_CODE
+    ? `1.0.${process.env.NAVMATE_VERSION_CODE}`
+    : null,
+}
+
+/** Publishes /version.json — the live build's id, read by every copy of the app. */
+function versionFile(): Plugin {
+  return {
+    name: 'navmate-version-file',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({ sha: BUILD.sha, builtAt: BUILD.builtAt }),
+      })
+    },
+  }
+}
+
 export default defineConfig({
+  define: {
+    __APP_SHA__: JSON.stringify(BUILD.sha),
+    __APP_BUILT_AT__: JSON.stringify(BUILD.builtAt),
+    __APP_VERSION__: JSON.stringify(BUILD.version),
+  },
   plugins: [
+    versionFile(),
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': a new version waits for the crew's "Update now" rather
+      // than reloading the page under them mid-task (UpdateBanner).
+      registerType: 'prompt',
       // Registered from main.tsx instead, so the Android app (which carries
       // its own copy of the build) can skip the service worker entirely.
       injectRegister: false,

@@ -14,6 +14,7 @@ import { installErrorReporting } from '@/lib/errlog'
 import { AuthScreen } from '@/components/AuthScreen'
 import { RecoverPassword } from '@/components/RecoverPassword'
 import { Header } from '@/components/Header'
+import { UpdateBanner } from '@/components/UpdateBanner'
 import { MapActionHost } from '@/components/MapActionHost'
 import { NavBanner } from '@/components/NavBanner'
 import { WaypointSheet } from '@/components/WaypointSheet'
@@ -207,6 +208,7 @@ export default function App() {
       <IncidentTelemetry />
       <NavigationEngine />
       <Header />
+      <UpdateBanner />
       {/* Clears the bottom bar (and the steering banner above it). */}
       <main
         className={
