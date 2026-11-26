@@ -50,6 +50,14 @@ export const useUnits = create<UnitsState>()(
     {
       name: 'navmate.units.v1',
       storage: createJSONStorage(() => localStorage),
+      // v2: height shows in feet. Older builds printed altitude in metres
+      // whatever was chosen, so a saved 'm' is not a choice anyone saw take
+      // effect; it is reset once. Settings still changes it.
+      version: 2,
+      migrate: (persisted, version) => {
+        const p = (persisted ?? {}) as Partial<UnitsState>
+        return version < 2 ? { ...p, altitude: 'ft' } : p
+      },
     },
   ),
 )
