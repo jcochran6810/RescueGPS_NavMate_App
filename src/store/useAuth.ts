@@ -160,16 +160,33 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 
   updateProfile: async (patch) => {
-    const uid = get().user?.id
+    const user = get().user
+    const uid = user?.id
     if (!uid) return { error: 'Not signed in' }
-    // Upsert rather than update: NavMate no longer owns the signup trigger on
-    // this database, so it cannot assume a profile row is already there.
-    const { data, error } = await supabase
+    // Update first. An upsert looks right but is not: Postgres checks NOT NULL
+    // on the row it would insert *before* it notices the row already exists,
+    // and `profiles.email` (the command system's table) is NOT NULL with no
+    // default — so every upsert without an email failed, even on an existing
+    // profile ("null value in column email … violates not-null constraint").
+    const updated = await supabase
       .from('profiles')
-      .upsert({ id: uid, ...patch }, { onConflict: 'id' })
+      .update(patch)
+      .eq('id', uid)
       .select()
-      .single()
-    if (error) return { error: errorMessage(error) }
+      .maybeSingle()
+    if (updated.error) return { error: errorMessage(updated.error) }
+    let data = updated.data
+    if (!data) {
+      // No profile row yet (NavMate does not own the signup trigger here):
+      // create it, carrying the email the table requires.
+      const inserted = await supabase
+        .from('profiles')
+        .insert({ id: uid, email: user?.email ?? '', ...patch })
+        .select()
+        .single()
+      if (inserted.error) return { error: errorMessage(inserted.error) }
+      data = inserted.data
+    }
     set({ profile: data as Profile })
     return {}
   },

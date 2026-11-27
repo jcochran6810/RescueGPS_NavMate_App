@@ -174,9 +174,9 @@ export function TrackTab() {
           hint={fix ? toDMS(fix.lon, 'lon') : undefined}
         />
         <Stat
-          label="Speed"
+          label="SOG"
           value={fmt.speed(fix?.speed)}
-          hint={derived.speed ? 'from the track' : undefined}
+          hint={derived.speed ? 'over ground, from the track' : 'speed over ground'}
         />
         <Stat
           label="Heading"
@@ -195,11 +195,6 @@ export function TrackTab() {
               ? `receiver ${fmt.accuracy(raw.accuracy)}`
               : undefined
           }
-        />
-        <Stat
-          label="Altitude"
-          value={fmt.height(fix?.altitude, fix?.altitudeAccuracy)}
-          hint={fix?.altitude != null ? 'above sea level' : undefined}
         />
       </div>
 

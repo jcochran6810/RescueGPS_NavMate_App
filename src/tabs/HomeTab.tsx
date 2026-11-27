@@ -101,9 +101,13 @@ export function HomeTab({ onNavigate }: { onNavigate: (tab: TabId) => void }) {
               </div>
             ) : null}
             <div className="text-slate-300">
-              Altitude {fmt.height(fix.altitude, fix.altitudeAccuracy)}
-              {' | '}
-              Speed {fmt.speed(fix.speed)}
+              {/* Altitude is hidden for now (phone GPS height is too rough
+                  to trust); the steadied value is still computed in
+                  useTracker and can be shown again with fmt.height. */}
+              <abbr title="Speed over ground" className="no-underline">
+                SOG
+              </abbr>{' '}
+              {fmt.speed(fix.speed)}
               {fix.accuracy != null ? ` | Position ${fmt.accuracy(fix.accuracy)}` : ''}
             </div>
           </div>
